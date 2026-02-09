@@ -1,0 +1,930 @@
+// WhatsApp SaaS - Prisma Schema
+// Database: MySQL 8.0+
+// Multi-tenant architecture with organization isolation
+
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["fullTextSearch", "fullTextIndex"]
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================
+// 1. ORGANIZATIONS - Multi-tenant root entity
+// ============================================
+model Organization {
+  id                String   @id @default(uuid()) @db.Char(36)
+  name              String   @db.VarChar(255)
+  slug              String   @unique @db.VarChar(100)
+  email             String?  @db.VarChar(255)
+  phone             String?  @db.VarChar(50)
+  logo_url          String?  @db.Text
+  
+  // Subscription info
+  subscription_plan_id String? @db.Char(36)
+  subscription_status  SubscriptionStatus @default(TRIAL)
+  trial_ends_at        DateTime?
+  
+  // Limits
+  max_instances     Int      @default(1)
+  max_contacts      Int      @default(1000)
+  max_messages_per_day Int   @default(100)
+  
+  // Metadata
+  is_active         Boolean  @default(true)
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  deleted_at        DateTime?
+  
+  // Relations
+  users             User[]
+  whatsapp_instances WhatsAppInstance[]
+  api_keys          ApiKey[]
+  subscriptions     Subscription[]
+  invoices          Invoice[]
+  usage_logs        UsageLog[]
+  audit_logs        AuditLog[]
+  subscription_plan SubscriptionPlan? @relation(fields: [subscription_plan_id], references: [id])
+  
+  @@index([slug])
+  @@index([subscription_status])
+  @@index([created_at])
+  @@map("organizations")
+}
+
+// ============================================
+// 2. USERS - Multi-role user management
+// ============================================
+model User {
+  id              String   @id @default(uuid()) @db.Char(36)
+  organization_id String   @db.Char(36)
+  
+  email           String   @unique @db.VarChar(255)
+  password_hash   String   @db.VarChar(255)
+  full_name       String   @db.VarChar(255)
+  phone           String?  @db.VarChar(50)
+  avatar_url      String?  @db.Text
+  
+  // Role & Status
+  role            UserRole @default(ORG_MEMBER)
+  is_active       Boolean  @default(true)
+  is_email_verified Boolean @default(false)
+  email_verified_at DateTime?
+  
+  // Security
+  last_login_at   DateTime?
+  last_login_ip   String?  @db.VarChar(50)
+  refresh_token   String?  @db.Text
+  reset_token     String?  @db.VarChar(255)
+  reset_token_expires_at DateTime?
+  
+  // Two-Factor Auth (optional)
+  two_factor_enabled  Boolean @default(false)
+  two_factor_secret   String? @db.VarChar(255)
+  
+  // Notification preferences
+  notify_email        Boolean @default(true)
+  notify_browser      Boolean @default(true)
+  
+  // Metadata
+  created_at      DateTime @default(now())
+  updated_at      DateTime @updatedAt
+  deleted_at      DateTime?
+  
+  // Relations
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  audit_logs      AuditLog[]
+  
+  @@index([organization_id])
+  @@index([email])
+  @@index([role])
+  @@index([is_active])
+  @@map("users")
+}
+
+// ============================================
+// 3. WHATSAPP INSTANCES - Baileys connection
+// ============================================
+model WhatsAppInstance {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  
+  name              String   @db.VarChar(255)
+  phone_number      String?  @db.VarChar(50)
+  qr_code           String?  @db.Text
+  
+  // Status
+  status            InstanceStatus @default(DISCONNECTED)
+  connection_state  String?  @db.VarChar(50)
+  is_active         Boolean  @default(true)
+  
+  // Session data (encrypted)
+  session_data      String?  @db.LongText
+  session_last_sync DateTime?
+  
+  // Anti-ban metrics
+  health_score      Int      @default(100)
+  account_age_days  Int      @default(0)
+  daily_message_count Int    @default(0)
+  daily_limit       Int      @default(50)
+  last_message_at   DateTime?
+  warming_phase     WarmingPhase @default(DAY_1_3)
+  
+  // Connection info
+  connected_at      DateTime?
+  disconnected_at   DateTime?
+  last_seen_at      DateTime?
+  
+  // Webhook
+  webhook_url       String?  @db.Text
+  webhook_events    Json?    // Array of events: ["message", "status", "qr"]
+  webhook_secret    String?  @db.VarChar(255)
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  deleted_at        DateTime?
+  
+  // Relations
+  organization      Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  messages          Message[]
+  contacts          Contact[]
+  webhooks          Webhook[]
+  session_backups   SessionBackup[]
+  
+  @@index([organization_id])
+  @@index([status])
+  @@index([phone_number])
+  @@index([is_active])
+  @@index([health_score])
+  @@map("whatsapp_instances")
+}
+
+// ============================================
+// 4. MESSAGES - Message history
+// ============================================
+model Message {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  instance_id       String   @db.Char(36)
+  
+  // Message identifiers
+  wa_message_id     String?  @db.VarChar(255)
+  chat_jid          String   @db.VarChar(255)
+  sender_jid        String?  @db.VarChar(255)
+  
+  // Message content
+  message_type      MessageType @default(TEXT)
+  content           String?  @db.Text
+  media_url         String?  @db.Text
+  media_type        String?  @db.VarChar(50)
+  caption           String?  @db.Text
+  
+  // Direction & Status
+  direction         MessageDirection @default(OUTGOING)
+  status            MessageStatus @default(PENDING)
+  
+  // Timestamps
+  sent_at           DateTime?
+  delivered_at      DateTime?
+  read_at           DateTime?
+  failed_at         DateTime?
+  
+  // Error tracking
+  error_message     String?  @db.Text
+  retry_count       Int      @default(0)
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  // Relations
+  instance          WhatsAppInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+  
+  @@index([organization_id])
+  @@index([instance_id])
+  @@index([wa_message_id])
+  @@index([chat_jid])
+  @@index([status])
+  @@index([direction])
+  @@index([created_at])
+  @@map("messages")
+}
+
+// ============================================
+// 5. CONTACTS - Contact management
+// ============================================
+model Contact {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  instance_id       String   @db.Char(36)
+  
+  jid               String   @db.VarChar(255)
+  phone_number      String?  @db.VarChar(50)
+  name              String?  @db.VarChar(255)
+  push_name         String?  @db.VarChar(255)
+  
+  is_business       Boolean  @default(false)
+  is_enterprise     Boolean  @default(false)
+  is_group          Boolean  @default(false)
+  
+  profile_pic_url   String?  @db.Text
+  status_text       String?  @db.Text
+  
+  // Custom fields
+  tags              Json?    // Array of tags
+  custom_fields     Json?    // Key-value pairs
+  notes             String?  @db.Text
+  
+  // Metadata
+  last_seen_at      DateTime?
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  // Relations
+  instance          WhatsAppInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+  
+  @@unique([instance_id, jid])
+  @@index([organization_id])
+  @@index([instance_id])
+  @@index([phone_number])
+  @@index([jid])
+  @@map("contacts")
+}
+
+// ============================================
+// 6. WEBHOOKS - Webhook delivery queue
+// ============================================
+model Webhook {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  instance_id       String   @db.Char(36)
+  
+  event_type        String   @db.VarChar(100)
+  payload           Json
+  
+  // Delivery status
+  status            WebhookStatus @default(PENDING)
+  attempts          Int      @default(0)
+  max_attempts      Int      @default(3)
+  
+  next_retry_at     DateTime?
+  last_attempt_at   DateTime?
+  delivered_at      DateTime?
+  failed_at         DateTime?
+  
+  // Response tracking
+  response_status   Int?
+  response_body     String?  @db.Text
+  error_message     String?  @db.Text
+  
+  // Idempotency
+  idempotency_key   String?  @db.VarChar(255)
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  // Relations
+  instance          WhatsAppInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+  webhook_logs      WebhookLog[]
+  
+  @@index([organization_id])
+  @@index([instance_id])
+  @@index([status])
+  @@index([event_type])
+  @@index([next_retry_at])
+  @@index([idempotency_key])
+  @@index([created_at])
+  @@map("webhooks")
+}
+
+// ============================================
+// 7. WEBHOOK LOGS - Delivery attempt history
+// ============================================
+model WebhookLog {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  webhook_id        String   @db.Char(36)
+  
+  attempt_number    Int
+  request_headers   Json?
+  request_body      Json?
+  
+  response_status   Int?
+  response_headers  Json?
+  response_body     String?  @db.Text
+  
+  duration_ms       Int?
+  error_message     String?  @db.Text
+  
+  created_at        DateTime @default(now())
+  
+  // Relations
+  webhook           Webhook @relation(fields: [webhook_id], references: [id], onDelete: Cascade)
+  
+  @@index([organization_id])
+  @@index([webhook_id])
+  @@index([created_at])
+  @@map("webhook_logs")
+}
+
+// ============================================
+// 8. API KEYS - API authentication
+// ============================================
+model ApiKey {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  
+  name              String   @db.VarChar(255)
+  key_hash          String   @unique @db.VarChar(255)
+  key_prefix        String   @db.VarChar(20)
+  
+  // Permissions
+  permissions       Json?    // Array of permissions
+  rate_limit        Int      @default(1000)
+  
+  // Status
+  is_active         Boolean  @default(true)
+  last_used_at      DateTime?
+  expires_at        DateTime?
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  // Relations
+  organization      Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  
+  @@index([organization_id])
+  @@index([key_hash])
+  @@index([key_prefix])
+  @@index([is_active])
+  @@map("api_keys")
+}
+
+// ============================================
+// 9. SUBSCRIPTION PLANS - Pricing plans
+// ============================================
+model SubscriptionPlan {
+  id                String   @id @default(uuid()) @db.Char(36)
+  
+  name              String   @db.VarChar(100)
+  slug              String   @unique @db.VarChar(50)
+  description       String?  @db.Text
+  
+  // Pricing
+  price             Decimal  @db.Decimal(10, 2)
+  currency          String   @default("IDR") @db.VarChar(10)
+  billing_period    BillingPeriod @default(MONTHLY)
+  
+  // Features
+  max_instances     Int      @default(1)
+  max_contacts      Int      @default(1000)
+  max_messages_per_day Int   @default(100)
+  features          Json?    // Array of features
+  
+  // Trial
+  trial_days        Int      @default(7)
+  
+  // Status
+  is_active         Boolean  @default(true)
+  is_public         Boolean  @default(true)
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  // Relations
+  subscriptions     Subscription[]
+  organizations     Organization[]
+  
+  @@index([slug])
+  @@index([is_active])
+  @@map("subscription_plans")
+}
+
+// ============================================
+// 10. SUBSCRIPTIONS - Active subscriptions
+// ============================================
+model Subscription {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  plan_id           String   @db.Char(36)
+  
+  status            SubscriptionStatus @default(ACTIVE)
+  
+  // Billing
+  current_period_start DateTime
+  current_period_end   DateTime
+  cancel_at_period_end Boolean @default(false)
+  canceled_at       DateTime?
+  
+  // Pricing snapshot
+  price             Decimal  @db.Decimal(10, 2)
+  currency          String   @db.VarChar(10)
+  billing_period    BillingPeriod
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  // Relations
+  organization      Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  plan              SubscriptionPlan @relation(fields: [plan_id], references: [id])
+  invoices          Invoice[]
+  
+  @@index([organization_id])
+  @@index([plan_id])
+  @@index([status])
+  @@index([current_period_end])
+  @@map("subscriptions")
+}
+
+// ============================================
+// 11. INVOICES - Payment invoices
+// ============================================
+model Invoice {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  subscription_id   String?  @db.Char(36)
+  
+  invoice_number    String   @unique @db.VarChar(50)
+  
+  // Payment details
+  amount            Decimal  @db.Decimal(10, 2)
+  currency          String   @db.VarChar(10)
+  tax_amount        Decimal  @default(0) @db.Decimal(10, 2)
+  total_amount      Decimal  @db.Decimal(10, 2)
+  
+  // Status
+  status            InvoiceStatus @default(PENDING)
+  payment_method    PaymentMethod @default(MANUAL_TRANSFER)
+  
+  // Payment info
+  paid_at           DateTime?
+  payment_proof_url String?  @db.Text
+  payment_notes     String?  @db.Text
+  
+  // Midtrans
+  midtrans_order_id String?  @unique @db.VarChar(255)
+  midtrans_transaction_id String? @db.VarChar(255)
+  midtrans_payment_type   String? @db.VarChar(50)
+  
+  // Due date
+  due_date          DateTime
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  // Relations
+  organization      Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  subscription      Subscription? @relation(fields: [subscription_id], references: [id])
+  
+  @@index([organization_id])
+  @@index([subscription_id])
+  @@index([invoice_number])
+  @@index([status])
+  @@index([payment_method])
+  @@index([midtrans_order_id])
+  @@index([due_date])
+  @@index([created_at])
+  @@map("invoices")
+}
+
+// ============================================
+// 12. PAYMENT METHODS CONFIG - Midtrans setup
+// ============================================
+model PaymentMethodConfig {
+  id                String   @id @default(uuid()) @db.Char(36)
+  
+  method            PaymentMethod @unique
+  
+  // Configuration
+  is_enabled        Boolean  @default(false)
+  display_name      String   @db.VarChar(100)
+  description       String?  @db.Text
+  
+  // Midtrans config
+  config_data       Json?    // Midtrans keys, etc.
+  
+  // Manual transfer info
+  bank_name         String?  @db.VarChar(100)
+  account_number    String?  @db.VarChar(50)
+  account_holder    String?  @db.VarChar(255)
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  @@map("payment_methods_config")
+}
+
+// ============================================
+// 13. USAGE LOGS - API usage tracking
+// ============================================
+model UsageLog {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  
+  resource_type     String   @db.VarChar(50)
+  action            String   @db.VarChar(50)
+  quantity          Int      @default(1)
+  
+  metadata          Json?
+  
+  created_at        DateTime @default(now())
+  
+  // Relations
+  organization      Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  
+  @@index([organization_id])
+  @@index([resource_type])
+  @@index([action])
+  @@index([created_at])
+  @@map("usage_logs")
+}
+
+// ============================================
+// 14. AUDIT LOGS - Security audit trail
+// ============================================
+model AuditLog {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  user_id           String?  @db.Char(36)
+  
+  action            String   @db.VarChar(100)
+  resource_type     String   @db.VarChar(50)
+  resource_id       String?  @db.Char(36)
+  
+  old_values        Json?
+  new_values        Json?
+  
+  ip_address        String?  @db.VarChar(50)
+  user_agent        String?  @db.Text
+  
+  created_at        DateTime @default(now())
+  
+  // Relations
+  organization      Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  user              User? @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  
+  @@index([organization_id])
+  @@index([user_id])
+  @@index([action])
+  @@index([resource_type])
+  @@index([created_at])
+  @@map("audit_logs")
+}
+
+// ============================================
+// 15. SYSTEM SETTINGS - Global configuration
+// ============================================
+model SystemSetting {
+  id                String   @id @default(uuid()) @db.Char(36)
+  
+  key               String   @unique @db.VarChar(100)
+  value             Json
+  description       String?  @db.Text
+  
+  is_public         Boolean  @default(false)
+  
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  @@index([key])
+  @@map("system_settings")
+}
+
+// ============================================
+// 16. SESSION BACKUPS - Baileys session backup
+// ============================================
+model SessionBackup {
+  id                String   @id @default(uuid()) @db.Char(36)
+  instance_id       String   @db.Char(36)
+  
+  session_data      String   @db.LongText
+  backup_size       Int      // bytes
+  
+  created_at        DateTime @default(now())
+  
+  // Relations
+  instance          WhatsAppInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+  
+  @@index([instance_id])
+  @@index([created_at])
+  @@map("session_backups")
+}
+
+// ============================================
+// 17. BROADCASTS - Bulk message campaigns
+// ============================================
+model Broadcast {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  instance_id       String   @db.Char(36)
+  
+  name              String   @db.VarChar(255)
+  
+  // Message content
+  message_type      MessageType @default(TEXT)
+  content           String?  @db.Text
+  media_url         String?  @db.Text
+  caption           String?  @db.Text
+  
+  // Recipients
+  recipient_type    BroadcastRecipientType @default(ALL_CONTACTS)
+  recipient_filter  Json?    // tags, contact_ids, etc.
+  recipient_count   Int      @default(0)
+  
+  // Scheduling
+  status            BroadcastStatus @default(DRAFT)
+  scheduled_at      DateTime?
+  started_at        DateTime?
+  completed_at      DateTime?
+  
+  // Progress
+  sent_count        Int      @default(0)
+  failed_count      Int      @default(0)
+  
+  // Anti-ban settings
+  delay_min_ms      Int      @default(3000)
+  delay_max_ms      Int      @default(5000)
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  // Relations
+  broadcast_recipients BroadcastRecipient[]
+  
+  @@index([organization_id])
+  @@index([instance_id])
+  @@index([status])
+  @@index([scheduled_at])
+  @@index([created_at])
+  @@map("broadcasts")
+}
+
+// ============================================
+// 18. BROADCAST RECIPIENTS - Individual recipients
+// ============================================
+model BroadcastRecipient {
+  id                String   @id @default(uuid()) @db.Char(36)
+  broadcast_id      String   @db.Char(36)
+  
+  phone_number      String   @db.VarChar(50)
+  contact_name      String?  @db.VarChar(255)
+  
+  // Personalization data
+  variables         Json?    // {name: "John", custom: "value"}
+  
+  // Status
+  status            MessageStatus @default(PENDING)
+  sent_at           DateTime?
+  delivered_at      DateTime?
+  read_at           DateTime?
+  failed_at         DateTime?
+  error_message     String?  @db.Text
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  
+  // Relations
+  broadcast         Broadcast @relation(fields: [broadcast_id], references: [id], onDelete: Cascade)
+  
+  @@index([broadcast_id])
+  @@index([status])
+  @@index([phone_number])
+  @@map("broadcast_recipients")
+}
+
+// ============================================
+// 19. TEAM INVITATIONS - Pending invites
+// ============================================
+model TeamInvitation {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  
+  email             String   @db.VarChar(255)
+  role              UserRole @default(ORG_MEMBER)
+  
+  // Invitation token
+  token             String   @unique @db.VarChar(255)
+  
+  // Status
+  status            InvitationStatus @default(PENDING)
+  
+  // Expiration
+  expires_at        DateTime
+  accepted_at       DateTime?
+  
+  // Who invited
+  invited_by_id     String   @db.Char(36)
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  
+  @@index([organization_id])
+  @@index([email])
+  @@index([token])
+  @@index([status])
+  @@map("team_invitations")
+}
+
+// ============================================
+// 20. MESSAGE TEMPLATES - Reusable templates
+// ============================================
+model MessageTemplate {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  
+  name              String   @db.VarChar(255)
+  category          String?  @db.VarChar(100)
+  
+  // Template content
+  message_type      MessageType @default(TEXT)
+  content           String   @db.Text
+  media_url         String?  @db.Text
+  caption           String?  @db.Text
+  
+  // Variables used
+  variables         Json?    // ["name", "phone", "custom_field"]
+  
+  // Status
+  is_active         Boolean  @default(true)
+  
+  // Usage stats
+  usage_count       Int      @default(0)
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  @@index([organization_id])
+  @@index([category])
+  @@index([is_active])
+  @@map("message_templates")
+}
+
+// ============================================
+// 21. TAGS - Contact tagging system
+// ============================================
+model Tag {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  
+  name              String   @db.VarChar(100)
+  color             String   @default("#6B7280") @db.VarChar(20)
+  description       String?  @db.VarChar(255)
+  
+  // Stats
+  contact_count     Int      @default(0)
+  
+  // Metadata
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  // Relations
+  contact_tags      ContactTag[]
+  
+  @@unique([organization_id, name])
+  @@index([organization_id])
+  @@map("tags")
+}
+
+// ============================================
+// 22. CONTACT TAGS - Many-to-many relation
+// ============================================
+model ContactTag {
+  id                String   @id @default(uuid()) @db.Char(36)
+  contact_id        String   @db.Char(36)
+  tag_id            String   @db.Char(36)
+  
+  created_at        DateTime @default(now())
+  
+  // Relations
+  tag               Tag @relation(fields: [tag_id], references: [id], onDelete: Cascade)
+  
+  @@unique([contact_id, tag_id])
+  @@index([contact_id])
+  @@index([tag_id])
+  @@map("contact_tags")
+}
+
+// ============================================
+// ENUMS
+// ============================================
+
+enum UserRole {
+  SUPER_ADMIN
+  ORG_OWNER
+  ORG_ADMIN
+  ORG_MEMBER
+}
+
+enum InstanceStatus {
+  DISCONNECTED
+  CONNECTING
+  CONNECTED
+  QR_READY
+  ERROR
+  BANNED
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  AUDIO
+  DOCUMENT
+  LOCATION
+  CONTACT
+  STICKER
+}
+
+enum MessageDirection {
+  INCOMING
+  OUTGOING
+}
+
+enum MessageStatus {
+  PENDING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+}
+
+enum WebhookStatus {
+  PENDING
+  PROCESSING
+  DELIVERED
+  FAILED
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  PAST_DUE
+  CANCELED
+  EXPIRED
+}
+
+enum BillingPeriod {
+  MONTHLY
+  QUARTERLY
+  YEARLY
+}
+
+enum InvoiceStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  CANCELED
+}
+
+enum PaymentMethod {
+  MANUAL_TRANSFER
+  MIDTRANS_BANK_TRANSFER
+  MIDTRANS_CREDIT_CARD
+  MIDTRANS_GOPAY
+  MIDTRANS_OVO
+  MIDTRANS_QRIS
+}
+
+enum WarmingPhase {
+  DAY_1_3
+  DAY_4_7
+  DAY_8_14
+  DAY_15_PLUS
+}
+
+enum BroadcastStatus {
+  DRAFT
+  SCHEDULED
+  RUNNING
+  PAUSED
+  COMPLETED
+  FAILED
+}
+
+enum BroadcastRecipientType {
+  ALL_CONTACTS
+  SELECTED_TAGS
+  SELECTED_CONTACTS
+  CSV_UPLOAD
+  MANUAL_INPUT
+}
+
+enum InvitationStatus {
+  PENDING
+  ACCEPTED
+  EXPIRED
+  CANCELED
+}

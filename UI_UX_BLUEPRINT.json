@@ -1,0 +1,1053 @@
+{
+  "project": {
+    "name": "WhatsApp SaaS - UI/UX Blueprint",
+    "version": "1.0.0",
+    "description": "Complete UI/UX specification for WhatsApp SaaS Platform",
+    "design_philosophy": "Clean, Modern, Professional, Easy to Use"
+  },
+
+  "design_system": {
+    "colors": {
+      "primary": {
+        "main": "#25D366",
+        "light": "#5FE89D",
+        "dark": "#128C7E",
+        "description": "WhatsApp green - brand recognition"
+      },
+      "secondary": {
+        "main": "#075E54",
+        "light": "#0A8A7C",
+        "dark": "#053D36"
+      },
+      "accent": {
+        "main": "#34B7F1",
+        "description": "WhatsApp blue for highlights"
+      },
+      "neutral": {
+        "50": "#FAFAFA",
+        "100": "#F5F5F5",
+        "200": "#E5E5E5",
+        "300": "#D4D4D4",
+        "400": "#A3A3A3",
+        "500": "#737373",
+        "600": "#525252",
+        "700": "#404040",
+        "800": "#262626",
+        "900": "#171717"
+      },
+      "semantic": {
+        "success": "#22C55E",
+        "warning": "#F59E0B",
+        "error": "#EF4444",
+        "info": "#3B82F6"
+      },
+      "background": {
+        "primary": "#FFFFFF",
+        "secondary": "#F8FAFC",
+        "tertiary": "#F1F5F9"
+      }
+    },
+    "typography": {
+      "font_family": {
+        "primary": "Inter, system-ui, sans-serif",
+        "monospace": "JetBrains Mono, monospace"
+      },
+      "sizes": {
+        "xs": "12px",
+        "sm": "14px",
+        "base": "16px",
+        "lg": "18px",
+        "xl": "20px",
+        "2xl": "24px",
+        "3xl": "30px",
+        "4xl": "36px"
+      },
+      "weights": {
+        "normal": 400,
+        "medium": 500,
+        "semibold": 600,
+        "bold": 700
+      }
+    },
+    "spacing": {
+      "unit": "4px",
+      "scale": [0, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 80, 96]
+    },
+    "border_radius": {
+      "none": "0",
+      "sm": "4px",
+      "md": "8px",
+      "lg": "12px",
+      "xl": "16px",
+      "full": "9999px"
+    },
+    "shadows": {
+      "sm": "0 1px 2px rgba(0,0,0,0.05)",
+      "md": "0 4px 6px rgba(0,0,0,0.1)",
+      "lg": "0 10px 15px rgba(0,0,0,0.1)",
+      "xl": "0 20px 25px rgba(0,0,0,0.15)"
+    }
+  },
+
+  "layout": {
+    "sidebar": {
+      "width_collapsed": "64px",
+      "width_expanded": "256px",
+      "position": "left",
+      "style": "fixed"
+    },
+    "header": {
+      "height": "64px",
+      "position": "sticky top"
+    },
+    "content": {
+      "max_width": "1440px",
+      "padding": "24px"
+    },
+    "breakpoints": {
+      "mobile": "< 640px",
+      "tablet": "640px - 1024px",
+      "desktop": "> 1024px"
+    }
+  },
+
+  "pages": {
+    "public": {
+      "landing_page": {
+        "url": "/",
+        "sections": [
+          {
+            "name": "Hero",
+            "content": {
+              "headline": "WhatsApp API untuk Bisnis Anda",
+              "subheadline": "Kirim pesan WhatsApp secara otomatis, integrasikan dengan sistem Anda",
+              "cta_primary": "Mulai Gratis 7 Hari",
+              "cta_secondary": "Lihat Demo",
+              "hero_image": "Dashboard preview atau ilustrasi"
+            }
+          },
+          {
+            "name": "Features",
+            "features": [
+              {
+                "icon": "MessageSquare",
+                "title": "Kirim Pesan Massal",
+                "description": "Broadcast ke ribuan kontak dengan mudah"
+              },
+              {
+                "icon": "Webhook",
+                "title": "Webhook & API",
+                "description": "Integrasikan dengan n8n, Zapier, atau sistem Anda"
+              },
+              {
+                "icon": "Users",
+                "title": "Multi-User",
+                "description": "Kelola tim dengan role & permission"
+              },
+              {
+                "icon": "Shield",
+                "title": "Anti-Ban Protection",
+                "description": "Rate limiting & smart delays built-in"
+              },
+              {
+                "icon": "BarChart",
+                "title": "Analytics",
+                "description": "Track delivery, read receipts, & engagement"
+              },
+              {
+                "icon": "Code",
+                "title": "Developer Friendly",
+                "description": "REST API dengan dokumentasi lengkap"
+              }
+            ]
+          },
+          {
+            "name": "Pricing",
+            "plans": [
+              {
+                "name": "Starter",
+                "price": "Rp 99.000/bulan",
+                "features": [
+                  "1 WhatsApp Instance",
+                  "1.000 kontak",
+                  "5.000 pesan/bulan",
+                  "Webhook basic",
+                  "Email support"
+                ],
+                "cta": "Pilih Starter"
+              },
+              {
+                "name": "Business",
+                "price": "Rp 299.000/bulan",
+                "popular": true,
+                "features": [
+                  "5 WhatsApp Instance",
+                  "10.000 kontak",
+                  "50.000 pesan/bulan",
+                  "Webhook unlimited",
+                  "API Access",
+                  "Priority support"
+                ],
+                "cta": "Pilih Business"
+              },
+              {
+                "name": "Enterprise",
+                "price": "Rp 799.000/bulan",
+                "features": [
+                  "Unlimited Instance",
+                  "Unlimited kontak",
+                  "Unlimited pesan",
+                  "Dedicated support",
+                  "Custom integration",
+                  "SLA 99.9%"
+                ],
+                "cta": "Hubungi Sales"
+              }
+            ]
+          },
+          {
+            "name": "Testimonials",
+            "content": "Slider dengan testimoni customer"
+          },
+          {
+            "name": "FAQ",
+            "questions": [
+              "Apakah legal menggunakan WhatsApp API ini?",
+              "Bagaimana cara integrasi dengan sistem saya?",
+              "Apakah ada risiko banned?",
+              "Bagaimana sistem pembayarannya?"
+            ]
+          },
+          {
+            "name": "CTA Final",
+            "headline": "Siap Meningkatkan Bisnis Anda?",
+            "cta": "Daftar Sekarang - Gratis 7 Hari"
+          },
+          {
+            "name": "Footer",
+            "links": ["About", "Pricing", "Documentation", "Contact", "Terms", "Privacy"]
+          }
+        ]
+      },
+      "login_page": {
+        "url": "/login",
+        "layout": "split (form kiri, ilustrasi kanan)",
+        "components": {
+          "form": {
+            "fields": [
+              {"name": "email", "type": "email", "label": "Email", "required": true},
+              {"name": "password", "type": "password", "label": "Password", "required": true}
+            ],
+            "remember_me": true,
+            "forgot_password_link": true,
+            "submit_button": "Masuk",
+            "register_link": "Belum punya akun? Daftar"
+          },
+          "social_login": ["Google (optional)"]
+        }
+      },
+      "register_page": {
+        "url": "/register",
+        "layout": "split",
+        "components": {
+          "form": {
+            "fields": [
+              {"name": "full_name", "type": "text", "label": "Nama Lengkap", "required": true},
+              {"name": "email", "type": "email", "label": "Email", "required": true},
+              {"name": "phone", "type": "tel", "label": "No. WhatsApp", "required": false},
+              {"name": "organization_name", "type": "text", "label": "Nama Bisnis/Perusahaan", "required": true},
+              {"name": "password", "type": "password", "label": "Password", "required": true},
+              {"name": "password_confirm", "type": "password", "label": "Konfirmasi Password", "required": true}
+            ],
+            "terms_checkbox": "Saya setuju dengan Syarat & Ketentuan",
+            "submit_button": "Daftar Gratis",
+            "login_link": "Sudah punya akun? Masuk"
+          }
+        },
+        "post_register_flow": {
+          "redirect_to": "/verify-email-sent",
+          "message": "Kami telah mengirim email verifikasi ke alamat email Anda",
+          "resend_option": true,
+          "resend_cooldown": "60 seconds"
+        }
+      },
+      "verify_email": {
+        "url": "/verify-email/:token",
+        "states": {
+          "verifying": "Loading spinner + 'Memverifikasi email Anda...'",
+          "success": "Checkmark animation + 'Email berhasil diverifikasi!' + redirect to login",
+          "expired": "Error icon + 'Link verifikasi sudah expired' + resend option",
+          "invalid": "Error icon + 'Link verifikasi tidak valid'"
+        }
+      },
+      "forgot_password": {
+        "url": "/forgot-password",
+        "steps": [
+          "Input email",
+          "Check email for reset link",
+          "Set new password"
+        ]
+      }
+    },
+
+    "dashboard": {
+      "common_layout": {
+        "sidebar": {
+          "logo": "Top",
+          "navigation": "Middle (scrollable)",
+          "user_menu": "Bottom",
+          "collapse_toggle": true
+        },
+        "header": {
+          "breadcrumb": "Left",
+          "search": "Center (optional)",
+          "notifications": "Right",
+          "user_dropdown": "Right"
+        }
+      },
+
+      "super_admin": {
+        "sidebar_menu": [
+          {"icon": "LayoutDashboard", "label": "Dashboard", "url": "/admin"},
+          {"icon": "Building2", "label": "Organizations", "url": "/admin/organizations"},
+          {"icon": "Users", "label": "All Users", "url": "/admin/users"},
+          {"icon": "CreditCard", "label": "Subscription Plans", "url": "/admin/plans"},
+          {"icon": "Receipt", "label": "All Invoices", "url": "/admin/invoices"},
+          {"icon": "MessageSquare", "label": "WA Instances", "url": "/admin/instances"},
+          {"icon": "Activity", "label": "System Health", "url": "/admin/health"},
+          {"icon": "FileText", "label": "Audit Logs", "url": "/admin/audit"},
+          {"icon": "Settings", "label": "System Settings", "url": "/admin/settings"}
+        ],
+        "pages": {
+          "dashboard": {
+            "url": "/admin",
+            "widgets": [
+              {
+                "type": "stat_card",
+                "items": [
+                  {"label": "Total Organizations", "value": "dynamic", "icon": "Building2", "trend": "+12%"},
+                  {"label": "Active Instances", "value": "dynamic", "icon": "MessageSquare", "trend": "+5%"},
+                  {"label": "Messages Today", "value": "dynamic", "icon": "Send", "trend": "+23%"},
+                  {"label": "Revenue MTD", "value": "dynamic", "icon": "DollarSign", "trend": "+8%"}
+                ]
+              },
+              {
+                "type": "chart",
+                "title": "Revenue & Growth",
+                "chart_type": "line",
+                "period_selector": ["7d", "30d", "90d", "1y"]
+              },
+              {
+                "type": "chart",
+                "title": "Messages per Day",
+                "chart_type": "bar"
+              },
+              {
+                "type": "table",
+                "title": "Recent Organizations",
+                "columns": ["Name", "Plan", "Instances", "Status", "Created"],
+                "actions": ["View"]
+              },
+              {
+                "type": "table",
+                "title": "Recent Invoices",
+                "columns": ["Invoice #", "Organization", "Amount", "Status", "Date"],
+                "actions": ["View"]
+              }
+            ]
+          },
+          "organizations": {
+            "url": "/admin/organizations",
+            "features": {
+              "list": {
+                "filters": ["Status", "Plan", "Date Range"],
+                "search": "Name, Email",
+                "columns": ["Name", "Owner", "Plan", "Instances", "Status", "Created", "Actions"],
+                "actions": ["View", "Edit", "Suspend", "Delete"]
+              },
+              "detail": {
+                "tabs": ["Overview", "Users", "Instances", "Invoices", "Usage", "Audit Log"],
+                "actions": ["Edit", "Change Plan", "Suspend", "Delete"]
+              }
+            }
+          },
+          "subscription_plans": {
+            "url": "/admin/plans",
+            "features": {
+              "list": {
+                "columns": ["Name", "Price", "Limits", "Active Subs", "Status", "Actions"],
+                "actions": ["Edit", "Disable"]
+              },
+              "create_edit_form": {
+                "fields": [
+                  {"name": "name", "type": "text"},
+                  {"name": "slug", "type": "text"},
+                  {"name": "price", "type": "number"},
+                  {"name": "billing_period", "type": "select", "options": ["monthly", "quarterly", "yearly"]},
+                  {"name": "max_instances", "type": "number"},
+                  {"name": "max_contacts", "type": "number"},
+                  {"name": "max_messages_per_day", "type": "number"},
+                  {"name": "features", "type": "json_editor"},
+                  {"name": "is_active", "type": "toggle"}
+                ]
+              }
+            }
+          },
+          "system_settings": {
+            "url": "/admin/settings",
+            "sections": [
+              {
+                "name": "General",
+                "fields": ["App Name", "App URL", "Support Email"]
+              },
+              {
+                "name": "Payment",
+                "fields": ["Midtrans Config", "Manual Transfer Banks"]
+              },
+              {
+                "name": "WhatsApp",
+                "fields": ["Max Instances per Server", "Anti-Ban Settings", "Session Backup Interval"]
+              },
+              {
+                "name": "Email",
+                "fields": ["SMTP Config", "Email Templates"]
+              }
+            ]
+          }
+        }
+      },
+
+      "org_owner_admin": {
+        "sidebar_menu": [
+          {"icon": "LayoutDashboard", "label": "Dashboard", "url": "/dashboard"},
+          {"icon": "MessageSquare", "label": "WhatsApp", "url": "/dashboard/whatsapp", "children": [
+            {"label": "Instances", "url": "/dashboard/whatsapp/instances"},
+            {"label": "Messages", "url": "/dashboard/whatsapp/messages"},
+            {"label": "Broadcast", "url": "/dashboard/whatsapp/broadcast"}
+          ]},
+          {"icon": "Users", "label": "Contacts", "url": "/dashboard/contacts"},
+          {"icon": "Webhook", "label": "Webhooks", "url": "/dashboard/webhooks"},
+          {"icon": "Key", "label": "API Keys", "url": "/dashboard/api-keys"},
+          {"icon": "FileText", "label": "API Docs", "url": "/dashboard/docs"},
+          {"icon": "UserCog", "label": "Team", "url": "/dashboard/team", "role": "ORG_OWNER"},
+          {"icon": "CreditCard", "label": "Billing", "url": "/dashboard/billing", "role": "ORG_OWNER"},
+          {"icon": "Settings", "label": "Settings", "url": "/dashboard/settings"}
+        ],
+        "pages": {
+          "dashboard": {
+            "url": "/dashboard",
+            "widgets": [
+              {
+                "type": "stat_card",
+                "items": [
+                  {"label": "Active Instances", "value": "3/5", "icon": "MessageSquare"},
+                  {"label": "Messages Today", "value": "1,234", "icon": "Send"},
+                  {"label": "Contacts", "value": "5,678", "icon": "Users"},
+                  {"label": "Webhook Calls", "value": "890", "icon": "Webhook"}
+                ]
+              },
+              {
+                "type": "quick_actions",
+                "title": "Quick Actions",
+                "actions": [
+                  {"icon": "Plus", "label": "New Instance", "action": "modal"},
+                  {"icon": "Send", "label": "Send Message", "action": "modal"},
+                  {"icon": "Upload", "label": "Import Contacts", "action": "modal"},
+                  {"icon": "FileText", "label": "View API Docs", "action": "link"}
+                ]
+              },
+              {
+                "type": "instance_status",
+                "title": "WhatsApp Instances",
+                "show": "All instances with status indicator"
+              },
+              {
+                "type": "chart",
+                "title": "Messages This Week",
+                "chart_type": "area"
+              },
+              {
+                "type": "table",
+                "title": "Recent Messages",
+                "columns": ["To", "Message", "Status", "Time"],
+                "limit": 5
+              }
+            ]
+          },
+          "whatsapp_instances": {
+            "url": "/dashboard/whatsapp/instances",
+            "features": {
+              "list": {
+                "view_mode": ["grid", "list"],
+                "columns": ["Name", "Phone", "Status", "Health", "Messages Today", "Actions"],
+                "status_indicators": {
+                  "connected": {"color": "green", "icon": "CheckCircle"},
+                  "disconnected": {"color": "gray", "icon": "XCircle"},
+                  "connecting": {"color": "yellow", "icon": "Loader", "animated": true},
+                  "qr_ready": {"color": "blue", "icon": "QrCode"},
+                  "banned": {"color": "red", "icon": "Ban"}
+                },
+                "actions": ["Connect", "Disconnect", "View QR", "Settings", "Delete"]
+              },
+              "create_modal": {
+                "title": "Create WhatsApp Instance",
+                "fields": [
+                  {"name": "name", "type": "text", "label": "Instance Name", "placeholder": "e.g., CS Support"},
+                  {"name": "webhook_url", "type": "url", "label": "Webhook URL (optional)"}
+                ],
+                "submit": "Create Instance"
+              },
+              "detail_page": {
+                "url": "/dashboard/whatsapp/instances/:id",
+                "sections": [
+                  {
+                    "name": "Connection",
+                    "content": {
+                      "when_disconnected": {
+                        "qr_code_display": {
+                          "size": "256x256",
+                          "auto_refresh": "30 seconds",
+                          "instruction": "Scan QR Code dengan WhatsApp di HP Anda"
+                        },
+                        "steps": [
+                          "Buka WhatsApp di HP",
+                          "Tap Menu > Linked Devices",
+                          "Tap 'Link a Device'",
+                          "Scan QR Code ini"
+                        ]
+                      },
+                      "when_connected": {
+                        "phone_info": {
+                          "number": "+62xxx",
+                          "name": "Business Name",
+                          "picture": "Profile photo"
+                        },
+                        "stats": ["Connected since", "Messages sent today", "Health score"],
+                        "actions": ["Disconnect", "Refresh"]
+                      }
+                    }
+                  },
+                  {
+                    "name": "Settings",
+                    "fields": [
+                      {"name": "name", "type": "text"},
+                      {"name": "webhook_url", "type": "url"},
+                      {"name": "webhook_events", "type": "checkbox_group", "options": ["message", "status", "qr", "connection"]}
+                    ]
+                  },
+                  {
+                    "name": "Anti-Ban Status",
+                    "content": {
+                      "health_score": "Progress bar 0-100",
+                      "daily_limit": "50/300 messages",
+                      "warming_phase": "Day 5 of 15",
+                      "recommendations": ["Increase gradually", "Vary message content"]
+                    }
+                  }
+                ]
+              }
+            }
+          },
+          "messages": {
+            "url": "/dashboard/whatsapp/messages",
+            "features": {
+              "list": {
+                "filters": ["Instance", "Status", "Direction", "Date Range"],
+                "search": "Phone number, content",
+                "columns": ["Instance", "To/From", "Message", "Status", "Time"],
+                "status_badges": {
+                  "pending": "yellow",
+                  "sent": "blue",
+                  "delivered": "green",
+                  "read": "green + checkmarks",
+                  "failed": "red"
+                }
+              },
+              "send_modal": {
+                "title": "Send Message",
+                "fields": [
+                  {"name": "instance_id", "type": "select", "label": "From Instance"},
+                  {"name": "to", "type": "phone", "label": "To (Phone Number)"},
+                  {"name": "message_type", "type": "tabs", "options": ["Text", "Image", "Document", "Location"]},
+                  {"name": "content", "type": "textarea", "label": "Message"},
+                  {"name": "media", "type": "file_upload", "label": "Attach Media", "conditional": true}
+                ],
+                "preview": "Show message preview",
+                "submit": "Send Message"
+              }
+            }
+          },
+          "broadcast": {
+            "url": "/dashboard/whatsapp/broadcast",
+            "features": {
+              "create": {
+                "steps": [
+                  {
+                    "name": "Recipients",
+                    "options": ["All Contacts", "Select Tags", "Upload CSV", "Manual Input"]
+                  },
+                  {
+                    "name": "Message",
+                    "fields": [
+                      {"name": "instance_id", "type": "select"},
+                      {"name": "message_type", "type": "tabs"},
+                      {"name": "content", "type": "textarea", "variables": ["{{name}}", "{{phone}}"]},
+                      {"name": "media", "type": "file_upload"}
+                    ]
+                  },
+                  {
+                    "name": "Schedule",
+                    "options": ["Send Now", "Schedule for Later"],
+                    "delay_settings": "Auto delay between messages (anti-ban)"
+                  },
+                  {
+                    "name": "Review",
+                    "show": ["Total recipients", "Estimated time", "Cost/limits"]
+                  }
+                ]
+              },
+              "history": {
+                "columns": ["Name", "Recipients", "Sent", "Failed", "Status", "Date", "Actions"],
+                "actions": ["View Report", "Duplicate", "Delete"]
+              }
+            }
+          },
+          "contacts": {
+            "url": "/dashboard/contacts",
+            "features": {
+              "list": {
+                "filters": ["Instance", "Tags", "Date Added"],
+                "search": "Name, Phone",
+                "columns": ["Name", "Phone", "Tags", "Last Message", "Actions"],
+                "bulk_actions": ["Add Tag", "Remove Tag", "Delete", "Export"]
+              },
+              "import": {
+                "formats": ["CSV", "Excel"],
+                "mapping": "Column mapping UI",
+                "preview": "Show first 10 rows"
+              },
+              "detail": {
+                "info": ["Name", "Phone", "Tags", "Custom Fields", "Notes"],
+                "history": "Message history with this contact"
+              }
+            }
+          },
+          "webhooks": {
+            "url": "/dashboard/webhooks",
+            "features": {
+              "list": {
+                "columns": ["Instance", "URL", "Events", "Status", "Last Triggered", "Actions"],
+                "actions": ["Edit", "Test", "View Logs", "Delete"]
+              },
+              "logs": {
+                "url": "/dashboard/webhooks/:id/logs",
+                "columns": ["Event", "Status Code", "Response Time", "Time"],
+                "expandable": "Show request/response body"
+              },
+              "test_modal": {
+                "title": "Test Webhook",
+                "select_event": "Choose event type to test",
+                "result": "Show response"
+              }
+            }
+          },
+          "api_keys": {
+            "url": "/dashboard/api-keys",
+            "features": {
+              "list": {
+                "columns": ["Name", "Key (masked)", "Permissions", "Last Used", "Created", "Actions"],
+                "actions": ["Copy", "Revoke"]
+              },
+              "create_modal": {
+                "title": "Create API Key",
+                "fields": [
+                  {"name": "name", "type": "text", "label": "Key Name"},
+                  {"name": "permissions", "type": "checkbox_group", "options": ["read", "write", "delete"]},
+                  {"name": "expires_at", "type": "date", "label": "Expiration (optional)"}
+                ],
+                "on_create": {
+                  "show_key_once": true,
+                  "warning": "This key will only be shown once. Copy it now!"
+                }
+              }
+            }
+          },
+          "api_docs": {
+            "url": "/dashboard/docs",
+            "content": {
+              "embedded_swagger": true,
+              "quick_start": "Getting started guide",
+              "code_examples": ["cURL", "JavaScript", "Python", "PHP"],
+              "postman_collection": "Download button"
+            }
+          },
+          "team": {
+            "url": "/dashboard/team",
+            "role_required": "ORG_OWNER",
+            "features": {
+              "list": {
+                "columns": ["Name", "Email", "Role", "Status", "Last Active", "Actions"],
+                "actions": ["Edit Role", "Disable", "Remove"]
+              },
+              "invite_modal": {
+                "title": "Invite Team Member",
+                "fields": [
+                  {"name": "email", "type": "email"},
+                  {"name": "role", "type": "select", "options": ["Admin", "Member"]}
+                ],
+                "submit": "Send Invitation"
+              },
+              "role_descriptions": {
+                "ORG_ADMIN": "Can manage instances, messages, contacts, webhooks, API keys",
+                "ORG_MEMBER": "Can view and use instances, send messages, manage contacts"
+              }
+            }
+          },
+          "billing": {
+            "url": "/dashboard/billing",
+            "role_required": "ORG_OWNER",
+            "sections": [
+              {
+                "name": "Current Plan",
+                "content": {
+                  "plan_name": "Business",
+                  "price": "Rp 299.000/bulan",
+                  "renewal_date": "15 Feb 2026",
+                  "usage": {
+                    "instances": "3/5",
+                    "contacts": "5,678/10,000",
+                    "messages": "23,456/50,000"
+                  },
+                  "actions": ["Upgrade Plan", "Cancel Subscription"]
+                }
+              },
+              {
+                "name": "Payment Method",
+                "options": ["Bank Transfer", "Midtrans (Cards, E-wallet, QRIS)"],
+                "bank_info": {
+                  "bank": "BCA",
+                  "account": "1234567890",
+                  "name": "PT WhatsApp SaaS"
+                }
+              },
+              {
+                "name": "Invoices",
+                "columns": ["Invoice #", "Amount", "Status", "Date", "Actions"],
+                "actions": ["View", "Download PDF", "Pay Now"],
+                "status_badges": {
+                  "paid": "green",
+                  "pending": "yellow",
+                  "overdue": "red"
+                }
+              },
+              {
+                "name": "Payment Flow",
+                "manual_transfer": {
+                  "steps": [
+                    "Click 'Pay Now' on invoice",
+                    "Transfer to bank account shown",
+                    "Upload payment proof",
+                    "Wait for verification (1x24 jam)",
+                    "Invoice marked as Paid"
+                  ]
+                },
+                "midtrans": {
+                  "steps": [
+                    "Click 'Pay Now'",
+                    "Choose payment method",
+                    "Complete payment",
+                    "Automatic verification"
+                  ]
+                }
+              }
+            ]
+          },
+          "settings": {
+            "url": "/dashboard/settings",
+            "tabs": [
+              {
+                "name": "Profile",
+                "fields": ["Name", "Email", "Phone", "Avatar"]
+              },
+              {
+                "name": "Organization",
+                "fields": ["Organization Name", "Logo", "Timezone"],
+                "role_required": "ORG_OWNER"
+              },
+              {
+                "name": "Security",
+                "fields": ["Change Password", "Two-Factor Auth (optional)"]
+              },
+              {
+                "name": "Notifications",
+                "fields": ["Email notifications", "Browser notifications"]
+              }
+            ]
+          }
+        }
+      },
+
+      "org_member": {
+        "sidebar_menu": [
+          {"icon": "LayoutDashboard", "label": "Dashboard", "url": "/dashboard"},
+          {"icon": "MessageSquare", "label": "WhatsApp", "url": "/dashboard/whatsapp/instances"},
+          {"icon": "Users", "label": "Contacts", "url": "/dashboard/contacts"},
+          {"icon": "Settings", "label": "Settings", "url": "/dashboard/settings"}
+        ],
+        "restrictions": {
+          "cannot_access": ["Team", "Billing", "API Keys", "Webhooks"],
+          "limited_actions": ["Cannot delete instances", "Cannot change org settings"]
+        }
+      }
+    }
+  },
+
+  "components": {
+    "data_display": {
+      "stat_card": {
+        "variants": ["default", "with_trend", "with_icon", "with_progress"],
+        "props": ["label", "value", "icon", "trend", "trend_direction"]
+      },
+      "data_table": {
+        "features": ["sorting", "filtering", "pagination", "row_selection", "column_visibility", "export"],
+        "row_actions": "Dropdown or inline buttons"
+      },
+      "status_badge": {
+        "variants": ["success", "warning", "error", "info", "neutral"],
+        "with_dot": true
+      },
+      "avatar": {
+        "variants": ["image", "initials", "icon"],
+        "sizes": ["xs", "sm", "md", "lg", "xl"]
+      }
+    },
+    "forms": {
+      "input": {
+        "variants": ["text", "email", "password", "number", "tel", "url"],
+        "states": ["default", "focus", "error", "disabled"],
+        "with_icon": true,
+        "with_addon": true
+      },
+      "select": {
+        "variants": ["single", "multi", "searchable", "creatable"]
+      },
+      "textarea": {
+        "auto_resize": true,
+        "character_count": true
+      },
+      "file_upload": {
+        "variants": ["dropzone", "button"],
+        "preview": true,
+        "progress": true
+      },
+      "phone_input": {
+        "country_selector": true,
+        "format_on_type": true
+      }
+    },
+    "feedback": {
+      "toast": {
+        "positions": ["top-right", "top-center", "bottom-right"],
+        "variants": ["success", "error", "warning", "info"],
+        "auto_dismiss": "5 seconds"
+      },
+      "modal": {
+        "sizes": ["sm", "md", "lg", "xl", "full"],
+        "with_footer": true,
+        "close_on_overlay": true
+      },
+      "alert": {
+        "variants": ["success", "error", "warning", "info"],
+        "dismissible": true
+      },
+      "skeleton": {
+        "for": ["text", "avatar", "card", "table"]
+      },
+      "empty_state": {
+        "with_illustration": true,
+        "with_action": true
+      }
+    },
+    "navigation": {
+      "sidebar": {
+        "collapsible": true,
+        "nested_menu": true,
+        "active_indicator": true
+      },
+      "breadcrumb": {
+        "with_home": true,
+        "truncate_long": true
+      },
+      "tabs": {
+        "variants": ["underline", "pills", "enclosed"],
+        "with_icon": true
+      },
+      "pagination": {
+        "with_page_size": true,
+        "with_jump_to": true
+      }
+    },
+    "whatsapp_specific": {
+      "qr_code_display": {
+        "size": "256px",
+        "with_logo": "WhatsApp logo center",
+        "auto_refresh_indicator": true,
+        "countdown_timer": true
+      },
+      "message_bubble": {
+        "variants": ["sent", "received"],
+        "with_status": true,
+        "with_timestamp": true,
+        "media_preview": true
+      },
+      "instance_card": {
+        "content": ["status_indicator", "phone", "name", "health_bar", "quick_actions"]
+      },
+      "health_score": {
+        "display": "circular_progress",
+        "color_coding": {
+          "0-30": "red",
+          "31-60": "yellow",
+          "61-100": "green"
+        }
+      }
+    }
+  },
+
+  "user_flows": {
+    "onboarding": {
+      "name": "New User Onboarding",
+      "steps": [
+        {
+          "step": 1,
+          "name": "Welcome",
+          "content": "Welcome message + what to expect"
+        },
+        {
+          "step": 2,
+          "name": "Create First Instance",
+          "content": "Guide to create WhatsApp instance",
+          "action": "Create Instance button"
+        },
+        {
+          "step": 3,
+          "name": "Scan QR Code",
+          "content": "Instructions + QR display",
+          "waiting": "Waiting for scan..."
+        },
+        {
+          "step": 4,
+          "name": "Connected!",
+          "content": "Success message",
+          "next_actions": ["Send first message", "Import contacts", "Setup webhook"]
+        },
+        {
+          "step": 5,
+          "name": "Explore Dashboard",
+          "content": "Quick tour of features",
+          "skip_option": true
+        }
+      ],
+      "progress_indicator": "Step X of 5"
+    },
+    "send_message": {
+      "name": "Send Message Flow",
+      "paths": {
+        "from_dashboard": "Quick action button → Modal → Send",
+        "from_messages_page": "Send button → Modal → Send",
+        "from_contact_detail": "Message button → Pre-filled modal → Send"
+      }
+    },
+    "payment_manual": {
+      "name": "Manual Transfer Payment",
+      "steps": [
+        {"step": 1, "action": "User clicks Pay on invoice"},
+        {"step": 2, "action": "System shows bank details + unique amount"},
+        {"step": 3, "action": "User transfers via banking app"},
+        {"step": 4, "action": "User uploads payment proof"},
+        {"step": 5, "action": "Admin verifies payment"},
+        {"step": 6, "action": "Invoice marked Paid, subscription activated"}
+      ]
+    },
+    "payment_midtrans": {
+      "name": "Midtrans Payment",
+      "steps": [
+        {"step": 1, "action": "User clicks Pay on invoice"},
+        {"step": 2, "action": "Midtrans popup opens"},
+        {"step": 3, "action": "User selects payment method"},
+        {"step": 4, "action": "User completes payment"},
+        {"step": 5, "action": "Webhook received, auto-verify"},
+        {"step": 6, "action": "Invoice marked Paid, subscription activated"}
+      ]
+    }
+  },
+
+  "responsive_design": {
+    "mobile": {
+      "sidebar": "Hidden, toggle with hamburger menu",
+      "tables": "Horizontal scroll or card view",
+      "modals": "Full screen",
+      "navigation": "Bottom tab bar (optional)"
+    },
+    "tablet": {
+      "sidebar": "Collapsed by default",
+      "layout": "Flexible grid"
+    },
+    "desktop": {
+      "sidebar": "Expanded",
+      "layout": "Fixed max-width"
+    }
+  },
+
+  "accessibility": {
+    "requirements": [
+      "WCAG 2.1 AA compliance",
+      "Keyboard navigation",
+      "Screen reader support",
+      "Color contrast ratios",
+      "Focus indicators",
+      "Alt text for images",
+      "ARIA labels"
+    ]
+  },
+
+  "animations": {
+    "page_transitions": "Fade in/out",
+    "loading_states": "Skeleton + spinner",
+    "success_feedback": "Checkmark animation",
+    "error_shake": "Input shake on error",
+    "sidebar_collapse": "Smooth width transition",
+    "dropdown": "Fade + slide down",
+    "modal": "Fade + scale up"
+  },
+
+  "implementation_priority": {
+    "phase_1_mvp": [
+      "Login/Register pages",
+      "Dashboard layout (sidebar, header)",
+      "WhatsApp Instances list + detail",
+      "QR Code display",
+      "Send message modal",
+      "Messages list"
+    ],
+    "phase_2_core": [
+      "Contacts management",
+      "Webhooks setup",
+      "API Keys",
+      "Basic billing page"
+    ],
+    "phase_3_complete": [
+      "Broadcast feature",
+      "Team management",
+      "Full billing with Midtrans",
+      "Super admin pages",
+      "Landing page"
+    ],
+    "phase_4_polish": [
+      "Onboarding flow",
+      "Analytics dashboard",
+      "Email notifications",
+      "Mobile optimization"
+    ]
+  }
+}

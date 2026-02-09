@@ -1,0 +1,832 @@
+/**
+ * External API Routes - For n8n, Make, Zapier, and other integrations
+ * @module external-api/routes
+ * 
+ * All routes use X-API-Key header authentication
+ * 
+ * Usage:
+ *   curl -H "X-API-Key: wa_xxxxxxxxxxxx" http://localhost:3001/api/v1/messages/send-text
+ */
+
+import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import { authenticateApiKey, requireApiKeyPermission, ApiKeyAuthenticatedRequest } from '../../middleware/api-key-auth';
+import { WhatsAppService } from '../whatsapp/whatsapp.service';
+import { contactService } from '../contacts/contacts.service';
+import { listContactsQuerySchema, createContactSchema, updateContactSchema, contactIdParamSchema } from '../contacts/contacts.schema';
+import { createWebhookService } from '../webhooks/webhooks.service';
+import { getStorageStats } from '../../workers/media-cleanup.worker';
+import prisma from '../../config/database';
+import logger from '../../config/logger';
+
+// ============================================
+// EXTERNAL API ROUTES (API Key Auth)
+// ============================================
+
+export async function externalApiRoutes(fastify: FastifyInstance) {
+  const whatsappService = new WhatsAppService(fastify);
+  const webhookService = createWebhookService(fastify);
+
+  // All routes require API Key authentication
+  fastify.addHook('preHandler', authenticateApiKey);
+
+  // ============================================
+  // INSTANCE ENDPOINTS
+  // ============================================
+
+  /**
+   * List WhatsApp instances
+   * GET /api/v1/instances
+   * Permission: instance:read
+   */
+  fastify.get('/instances', {
+    schema: {
+      description: 'List all WhatsApp instances',
+      tags: ['External API - Instances'],
+      security: [{ apiKeyAuth: [] }],
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    
+    const instances = await prisma.whatsAppInstance.findMany({
+      where: { organization_id: req.apiKey.organization_id },
+      select: {
+        id: true,
+        name: true,
+        phone_number: true,
+        status: true,
+        is_active: true,
+        created_at: true,
+      },
+      orderBy: { created_at: 'desc' },
+    });
+
+    return reply.send({
+      success: true,
+      data: instances,
+    });
+  });
+
+  /**
+   * Get instance status
+   * GET /api/v1/instances/:instanceId/status
+   * Permission: instance:read
+   */
+  fastify.get('/instances/:instanceId/status', {
+    schema: {
+      description: 'Get WhatsApp instance connection status',
+      tags: ['External API - Instances'],
+      security: [{ apiKeyAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['instanceId'],
+        properties: {
+          instanceId: { type: 'string', format: 'uuid' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const { instanceId } = request.params as { instanceId: string };
+
+    const result = await whatsappService.getStatus(instanceId, req.apiKey.organization_id);
+    return reply.send({ success: true, data: result });
+  });
+
+  // ============================================
+  // MESSAGING ENDPOINTS
+  // ============================================
+
+  /**
+   * Send text message
+   * POST /api/v1/messages/send-text
+   * Permission: message:send
+   */
+  fastify.post('/messages/send-text', {
+    preHandler: [requireApiKeyPermission('message:send')],
+    schema: {
+      description: 'Send a text message via WhatsApp',
+      tags: ['External API - Messages'],
+      security: [{ apiKeyAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['instance_id', 'to', 'message'],
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'WhatsApp instance ID' },
+          to: { type: 'string', description: 'Phone number (e.g., 628123456789)' },
+          message: { type: 'string', maxLength: 4096, description: 'Text message content' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const body = request.body as { instance_id: string; to: string; message: string };
+
+    const result = await whatsappService.sendText(
+      body.instance_id,
+      req.apiKey.organization_id,
+      { to: body.to, message: body.message, delay: 0 }
+    );
+
+    logger.info({ instanceId: body.instance_id, to: body.to, apiKeyId: req.apiKey.id }, 'External API: text message sent');
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Send media message (image, video, document, audio)
+   * POST /api/v1/messages/send-media
+   * Permission: message:send
+   */
+  fastify.post('/messages/send-media', {
+    preHandler: [requireApiKeyPermission('message:send')],
+    schema: {
+      description: 'Send a media message (image/video/audio/document)',
+      tags: ['External API - Messages'],
+      security: [{ apiKeyAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['instance_id', 'to', 'media_url', 'media_type'],
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'WhatsApp instance ID' },
+          to: { type: 'string', description: 'Phone number (e.g., 628123456789)' },
+          media_url: { type: 'string', format: 'uri', description: 'URL of the media file' },
+          media_type: { type: 'string', enum: ['image', 'video', 'audio', 'document'], description: 'Type of media' },
+          caption: { type: 'string', maxLength: 1024, description: 'Caption for the media (not for audio)' },
+          filename: { type: 'string', description: 'Filename for document' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const body = request.body as {
+      instance_id: string;
+      to: string;
+      media_url: string;
+      media_type: 'image' | 'video' | 'audio' | 'document';
+      caption?: string;
+      filename?: string;
+    };
+
+    const result = await whatsappService.sendMedia(
+      body.instance_id,
+      req.apiKey.organization_id,
+      {
+        to: body.to,
+        media_url: body.media_url,
+        media_type: body.media_type,
+        caption: body.caption,
+        filename: body.filename,
+      }
+    );
+
+    logger.info({ instanceId: body.instance_id, to: body.to, type: body.media_type, apiKeyId: req.apiKey.id }, 'External API: media message sent');
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Send location message
+   * POST /api/v1/messages/send-location
+   * Permission: message:send
+   */
+  fastify.post('/messages/send-location', {
+    preHandler: [requireApiKeyPermission('message:send')],
+    schema: {
+      description: 'Send a location message',
+      tags: ['External API - Messages'],
+      security: [{ apiKeyAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['instance_id', 'to', 'latitude', 'longitude'],
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'WhatsApp instance ID' },
+          to: { type: 'string', description: 'Phone number (e.g., 628123456789)' },
+          latitude: { type: 'number', minimum: -90, maximum: 90 },
+          longitude: { type: 'number', minimum: -180, maximum: 180 },
+          name: { type: 'string', description: 'Location name' },
+          address: { type: 'string', description: 'Location address' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const body = request.body as {
+      instance_id: string;
+      to: string;
+      latitude: number;
+      longitude: number;
+      name?: string;
+      address?: string;
+    };
+
+    const result = await whatsappService.sendLocation(
+      body.instance_id,
+      req.apiKey.organization_id,
+      {
+        to: body.to,
+        latitude: body.latitude,
+        longitude: body.longitude,
+        name: body.name,
+        address: body.address,
+      }
+    );
+
+    logger.info({ instanceId: body.instance_id, to: body.to, apiKeyId: req.apiKey.id }, 'External API: location message sent');
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Get messages
+   * GET /api/v1/messages
+   * Permission: message:read
+   */
+  fastify.get('/messages', {
+    preHandler: [requireApiKeyPermission('message:read')],
+    schema: {
+      description: 'Get message history. Filter by instance, direction, phone number, or search content.',
+      tags: ['External API - Messages'],
+      security: [{ apiKeyAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'Filter by instance ID' },
+          direction: { type: 'string', enum: ['INCOMING', 'OUTGOING'] },
+          phone_number: { type: 'string', description: 'Filter by phone number (e.g., 628123456789)' },
+          chat_jid: { type: 'string', description: 'Filter by chat JID (e.g., 628123456789@s.whatsapp.net)' },
+          search: { type: 'string', description: 'Search message content (keyword)' },
+          page: { type: 'string', default: '1' },
+          limit: { type: 'string', default: '20' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const query = request.query as {
+      instance_id?: string;
+      direction?: 'INCOMING' | 'OUTGOING';
+      phone_number?: string;
+      chat_jid?: string;
+      search?: string;
+      page?: string;
+      limit?: string;
+    };
+
+    const page = query.page ? parseInt(query.page) : 1;
+    const limit = query.limit ? parseInt(query.limit) : 20;
+    const skip = (page - 1) * limit;
+
+    // Build where clause with new filters
+    const where: any = {
+      organization_id: req.apiKey.organization_id,
+    };
+
+    if (query.instance_id) where.instance_id = query.instance_id;
+    if (query.direction) where.direction = query.direction;
+
+    // Filter by phone number (convert to JID)
+    if (query.phone_number) {
+      const phone = query.phone_number.replace(/[^0-9]/g, '');
+      where.chat_jid = `${phone}@s.whatsapp.net`;
+    }
+
+    // Filter by chat_jid directly
+    if (query.chat_jid) {
+      where.chat_jid = query.chat_jid;
+    }
+
+    // Search message content
+    if (query.search) {
+      where.content = { contains: query.search };
+    }
+
+    const [messages, total] = await Promise.all([
+      prisma.message.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { created_at: 'desc' },
+        select: {
+          id: true,
+          instance_id: true,
+          wa_message_id: true,
+          chat_jid: true,
+          sender_jid: true,
+          message_type: true,
+          content: true,
+          media_url: true,
+          direction: true,
+          status: true,
+          sent_at: true,
+          delivered_at: true,
+          read_at: true,
+          created_at: true,
+        },
+      }),
+      prisma.message.count({ where }),
+    ]);
+
+    return reply.send({
+      success: true,
+      data: messages,
+      pagination: {
+        total,
+        page,
+        limit,
+        total_pages: Math.ceil(total / limit),
+      },
+    });
+  });
+
+  // ============================================
+  // CONTACT ENDPOINTS
+  // ============================================
+
+  /**
+   * List contacts
+   * GET /api/v1/contacts
+   * Permission: contact:read
+   */
+  fastify.get('/contacts', {
+    preHandler: [requireApiKeyPermission('contact:read')],
+    schema: {
+      description: 'List contacts',
+      tags: ['External API - Contacts'],
+      security: [{ apiKeyAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'Filter by instance ID' },
+          search: { type: 'string', description: 'Search by name or phone' },
+          page: { type: 'string', default: '1' },
+          limit: { type: 'string', default: '20' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const query = listContactsQuerySchema.parse(request.query);
+
+    const result = await contactService.listContacts(req.apiKey.organization_id, query);
+    return reply.send({ success: true, ...result });
+  });
+
+  /**
+   * Create contact
+   * POST /api/v1/contacts
+   * Permission: contact:write
+   */
+  fastify.post('/contacts', {
+    preHandler: [requireApiKeyPermission('contact:write')],
+    schema: {
+      description: 'Create a new contact',
+      tags: ['External API - Contacts'],
+      security: [{ apiKeyAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['instance_id', 'phone_number'],
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'WhatsApp instance ID' },
+          phone_number: { type: 'string', description: 'Phone number (e.g., 628123456789)' },
+          name: { type: 'string', description: 'Contact name' },
+          notes: { type: 'string', description: 'Notes about contact' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Tags for contact' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const body = createContactSchema.parse(request.body);
+
+    const result = await contactService.createContact(req.apiKey.organization_id, body);
+
+    logger.info({ phone: body.phone_number, apiKeyId: req.apiKey.id }, 'External API: contact created');
+    return reply.status(201).send({ success: true, data: result });
+  });
+
+  /**
+   * Update contact
+   * PATCH /api/v1/contacts/:id
+   * Permission: contact:write
+   */
+  fastify.patch('/contacts/:id', {
+    preHandler: [requireApiKeyPermission('contact:write')],
+    schema: {
+      description: 'Update an existing contact',
+      tags: ['External API - Contacts'],
+      security: [{ apiKeyAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid', description: 'Contact ID' },
+        },
+      },
+      body: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', maxLength: 255, description: 'Contact name' },
+          notes: { type: 'string', maxLength: 5000, description: 'Notes about contact' },
+          tags: { type: 'array', items: { type: 'string' }, description: 'Tags for contact' },
+          custom_fields: { type: 'object', description: 'Custom fields (key-value pairs)' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const params = contactIdParamSchema.parse(request.params);
+    const body = updateContactSchema.parse(request.body);
+
+    const result = await contactService.updateContact(params.id, req.apiKey.organization_id, body);
+
+    logger.info({ contactId: params.id, apiKeyId: req.apiKey.id }, 'External API: contact updated');
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Delete contact
+   * DELETE /api/v1/contacts/:id
+   * Permission: contact:delete
+   */
+  fastify.delete('/contacts/:id', {
+    preHandler: [requireApiKeyPermission('contact:delete')],
+    schema: {
+      description: 'Delete a contact',
+      tags: ['External API - Contacts'],
+      security: [{ apiKeyAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid', description: 'Contact ID' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const params = contactIdParamSchema.parse(request.params);
+
+    await contactService.deleteContact(params.id, req.apiKey.organization_id);
+
+    logger.info({ contactId: params.id, apiKeyId: req.apiKey.id }, 'External API: contact deleted');
+    return reply.send({ success: true, data: { message: 'Contact deleted successfully' } });
+  });
+
+  /**
+   * Get single contact
+   * GET /api/v1/contacts/:id
+   * Permission: contact:read
+   */
+  fastify.get('/contacts/:id', {
+    preHandler: [requireApiKeyPermission('contact:read')],
+    schema: {
+      description: 'Get a single contact by ID',
+      tags: ['External API - Contacts'],
+      security: [{ apiKeyAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid', description: 'Contact ID' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const params = contactIdParamSchema.parse(request.params);
+
+    const contact = await prisma.contact.findFirst({
+      where: {
+        id: params.id,
+        organization_id: req.apiKey.organization_id,
+      },
+    });
+
+    if (!contact) {
+      return reply.status(404).send({ success: false, error: { code: 'CONTACT_NOT_FOUND', message: 'Contact not found' } });
+    }
+
+    return reply.send({ success: true, data: contact });
+  });
+
+  // ============================================
+  // CONVERSATION ENDPOINTS
+  // ============================================
+
+  /**
+   * List conversations (grouped chats per contact)
+   * GET /api/v1/conversations
+   * Permission: message:read
+   */
+  fastify.get('/conversations', {
+    preHandler: [requireApiKeyPermission('message:read')],
+    schema: {
+      description: 'List conversations grouped by contact (chat threads)',
+      tags: ['External API - Conversations'],
+      security: [{ apiKeyAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'Filter by instance ID' },
+          page: { type: 'string', default: '1' },
+          limit: { type: 'string', default: '20' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const query = request.query as { instance_id?: string; page?: string; limit?: string };
+    const page = query.page ? parseInt(query.page) : 1;
+    const limit = query.limit ? parseInt(query.limit) : 20;
+    const offset = (page - 1) * limit;
+
+    // Build where clause
+    const where: any = {
+      organization_id: req.apiKey.organization_id,
+      chat_jid: { not: '' },
+    };
+    if (query.instance_id) where.instance_id = query.instance_id;
+
+    // Get distinct conversations using raw query for reliability
+    const allMessages = await prisma.message.findMany({
+      where,
+      select: {
+        chat_jid: true,
+        instance_id: true,
+        created_at: true,
+      },
+      orderBy: { created_at: 'desc' },
+    });
+
+    // Group by chat_jid + instance_id
+    const conversationMap = new Map<string, { chat_jid: string; instance_id: string; count: number; last_at: Date }>();
+    for (const msg of allMessages) {
+      if (!msg.chat_jid) continue;
+      const key = `${msg.chat_jid}__${msg.instance_id}`;
+      if (!conversationMap.has(key)) {
+        conversationMap.set(key, {
+          chat_jid: msg.chat_jid,
+          instance_id: msg.instance_id,
+          count: 0,
+          last_at: msg.created_at,
+        });
+      }
+      conversationMap.get(key)!.count++;
+    }
+
+    // Sort by last message time desc
+    const conversations = Array.from(conversationMap.values())
+      .sort((a, b) => b.last_at.getTime() - a.last_at.getTime());
+
+    const total = conversations.length;
+    const paginatedConversations = conversations.slice(offset, offset + limit);
+
+    // Enrich with last message and contact info
+    const enrichedConversations = await Promise.all(
+      paginatedConversations.map(async (conv) => {
+        // Get last message
+        const lastMessage = await prisma.message.findFirst({
+          where: {
+            chat_jid: conv.chat_jid,
+            instance_id: conv.instance_id,
+            organization_id: req.apiKey.organization_id,
+          },
+          orderBy: { created_at: 'desc' },
+          select: {
+            id: true,
+            content: true,
+            message_type: true,
+            direction: true,
+            status: true,
+            created_at: true,
+          },
+        });
+
+        // Get unread count (incoming messages not read)
+        const unreadCount = await prisma.message.count({
+          where: {
+            chat_jid: conv.chat_jid,
+            instance_id: conv.instance_id,
+            organization_id: req.apiKey.organization_id,
+            direction: 'INCOMING',
+            read_at: null,
+          },
+        });
+
+        // Try to find contact
+        const phoneNumber = conv.chat_jid?.replace('@s.whatsapp.net', '').replace('@g.us', '').replace('@lid', '') || '';
+        const contact = await prisma.contact.findFirst({
+          where: {
+            organization_id: req.apiKey.organization_id,
+            instance_id: conv.instance_id,
+            jid: conv.chat_jid || undefined,
+          },
+          select: { id: true, name: true, phone_number: true, tags: true },
+        });
+
+        return {
+          chat_jid: conv.chat_jid,
+          instance_id: conv.instance_id,
+          phone_number: phoneNumber,
+          contact_name: contact?.name || null,
+          contact_id: contact?.id || null,
+          contact_tags: contact?.tags || [],
+          total_messages: conv.count,
+          unread_count: unreadCount,
+          last_message: lastMessage,
+          last_message_at: conv.last_at,
+        };
+      })
+    );
+
+    return reply.send({
+      success: true,
+      data: enrichedConversations,
+      pagination: {
+        total,
+        page,
+        limit,
+        total_pages: Math.ceil(total / limit),
+      },
+    });
+  });
+
+  // ============================================
+  // WEBHOOK CONFIG ENDPOINTS (via API Key)
+  // ============================================
+
+  /**
+   * Get webhook configuration
+   * GET /api/v1/webhook/config
+   * Permission: webhook:read
+   */
+  fastify.get('/webhook/config', {
+    preHandler: [requireApiKeyPermission('webhook:read')],
+    schema: {
+      description: 'Get webhook configurations for your instances',
+      tags: ['External API - Webhook'],
+      security: [{ apiKeyAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'Filter by instance ID' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const query = request.query as { instance_id?: string };
+
+    const where: any = {
+      organization_id: req.apiKey.organization_id,
+      deleted_at: null,
+      webhook_url: { not: null },
+    };
+    if (query.instance_id) where.id = query.instance_id;
+
+    const instances = await prisma.whatsAppInstance.findMany({
+      where,
+      select: {
+        id: true,
+        name: true,
+        webhook_url: true,
+        webhook_events: true,
+        is_active: true,
+        created_at: true,
+      },
+    });
+
+    const configs = instances.map((inst) => ({
+      instance_id: inst.id,
+      instance_name: inst.name,
+      url: inst.webhook_url,
+      events: inst.webhook_events as string[] || [],
+      is_active: inst.is_active && !!inst.webhook_url,
+      created_at: inst.created_at.toISOString(),
+    }));
+
+    return reply.send({ success: true, data: configs });
+  });
+
+  /**
+   * Create/Update webhook configuration
+   * PUT /api/v1/webhook/config
+   * Permission: webhook:write
+   */
+  fastify.put('/webhook/config', {
+    preHandler: [requireApiKeyPermission('webhook:write')],
+    schema: {
+      description: 'Create or update webhook configuration for an instance',
+      tags: ['External API - Webhook'],
+      security: [{ apiKeyAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['instance_id', 'url', 'events'],
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'WhatsApp instance ID' },
+          url: { type: 'string', format: 'uri', description: 'Webhook endpoint URL (must be HTTPS in production)' },
+          events: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'Events to subscribe to (e.g., message.received, connection.connected)',
+          },
+          secret: { type: 'string', description: 'Webhook secret for signature verification (optional)' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const body = request.body as { instance_id: string; url: string; events: string[]; secret?: string };
+
+    // Verify instance belongs to org
+    const instance = await prisma.whatsAppInstance.findFirst({
+      where: { id: body.instance_id, organization_id: req.apiKey.organization_id, deleted_at: null },
+    });
+    if (!instance) {
+      return reply.status(404).send({ success: false, error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' } });
+    }
+
+    // Update webhook config
+    const updated = await prisma.whatsAppInstance.update({
+      where: { id: body.instance_id },
+      data: {
+        webhook_url: body.url,
+        webhook_events: body.events,
+        ...(body.secret && { webhook_secret: body.secret }),
+      },
+      select: { id: true, name: true, webhook_url: true, webhook_events: true, webhook_secret: true, is_active: true, created_at: true },
+    });
+
+    logger.info({ instanceId: body.instance_id, apiKeyId: req.apiKey.id }, 'External API: webhook config updated');
+
+    return reply.send({
+      success: true,
+      data: {
+        instance_id: updated.id,
+        instance_name: updated.name,
+        url: updated.webhook_url,
+        events: updated.webhook_events as string[],
+        has_secret: !!updated.webhook_secret,
+        is_active: updated.is_active && !!updated.webhook_url,
+        created_at: updated.created_at.toISOString(),
+      },
+    });
+  });
+
+  /**
+   * Delete webhook configuration
+   * DELETE /api/v1/webhook/config/:instanceId
+   * Permission: webhook:write
+   */
+  fastify.delete('/webhook/config/:instanceId', {
+    preHandler: [requireApiKeyPermission('webhook:write')],
+    schema: {
+      description: 'Remove webhook configuration from an instance',
+      tags: ['External API - Webhook'],
+      security: [{ apiKeyAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['instanceId'],
+        properties: {
+          instanceId: { type: 'string', format: 'uuid' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const { instanceId } = request.params as { instanceId: string };
+
+    await webhookService.deleteWebhookConfig(req.apiKey.organization_id, instanceId);
+
+    logger.info({ instanceId, apiKeyId: req.apiKey.id }, 'External API: webhook config deleted');
+    return reply.send({ success: true, data: { message: 'Webhook configuration removed' } });
+  });
+
+  // ============================================
+  // HEALTH & STORAGE ENDPOINTS
+  // ============================================
+
+  /**
+   * Health check / verify API key
+   * GET /api/v1/health
+   * No specific permission required (just valid API key)
+   */
+  fastify.get('/health', {
+    schema: {
+      description: 'Verify API key and check API health',
+      tags: ['External API - Health'],
+      security: [{ apiKeyAuth: [] }],
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+
+    return reply.send({
+      success: true,
+      data: {
+        status: 'ok',
+        api_key_id: req.apiKey.id,
+        organization_id: req.apiKey.organization_id,
+        permissions: req.apiKey.permissions,
+        rate_limit: req.apiKey.rate_limit,
+        timestamp: new Date().toISOString(),
+      },
+    });
+  });
+}

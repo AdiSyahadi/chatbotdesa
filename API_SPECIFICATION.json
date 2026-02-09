@@ -1,0 +1,1318 @@
+{
+  "project": {
+    "name": "WhatsApp SaaS - API Specification",
+    "version": "1.0.0",
+    "description": "Complete API endpoint specification for WhatsApp SaaS Platform",
+    "base_url": "/api",
+    "content_type": "application/json"
+  },
+
+  "authentication": {
+    "type": "Bearer Token (JWT)",
+    "header": "Authorization: Bearer <token>",
+    "token_types": {
+      "access_token": {
+        "expiry": "15 minutes",
+        "usage": "API requests"
+      },
+      "refresh_token": {
+        "expiry": "7 days",
+        "usage": "Get new access token"
+      },
+      "api_key": {
+        "format": "wsa_xxxxxxxxxxxx",
+        "header": "X-API-Key: <key>",
+        "usage": "External integrations"
+      }
+    }
+  },
+
+  "rate_limits": {
+    "default": {
+      "requests_per_minute": 60,
+      "requests_per_hour": 1000
+    },
+    "by_endpoint": {
+      "auth/login": "5/minute (prevent brute force)",
+      "auth/register": "3/minute",
+      "whatsapp/send": "20/minute per instance",
+      "broadcast/create": "5/minute",
+      "webhook/test": "10/minute"
+    },
+    "by_plan": {
+      "starter": "1000 requests/hour",
+      "business": "5000 requests/hour",
+      "enterprise": "unlimited"
+    }
+  },
+
+  "error_codes": {
+    "format": {
+      "success": false,
+      "error": {
+        "code": "ERROR_CODE",
+        "message": "Human readable message",
+        "details": {}
+      }
+    },
+    "codes": {
+      "AUTH_001": "Invalid credentials",
+      "AUTH_002": "Token expired",
+      "AUTH_003": "Token invalid",
+      "AUTH_004": "Refresh token expired",
+      "AUTH_005": "Account not verified",
+      "AUTH_006": "Account suspended",
+      "AUTH_007": "Insufficient permissions",
+      
+      "ORG_001": "Organization not found",
+      "ORG_002": "Organization limit reached",
+      "ORG_003": "Organization suspended",
+      
+      "INSTANCE_001": "Instance not found",
+      "INSTANCE_002": "Instance limit reached",
+      "INSTANCE_003": "Instance not connected",
+      "INSTANCE_004": "Instance banned",
+      "INSTANCE_005": "QR code expired",
+      "INSTANCE_006": "Session invalid",
+      
+      "MESSAGE_001": "Message failed to send",
+      "MESSAGE_002": "Invalid phone number",
+      "MESSAGE_003": "Media upload failed",
+      "MESSAGE_004": "Daily limit reached",
+      "MESSAGE_005": "Rate limit exceeded",
+      "MESSAGE_006": "Contact not found",
+      
+      "BROADCAST_001": "Broadcast not found",
+      "BROADCAST_002": "No recipients",
+      "BROADCAST_003": "Broadcast already running",
+      "BROADCAST_004": "Broadcast limit reached",
+      
+      "WEBHOOK_001": "Webhook not found",
+      "WEBHOOK_002": "Invalid webhook URL",
+      "WEBHOOK_003": "Webhook delivery failed",
+      
+      "PAYMENT_001": "Invoice not found",
+      "PAYMENT_002": "Payment failed",
+      "PAYMENT_003": "Invalid payment proof",
+      "PAYMENT_004": "Subscription expired",
+      
+      "VALIDATION_001": "Invalid request body",
+      "VALIDATION_002": "Missing required field",
+      "VALIDATION_003": "Invalid field format",
+      
+      "SYSTEM_001": "Internal server error",
+      "SYSTEM_002": "Service unavailable",
+      "SYSTEM_003": "Database error",
+      "SYSTEM_004": "Redis error"
+    }
+  },
+
+  "endpoints": {
+    "auth": {
+      "base": "/api/auth",
+      "endpoints": [
+        {
+          "method": "POST",
+          "path": "/register",
+          "description": "Register new user & organization",
+          "auth_required": false,
+          "request": {
+            "body": {
+              "full_name": "string, required, min 2 chars",
+              "email": "string, required, valid email",
+              "password": "string, required, min 8 chars",
+              "organization_name": "string, required, min 2 chars",
+              "phone": "string, optional"
+            }
+          },
+          "response": {
+            "success": {
+              "user": {"id": "uuid", "email": "string", "full_name": "string", "role": "ORG_OWNER"},
+              "organization": {"id": "uuid", "name": "string", "slug": "string"},
+              "message": "Registration successful. Please verify your email."
+            }
+          },
+          "errors": ["VALIDATION_001", "VALIDATION_002"]
+        },
+        {
+          "method": "POST",
+          "path": "/login",
+          "description": "Login and get tokens",
+          "auth_required": false,
+          "request": {
+            "body": {
+              "email": "string, required",
+              "password": "string, required"
+            }
+          },
+          "response": {
+            "success": {
+              "access_token": "jwt string",
+              "refresh_token": "jwt string",
+              "expires_in": 900,
+              "user": {"id": "uuid", "email": "string", "role": "string"}
+            }
+          },
+          "errors": ["AUTH_001", "AUTH_005", "AUTH_006"]
+        },
+        {
+          "method": "POST",
+          "path": "/refresh",
+          "description": "Refresh access token",
+          "auth_required": false,
+          "request": {
+            "body": {
+              "refresh_token": "string, required"
+            }
+          },
+          "response": {
+            "success": {
+              "access_token": "jwt string",
+              "expires_in": 900
+            }
+          },
+          "errors": ["AUTH_003", "AUTH_004"]
+        },
+        {
+          "method": "GET",
+          "path": "/me",
+          "description": "Get current user info",
+          "auth_required": true,
+          "response": {
+            "success": {
+              "user": {
+                "id": "uuid",
+                "email": "string",
+                "full_name": "string",
+                "role": "string",
+                "organization": {"id": "uuid", "name": "string"}
+              }
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/logout",
+          "description": "Logout and invalidate refresh token",
+          "auth_required": true,
+          "response": {
+            "success": {"message": "Logged out successfully"}
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/forgot-password",
+          "description": "Request password reset email",
+          "auth_required": false,
+          "request": {
+            "body": {"email": "string, required"}
+          },
+          "response": {
+            "success": {"message": "Reset email sent if account exists"}
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/reset-password",
+          "description": "Reset password with token",
+          "auth_required": false,
+          "request": {
+            "body": {
+              "token": "string, required",
+              "password": "string, required, min 8 chars"
+            }
+          },
+          "response": {
+            "success": {"message": "Password reset successful"}
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/verify-email/:token",
+          "description": "Verify email address",
+          "auth_required": false,
+          "response": {
+            "success": {"message": "Email verified successfully"}
+          }
+        }
+      ]
+    },
+
+    "whatsapp_instances": {
+      "base": "/api/whatsapp/instances",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/",
+          "description": "List all instances for organization",
+          "auth_required": true,
+          "roles": ["ORG_OWNER", "ORG_ADMIN", "ORG_MEMBER"],
+          "query_params": {
+            "status": "optional, filter by status",
+            "page": "optional, default 1",
+            "limit": "optional, default 20"
+          },
+          "response": {
+            "success": {
+              "data": [
+                {
+                  "id": "uuid",
+                  "name": "string",
+                  "phone_number": "string or null",
+                  "status": "CONNECTED|DISCONNECTED|CONNECTING|QR_READY|BANNED",
+                  "health_score": 85,
+                  "daily_message_count": 45,
+                  "daily_limit": 100,
+                  "warming_phase": "DAY_8_14",
+                  "connected_at": "datetime or null",
+                  "created_at": "datetime"
+                }
+              ],
+              "pagination": {
+                "total": 100,
+                "page": 1,
+                "limit": 20,
+                "total_pages": 5
+              }
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "description": "Create new WhatsApp instance",
+          "auth_required": true,
+          "roles": ["ORG_OWNER", "ORG_ADMIN"],
+          "request": {
+            "body": {
+              "name": "string, required",
+              "webhook_url": "string, optional, valid URL",
+              "webhook_events": "array, optional, ['message', 'status', 'connection']"
+            }
+          },
+          "response": {
+            "success": {
+              "id": "uuid",
+              "name": "string",
+              "status": "DISCONNECTED",
+              "created_at": "datetime"
+            }
+          },
+          "errors": ["INSTANCE_002", "ORG_002"]
+        },
+        {
+          "method": "GET",
+          "path": "/:id",
+          "description": "Get instance details",
+          "auth_required": true,
+          "response": {
+            "success": {
+              "id": "uuid",
+              "name": "string",
+              "phone_number": "string or null",
+              "status": "string",
+              "health_score": 85,
+              "daily_message_count": 45,
+              "daily_limit": 100,
+              "warming_phase": "DAY_8_14",
+              "webhook_url": "string or null",
+              "webhook_events": ["message", "status"],
+              "connected_at": "datetime or null",
+              "created_at": "datetime"
+            }
+          }
+        },
+        {
+          "method": "PATCH",
+          "path": "/:id",
+          "description": "Update instance settings",
+          "auth_required": true,
+          "roles": ["ORG_OWNER", "ORG_ADMIN"],
+          "request": {
+            "body": {
+              "name": "string, optional",
+              "webhook_url": "string, optional",
+              "webhook_events": "array, optional"
+            }
+          }
+        },
+        {
+          "method": "DELETE",
+          "path": "/:id",
+          "description": "Delete instance (disconnect first)",
+          "auth_required": true,
+          "roles": ["ORG_OWNER", "ORG_ADMIN"]
+        },
+        {
+          "method": "POST",
+          "path": "/:id/connect",
+          "description": "Start connection and generate QR code",
+          "auth_required": true,
+          "response": {
+            "success": {
+              "status": "QR_READY",
+              "qr_code": "base64 image data",
+              "expires_in": 30
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/disconnect",
+          "description": "Disconnect WhatsApp session",
+          "auth_required": true,
+          "response": {
+            "success": {
+              "status": "DISCONNECTED",
+              "message": "Instance disconnected"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:id/qr",
+          "description": "Get current QR code (if status is QR_READY)",
+          "auth_required": true,
+          "response": {
+            "success": {
+              "qr_code": "base64 image data",
+              "expires_in": 25
+            }
+          },
+          "errors": ["INSTANCE_003", "INSTANCE_005"]
+        },
+        {
+          "method": "GET",
+          "path": "/:id/status",
+          "description": "Get real-time connection status",
+          "auth_required": true,
+          "response": {
+            "success": {
+              "status": "CONNECTED",
+              "phone_number": "+62812xxx",
+              "phone_name": "Business Name",
+              "battery": 85,
+              "is_charging": true
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/:id/restart",
+          "description": "Restart instance connection",
+          "auth_required": true,
+          "roles": ["ORG_OWNER", "ORG_ADMIN"]
+        }
+      ]
+    },
+
+    "messages": {
+      "base": "/api/whatsapp/messages",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/",
+          "description": "List messages",
+          "auth_required": true,
+          "query_params": {
+            "instance_id": "optional, filter by instance",
+            "chat_jid": "optional, filter by chat",
+            "status": "optional, PENDING|SENT|DELIVERED|READ|FAILED",
+            "direction": "optional, INCOMING|OUTGOING",
+            "start_date": "optional, ISO date",
+            "end_date": "optional, ISO date",
+            "page": "optional, default 1",
+            "limit": "optional, default 50"
+          },
+          "response": {
+            "success": {
+              "data": [
+                {
+                  "id": "uuid",
+                  "instance_id": "uuid",
+                  "wa_message_id": "string",
+                  "chat_jid": "62812xxx@s.whatsapp.net",
+                  "message_type": "TEXT|IMAGE|VIDEO|DOCUMENT",
+                  "content": "message text",
+                  "media_url": "url or null",
+                  "direction": "OUTGOING",
+                  "status": "DELIVERED",
+                  "sent_at": "datetime",
+                  "delivered_at": "datetime",
+                  "read_at": "datetime or null"
+                }
+              ],
+              "pagination": {}
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/send",
+          "description": "Send a message",
+          "auth_required": true,
+          "request": {
+            "body": {
+              "instance_id": "uuid, required",
+              "to": "string, required, phone number with country code (62812xxx)",
+              "type": "string, optional, default TEXT",
+              "content": "string, required for TEXT",
+              "media_url": "string, required for IMAGE/VIDEO/DOCUMENT",
+              "caption": "string, optional, for media messages",
+              "filename": "string, optional, for DOCUMENT"
+            }
+          },
+          "response": {
+            "success": {
+              "id": "uuid",
+              "wa_message_id": "BAE5xxxx",
+              "status": "PENDING",
+              "to": "62812xxx@s.whatsapp.net"
+            }
+          },
+          "errors": ["INSTANCE_003", "MESSAGE_002", "MESSAGE_004", "MESSAGE_005"]
+        },
+        {
+          "method": "POST",
+          "path": "/send-bulk",
+          "description": "Send message to multiple recipients",
+          "auth_required": true,
+          "request": {
+            "body": {
+              "instance_id": "uuid, required",
+              "recipients": ["62812xxx", "62813xxx"],
+              "type": "string, optional",
+              "content": "string, required",
+              "delay_ms": "number, optional, delay between messages"
+            }
+          },
+          "response": {
+            "success": {
+              "queued": 10,
+              "batch_id": "uuid"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:id",
+          "description": "Get message details",
+          "auth_required": true
+        },
+        {
+          "method": "POST",
+          "path": "/:id/retry",
+          "description": "Retry failed message",
+          "auth_required": true
+        }
+      ]
+    },
+
+    "contacts": {
+      "base": "/api/contacts",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/",
+          "description": "List contacts",
+          "auth_required": true,
+          "query_params": {
+            "instance_id": "optional",
+            "tags": "optional, comma separated",
+            "search": "optional, search name/phone",
+            "page": "optional",
+            "limit": "optional"
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "description": "Create contact manually",
+          "auth_required": true,
+          "request": {
+            "body": {
+              "instance_id": "uuid, required",
+              "phone_number": "string, required",
+              "name": "string, optional",
+              "tags": "array, optional",
+              "custom_fields": "object, optional",
+              "notes": "string, optional"
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/import",
+          "description": "Import contacts from CSV",
+          "auth_required": true,
+          "request": {
+            "content_type": "multipart/form-data",
+            "body": {
+              "instance_id": "uuid, required",
+              "file": "CSV file, required",
+              "mapping": "object, column mapping"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:id",
+          "description": "Get contact details"
+        },
+        {
+          "method": "PATCH",
+          "path": "/:id",
+          "description": "Update contact"
+        },
+        {
+          "method": "DELETE",
+          "path": "/:id",
+          "description": "Delete contact"
+        },
+        {
+          "method": "POST",
+          "path": "/bulk-tag",
+          "description": "Add/remove tags from multiple contacts",
+          "auth_required": true,
+          "request": {
+            "body": {
+              "contact_ids": ["uuid", "uuid"],
+              "action": "add|remove",
+              "tags": ["tag1", "tag2"]
+            }
+          }
+        }
+      ]
+    },
+
+    "tags": {
+      "base": "/api/tags",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/",
+          "description": "List all tags"
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "description": "Create tag",
+          "request": {
+            "body": {
+              "name": "string, required",
+              "color": "string, optional, hex color"
+            }
+          }
+        },
+        {
+          "method": "PATCH",
+          "path": "/:id",
+          "description": "Update tag"
+        },
+        {
+          "method": "DELETE",
+          "path": "/:id",
+          "description": "Delete tag"
+        }
+      ]
+    },
+
+    "broadcasts": {
+      "base": "/api/broadcasts",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/",
+          "description": "List broadcasts"
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "description": "Create broadcast campaign",
+          "request": {
+            "body": {
+              "name": "string, required",
+              "instance_id": "uuid, required",
+              "message_type": "TEXT|IMAGE|VIDEO|DOCUMENT",
+              "content": "string, required",
+              "media_url": "string, optional",
+              "caption": "string, optional",
+              "recipient_type": "ALL_CONTACTS|SELECTED_TAGS|SELECTED_CONTACTS|CSV_UPLOAD",
+              "recipient_filter": {
+                "tags": ["tag1"],
+                "contact_ids": ["uuid"]
+              },
+              "scheduled_at": "datetime, optional",
+              "delay_min_ms": "number, default 3000",
+              "delay_max_ms": "number, default 5000"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:id",
+          "description": "Get broadcast details with recipient stats"
+        },
+        {
+          "method": "POST",
+          "path": "/:id/start",
+          "description": "Start broadcast"
+        },
+        {
+          "method": "POST",
+          "path": "/:id/pause",
+          "description": "Pause running broadcast"
+        },
+        {
+          "method": "POST",
+          "path": "/:id/resume",
+          "description": "Resume paused broadcast"
+        },
+        {
+          "method": "DELETE",
+          "path": "/:id",
+          "description": "Cancel/delete broadcast"
+        },
+        {
+          "method": "GET",
+          "path": "/:id/recipients",
+          "description": "List broadcast recipients with status"
+        }
+      ]
+    },
+
+    "webhooks": {
+      "base": "/api/webhooks",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/",
+          "description": "List webhooks"
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "description": "Create webhook",
+          "request": {
+            "body": {
+              "instance_id": "uuid, required",
+              "url": "string, required, valid HTTPS URL",
+              "events": ["message.received", "message.sent", "connection.update"],
+              "secret": "string, optional, for signature verification"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:id",
+          "description": "Get webhook details"
+        },
+        {
+          "method": "PATCH",
+          "path": "/:id",
+          "description": "Update webhook"
+        },
+        {
+          "method": "DELETE",
+          "path": "/:id",
+          "description": "Delete webhook"
+        },
+        {
+          "method": "POST",
+          "path": "/:id/test",
+          "description": "Send test webhook"
+        },
+        {
+          "method": "GET",
+          "path": "/:id/logs",
+          "description": "Get webhook delivery logs"
+        }
+      ]
+    },
+
+    "api_keys": {
+      "base": "/api/api-keys",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/",
+          "description": "List API keys (masked)"
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "description": "Create API key",
+          "request": {
+            "body": {
+              "name": "string, required",
+              "permissions": ["read", "write", "delete"],
+              "expires_at": "datetime, optional"
+            }
+          },
+          "response": {
+            "success": {
+              "id": "uuid",
+              "name": "string",
+              "key": "wsa_xxxxxxxxxxxx (SHOWN ONLY ONCE!)",
+              "key_prefix": "wsa_xxxx",
+              "permissions": ["read", "write"],
+              "created_at": "datetime"
+            }
+          },
+          "note": "Key is only shown once upon creation!"
+        },
+        {
+          "method": "DELETE",
+          "path": "/:id",
+          "description": "Revoke API key"
+        }
+      ]
+    },
+
+    "team": {
+      "base": "/api/team",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/members",
+          "description": "List team members",
+          "roles": ["ORG_OWNER"]
+        },
+        {
+          "method": "POST",
+          "path": "/invite",
+          "description": "Invite team member",
+          "roles": ["ORG_OWNER"],
+          "request": {
+            "body": {
+              "email": "string, required",
+              "role": "ORG_ADMIN|ORG_MEMBER"
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/invite/:token/accept",
+          "description": "Accept team invitation",
+          "auth_required": false
+        },
+        {
+          "method": "PATCH",
+          "path": "/members/:id/role",
+          "description": "Change member role",
+          "roles": ["ORG_OWNER"]
+        },
+        {
+          "method": "DELETE",
+          "path": "/members/:id",
+          "description": "Remove team member",
+          "roles": ["ORG_OWNER"]
+        }
+      ]
+    },
+
+    "templates": {
+      "base": "/api/templates",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/",
+          "description": "List message templates"
+        },
+        {
+          "method": "POST",
+          "path": "/",
+          "description": "Create template",
+          "request": {
+            "body": {
+              "name": "string, required",
+              "category": "string, optional",
+              "message_type": "TEXT|IMAGE|VIDEO|DOCUMENT",
+              "content": "string, required, can include {{variable}}",
+              "media_url": "string, optional",
+              "caption": "string, optional"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/:id",
+          "description": "Get template"
+        },
+        {
+          "method": "PATCH",
+          "path": "/:id",
+          "description": "Update template"
+        },
+        {
+          "method": "DELETE",
+          "path": "/:id",
+          "description": "Delete template"
+        }
+      ]
+    },
+
+    "billing": {
+      "base": "/api/billing",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/subscription",
+          "description": "Get current subscription"
+        },
+        {
+          "method": "GET",
+          "path": "/plans",
+          "description": "List available plans"
+        },
+        {
+          "method": "POST",
+          "path": "/subscribe",
+          "description": "Subscribe to plan",
+          "request": {
+            "body": {
+              "plan_id": "uuid, required"
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/cancel",
+          "description": "Cancel subscription"
+        },
+        {
+          "method": "GET",
+          "path": "/invoices",
+          "description": "List invoices"
+        },
+        {
+          "method": "GET",
+          "path": "/invoices/:id",
+          "description": "Get invoice details"
+        },
+        {
+          "method": "POST",
+          "path": "/invoices/:id/pay",
+          "description": "Pay invoice (redirect to Midtrans or show bank details)"
+        },
+        {
+          "method": "POST",
+          "path": "/invoices/:id/upload-proof",
+          "description": "Upload payment proof for manual transfer",
+          "request": {
+            "content_type": "multipart/form-data",
+            "body": {
+              "file": "image file, required"
+            }
+          }
+        },
+        {
+          "method": "GET",
+          "path": "/usage",
+          "description": "Get current usage stats"
+        }
+      ]
+    },
+
+    "organization": {
+      "base": "/api/organization",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/",
+          "description": "Get organization details"
+        },
+        {
+          "method": "PATCH",
+          "path": "/",
+          "description": "Update organization",
+          "roles": ["ORG_OWNER"],
+          "request": {
+            "body": {
+              "name": "string, optional",
+              "email": "string, optional",
+              "phone": "string, optional",
+              "logo_url": "string, optional"
+            }
+          }
+        }
+      ]
+    },
+
+    "user": {
+      "base": "/api/user",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/profile",
+          "description": "Get user profile"
+        },
+        {
+          "method": "PATCH",
+          "path": "/profile",
+          "description": "Update profile",
+          "request": {
+            "body": {
+              "full_name": "string, optional",
+              "phone": "string, optional",
+              "avatar_url": "string, optional"
+            }
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/change-password",
+          "description": "Change password",
+          "request": {
+            "body": {
+              "current_password": "string, required",
+              "new_password": "string, required"
+            }
+          }
+        },
+        {
+          "method": "PATCH",
+          "path": "/notifications",
+          "description": "Update notification preferences",
+          "request": {
+            "body": {
+              "notify_email": "boolean",
+              "notify_browser": "boolean"
+            }
+          }
+        }
+      ]
+    },
+
+    "admin": {
+      "base": "/api/admin",
+      "note": "SUPER_ADMIN only endpoints",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/dashboard",
+          "description": "Admin dashboard stats"
+        },
+        {
+          "method": "GET",
+          "path": "/organizations",
+          "description": "List all organizations"
+        },
+        {
+          "method": "GET",
+          "path": "/organizations/:id",
+          "description": "Get organization details"
+        },
+        {
+          "method": "POST",
+          "path": "/organizations/:id/suspend",
+          "description": "Suspend organization"
+        },
+        {
+          "method": "POST",
+          "path": "/organizations/:id/activate",
+          "description": "Activate organization"
+        },
+        {
+          "method": "GET",
+          "path": "/users",
+          "description": "List all users"
+        },
+        {
+          "method": "GET",
+          "path": "/plans",
+          "description": "List subscription plans"
+        },
+        {
+          "method": "POST",
+          "path": "/plans",
+          "description": "Create subscription plan"
+        },
+        {
+          "method": "PATCH",
+          "path": "/plans/:id",
+          "description": "Update subscription plan"
+        },
+        {
+          "method": "GET",
+          "path": "/invoices",
+          "description": "List all invoices"
+        },
+        {
+          "method": "POST",
+          "path": "/invoices/:id/verify",
+          "description": "Verify manual payment"
+        },
+        {
+          "method": "GET",
+          "path": "/instances",
+          "description": "List all WhatsApp instances"
+        },
+        {
+          "method": "GET",
+          "path": "/audit-logs",
+          "description": "View audit logs"
+        },
+        {
+          "method": "GET",
+          "path": "/system-settings",
+          "description": "Get system settings"
+        },
+        {
+          "method": "PATCH",
+          "path": "/system-settings",
+          "description": "Update system settings"
+        }
+      ]
+    },
+
+    "health": {
+      "base": "/api",
+      "endpoints": [
+        {
+          "method": "GET",
+          "path": "/health",
+          "description": "Health check endpoint",
+          "auth_required": false,
+          "response": {
+            "success": {
+              "status": "healthy",
+              "timestamp": "datetime",
+              "services": {
+                "database": "ok",
+                "redis": "ok",
+                "storage": "ok"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+
+  "webhook_payloads": {
+    "description": "Webhook payload format sent to client URLs",
+    "common_fields": {
+      "event": "string, event type",
+      "timestamp": "ISO datetime",
+      "instance_id": "uuid",
+      "organization_id": "uuid"
+    },
+    "events": {
+      "message.received": {
+        "description": "Incoming message from WhatsApp",
+        "payload": {
+          "event": "message.received",
+          "timestamp": "2026-02-05T10:30:00Z",
+          "instance_id": "uuid",
+          "data": {
+            "message_id": "BAE5xxxx",
+            "from": "62812xxx@s.whatsapp.net",
+            "from_name": "John Doe",
+            "type": "TEXT",
+            "content": "Hello!",
+            "media_url": "null or URL",
+            "timestamp": "2026-02-05T10:30:00Z"
+          }
+        }
+      },
+      "message.sent": {
+        "description": "Outgoing message status update",
+        "payload": {
+          "event": "message.sent",
+          "timestamp": "2026-02-05T10:30:05Z",
+          "instance_id": "uuid",
+          "data": {
+            "message_id": "uuid (our ID)",
+            "wa_message_id": "BAE5xxxx",
+            "to": "62812xxx@s.whatsapp.net",
+            "status": "SENT"
+          }
+        }
+      },
+      "message.delivered": {
+        "payload": {
+          "event": "message.delivered",
+          "data": {
+            "message_id": "uuid",
+            "wa_message_id": "BAE5xxxx",
+            "status": "DELIVERED"
+          }
+        }
+      },
+      "message.read": {
+        "payload": {
+          "event": "message.read",
+          "data": {
+            "message_id": "uuid",
+            "wa_message_id": "BAE5xxxx",
+            "status": "READ"
+          }
+        }
+      },
+      "message.failed": {
+        "payload": {
+          "event": "message.failed",
+          "data": {
+            "message_id": "uuid",
+            "error": "Number not on WhatsApp"
+          }
+        }
+      },
+      "connection.update": {
+        "description": "Instance connection status changed",
+        "payload": {
+          "event": "connection.update",
+          "timestamp": "2026-02-05T10:30:00Z",
+          "instance_id": "uuid",
+          "data": {
+            "status": "CONNECTED|DISCONNECTED|QR_READY",
+            "phone_number": "62812xxx or null",
+            "reason": "logout|banned|connection_lost"
+          }
+        }
+      },
+      "qr.update": {
+        "description": "New QR code generated",
+        "payload": {
+          "event": "qr.update",
+          "data": {
+            "qr_code": "base64 image"
+          }
+        }
+      }
+    },
+    "signature_verification": {
+      "description": "Verify webhook authenticity",
+      "header": "X-Webhook-Signature",
+      "algorithm": "HMAC-SHA256",
+      "verification": "const expectedSignature = crypto.createHmac('sha256', webhookSecret).update(JSON.stringify(payload)).digest('hex'); const isValid = signature === expectedSignature;"
+    }
+  },
+
+  "baileys_events": {
+    "description": "Baileys library events to handle",
+    "events": {
+      "connection.update": {
+        "description": "Connection state changed",
+        "states": ["open", "close", "connecting"],
+        "handle": "Update instance status, trigger webhook"
+      },
+      "creds.update": {
+        "description": "Session credentials updated",
+        "handle": "Save to database, backup session"
+      },
+      "messages.upsert": {
+        "description": "New message received/sent",
+        "types": ["notify", "append"],
+        "handle": "Save message, trigger webhook"
+      },
+      "messages.update": {
+        "description": "Message status updated (delivered, read)",
+        "handle": "Update message status, trigger webhook"
+      },
+      "messages.delete": {
+        "description": "Message deleted",
+        "handle": "Mark message as deleted"
+      },
+      "presence.update": {
+        "description": "Contact presence (online, typing)",
+        "handle": "Optional - forward to webhook"
+      },
+      "contacts.upsert": {
+        "description": "New contacts synced",
+        "handle": "Save/update contacts"
+      },
+      "contacts.update": {
+        "description": "Contact info updated",
+        "handle": "Update contact"
+      },
+      "groups.upsert": {
+        "description": "Group info",
+        "handle": "Save group as contact"
+      }
+    }
+  },
+
+  "anti_ban_strategy": {
+    "description": "Built-in protection against WhatsApp bans",
+    "warming_phases": {
+      "DAY_1_3": {
+        "daily_limit": 10,
+        "delay_min_ms": 10000,
+        "delay_max_ms": 30000
+      },
+      "DAY_4_7": {
+        "daily_limit": 30,
+        "delay_min_ms": 5000,
+        "delay_max_ms": 15000
+      },
+      "DAY_8_14": {
+        "daily_limit": 100,
+        "delay_min_ms": 3000,
+        "delay_max_ms": 8000
+      },
+      "DAY_15_PLUS": {
+        "daily_limit": 300,
+        "delay_min_ms": 2000,
+        "delay_max_ms": 5000
+      }
+    },
+    "health_score_factors": {
+      "account_age": "+20 for > 7 days",
+      "daily_limit_usage": "-10 if > 80%",
+      "message_failures": "-5 per failure",
+      "reported_by_users": "-20 per report",
+      "business_account": "+10"
+    },
+    "auto_pause": {
+      "trigger": "health_score < 30",
+      "action": "Pause sending, notify user"
+    }
+  },
+
+  "email_templates": {
+    "list": [
+      {
+        "name": "email_verification",
+        "subject": "Verifikasi Email Anda - WhatsApp SaaS",
+        "variables": ["full_name", "verification_link"]
+      },
+      {
+        "name": "password_reset",
+        "subject": "Reset Password - WhatsApp SaaS",
+        "variables": ["full_name", "reset_link"]
+      },
+      {
+        "name": "team_invitation",
+        "subject": "Anda Diundang Bergabung - WhatsApp SaaS",
+        "variables": ["inviter_name", "organization_name", "role", "invitation_link"]
+      },
+      {
+        "name": "invoice_created",
+        "subject": "Invoice Baru - WhatsApp SaaS",
+        "variables": ["invoice_number", "amount", "due_date", "payment_link"]
+      },
+      {
+        "name": "payment_confirmed",
+        "subject": "Pembayaran Dikonfirmasi - WhatsApp SaaS",
+        "variables": ["invoice_number", "amount", "plan_name"]
+      },
+      {
+        "name": "subscription_expiring",
+        "subject": "Langganan Akan Berakhir - WhatsApp SaaS",
+        "variables": ["expiry_date", "plan_name", "renewal_link"]
+      },
+      {
+        "name": "instance_banned",
+        "subject": "⚠️ WhatsApp Instance Banned - WhatsApp SaaS",
+        "variables": ["instance_name", "phone_number"]
+      },
+      {
+        "name": "daily_report",
+        "subject": "Laporan Harian - WhatsApp SaaS",
+        "variables": ["date", "messages_sent", "messages_failed", "new_contacts"]
+      }
+    ]
+  }
+}

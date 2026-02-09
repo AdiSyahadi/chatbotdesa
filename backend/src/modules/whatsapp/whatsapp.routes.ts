@@ -1,0 +1,629 @@
+import { FastifyInstance } from 'fastify';
+import { WhatsAppService } from './whatsapp.service';
+import {
+  createInstanceSchema,
+  updateInstanceSchema,
+  instanceIdSchema,
+  listInstancesQuerySchema,
+  sendTextMessageSchema,
+  sendMediaMessageSchema,
+  sendLocationSchema,
+  messagesQuerySchema,
+} from './whatsapp.schema';
+import { JWTPayload } from '../../types';
+import '../../types';
+
+// ============================================
+// WHATSAPP ROUTES
+// API endpoints for WhatsApp instance management
+// ============================================
+
+export default async function whatsappRoutes(fastify: FastifyInstance) {
+  const service = new WhatsAppService(fastify);
+
+  // ============================================
+  // INSTANCE MANAGEMENT ROUTES
+  // ============================================
+
+  /**
+   * List all instances
+   * GET /api/whatsapp/instances
+   */
+  fastify.get('/instances', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'List all WhatsApp instances for organization',
+      tags: ['WhatsApp Instances'],
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          status: {
+            type: 'string',
+            enum: ['DISCONNECTED', 'CONNECTING', 'CONNECTED', 'QR_READY', 'ERROR', 'BANNED'],
+          },
+          page: { type: 'string', default: '1' },
+          limit: { type: 'string', default: '20' },
+          search: { type: 'string' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const query = listInstancesQuerySchema.parse(request.query);
+    
+    const result = await service.listInstances(user.organizationId, query);
+    return reply.send({ success: true, ...result });
+  });
+
+  /**
+   * Create new instance
+   * POST /api/whatsapp/instances
+   */
+  fastify.post('/instances', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Create new WhatsApp instance',
+      tags: ['WhatsApp Instances'],
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['name'],
+        properties: {
+          name: { type: 'string', minLength: 2, maxLength: 100 },
+          webhook_url: { type: 'string', format: 'uri' },
+          webhook_events: {
+            type: 'array',
+            items: { type: 'string', enum: ['message', 'status', 'connection', 'qr'] },
+          },
+          webhook_secret: { type: 'string', minLength: 16 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const body = createInstanceSchema.parse(request.body);
+    
+    const result = await service.createInstance(user.organizationId, body);
+    return reply.status(201).send({ success: true, data: result });
+  });
+
+  /**
+   * Get instance by ID
+   * GET /api/whatsapp/instances/:id
+   */
+  fastify.get('/instances/:id', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Get WhatsApp instance details',
+      tags: ['WhatsApp Instances'],
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const params = request.params as { id: string };
+    const { id } = instanceIdSchema.parse(params);
+    
+    const result = await service.getInstance(id, user.organizationId);
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Update instance
+   * PATCH /api/whatsapp/instances/:id
+   */
+  fastify.patch('/instances/:id', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Update WhatsApp instance settings',
+      tags: ['WhatsApp Instances'],
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      body: {
+        type: 'object',
+        additionalProperties: true,
+        properties: {
+          name: { type: 'string', minLength: 2, maxLength: 100 },
+          webhook_url: { type: 'string', nullable: true },
+          webhook_events: {},
+          webhook_secret: { type: 'string', nullable: true },
+          is_active: { type: 'boolean' },
+          auto_reconnect: { type: 'boolean' },
+          read_receipts: { type: 'boolean' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const params = request.params as { id: string };
+    const { id } = instanceIdSchema.parse(params);
+    
+    // Transform body before Zod validation
+    const rawBody = request.body as any;
+    
+    // Convert empty webhook_url to null (empty string fails .url() validation)
+    if (rawBody.webhook_url === '' || rawBody.webhook_url === undefined) {
+      rawBody.webhook_url = null;
+    }
+    
+    if (rawBody.webhook_events != null) {
+      const eventMap: Record<string, string> = {
+        message_received: 'message.received',
+        message_sent: 'message.sent',
+        message_delivered: 'message.delivered',
+        message_read: 'message.read',
+        connection_update: 'connection',  // prefix: matches connection.connected, connection.disconnected
+        qr_update: 'qr',                 // prefix: matches qr.updated
+      };
+
+      if (Array.isArray(rawBody.webhook_events)) {
+        // Already an array — clean it: only keep valid dot-notation event strings
+        rawBody.webhook_events = rawBody.webhook_events.filter(
+          (e: any) => typeof e === 'string' && e.includes('.')
+        );
+      } else if (typeof rawBody.webhook_events === 'object') {
+        // Frontend sends: { message_received: true, message_sent: false, ... }
+        // Convert to: ['message.received', ...]
+        rawBody.webhook_events = Object.entries(rawBody.webhook_events)
+          .filter(([key, enabled]) => enabled === true && key in eventMap)
+          .map(([key]) => eventMap[key]);
+      } else {
+        // Invalid format — set to empty array
+        rawBody.webhook_events = [];
+      }
+    }
+    
+    const body = updateInstanceSchema.parse(rawBody);
+    const result = await service.updateInstance(id, user.organizationId, body);
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Delete instance
+   * DELETE /api/whatsapp/instances/:id
+   */
+  fastify.delete('/instances/:id', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Delete WhatsApp instance',
+      tags: ['WhatsApp Instances'],
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const params = request.params as { id: string };
+    const { id } = instanceIdSchema.parse(params);
+    
+    await service.deleteInstance(id, user.organizationId);
+    return reply.send({ success: true, message: 'Instance deleted successfully' });
+  });
+
+  // ============================================
+  // CONNECTION MANAGEMENT ROUTES
+  // ============================================
+
+  /**
+   * Connect instance (start QR code generation)
+   * POST /api/whatsapp/instances/:id/connect
+   */
+  fastify.post('/instances/:id/connect', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Start WhatsApp connection and generate QR code',
+      tags: ['WhatsApp Connection'],
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const params = request.params as { id: string };
+    const { id } = instanceIdSchema.parse(params);
+    
+    const result = await service.connectInstance(id, user.organizationId);
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Disconnect instance
+   * POST /api/whatsapp/instances/:id/disconnect
+   */
+  fastify.post('/instances/:id/disconnect', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Disconnect WhatsApp instance',
+      tags: ['WhatsApp Connection'],
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const params = request.params as { id: string };
+    const { id } = instanceIdSchema.parse(params);
+    
+    const result = await service.disconnect(id, user.organizationId);
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Get QR code
+   * GET /api/whatsapp/instances/:id/qr
+   */
+  fastify.get('/instances/:id/qr', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Get current QR code for instance',
+      tags: ['WhatsApp Connection'],
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const params = request.params as { id: string };
+    const { id } = instanceIdSchema.parse(params);
+    
+    const result = await service.getQR(id, user.organizationId);
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Get connection status
+   * GET /api/whatsapp/instances/:id/status
+   */
+  fastify.get('/instances/:id/status', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Get real-time connection status',
+      tags: ['WhatsApp Connection'],
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const params = request.params as { id: string };
+    const { id } = instanceIdSchema.parse(params);
+    
+    const result = await service.getStatus(id, user.organizationId);
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Restart instance
+   * POST /api/whatsapp/instances/:id/restart
+   */
+  fastify.post('/instances/:id/restart', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Restart WhatsApp instance connection',
+      tags: ['WhatsApp Connection'],
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const params = request.params as { id: string };
+    const { id } = instanceIdSchema.parse(params);
+    
+    const result = await service.restart(id, user.organizationId);
+    return reply.send({ success: true, data: result });
+  });
+
+  // ============================================
+  // MESSAGING ROUTES
+  // ============================================
+
+  /**
+   * Send text message
+   * POST /api/whatsapp/instances/:id/messages/text
+   */
+  fastify.post('/instances/:id/messages/text', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Send text message via WhatsApp',
+      tags: ['WhatsApp Messages'],
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      body: {
+        type: 'object',
+        required: ['to', 'message'],
+        properties: {
+          to: { type: 'string', description: 'Phone number (e.g., 628123456789)' },
+          message: { type: 'string', maxLength: 4096 },
+          delay: { type: 'number', minimum: 0, maximum: 10000 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const params = request.params as { id: string };
+    const { id } = instanceIdSchema.parse(params);
+    const body = sendTextMessageSchema.parse(request.body);
+    
+    const result = await service.sendText(id, user.organizationId, body);
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Send media message
+   * POST /api/whatsapp/instances/:id/messages/media
+   */
+  fastify.post('/instances/:id/messages/media', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Send media message (image/video/audio/document)',
+      tags: ['WhatsApp Messages'],
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      body: {
+        type: 'object',
+        required: ['to', 'media_url', 'media_type'],
+        properties: {
+          to: { type: 'string' },
+          media_url: { type: 'string', format: 'uri' },
+          media_type: { type: 'string', enum: ['image', 'video', 'audio', 'document'] },
+          caption: { type: 'string', maxLength: 1024 },
+          filename: { type: 'string' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const params = request.params as { id: string };
+    const { id } = instanceIdSchema.parse(params);
+    const body = sendMediaMessageSchema.parse(request.body);
+    
+    const result = await service.sendMedia(id, user.organizationId, body);
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Send location
+   * POST /api/whatsapp/instances/:id/messages/location
+   */
+  fastify.post('/instances/:id/messages/location', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Send location message',
+      tags: ['WhatsApp Messages'],
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      body: {
+        type: 'object',
+        required: ['to', 'latitude', 'longitude'],
+        properties: {
+          to: { type: 'string' },
+          latitude: { type: 'number', minimum: -90, maximum: 90 },
+          longitude: { type: 'number', minimum: -180, maximum: 180 },
+          name: { type: 'string' },
+          address: { type: 'string' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const params = request.params as { id: string };
+    const { id } = instanceIdSchema.parse(params);
+    const body = sendLocationSchema.parse(request.body);
+    
+    const result = await service.sendLocation(id, user.organizationId, body);
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Get messages for instance
+   * GET /api/whatsapp/instances/:id/messages
+   */
+  fastify.get('/instances/:id/messages', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Get message history for instance',
+      tags: ['WhatsApp Messages'],
+      security: [{ bearerAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['id'],
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+        },
+      },
+      querystring: {
+        type: 'object',
+        properties: {
+          chat_jid: { type: 'string' },
+          direction: { type: 'string', enum: ['INCOMING', 'OUTGOING'] },
+          page: { type: 'string', default: '1' },
+          limit: { type: 'string', default: '50' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const params = request.params as { id: string };
+    const { id } = instanceIdSchema.parse(params);
+    const query = messagesQuerySchema.parse(request.query);
+    
+    const result = await service.getMessages(id, user.organizationId, {
+      chat_jid: query.chat_jid,
+      direction: query.direction,
+      page: query.page,
+      limit: query.limit,
+    });
+    return reply.send({ success: true, ...result });
+  });
+
+  // ============================================
+  // GLOBAL MESSAGES ROUTES
+  // ============================================
+
+  /**
+   * Get all messages for organization
+   * GET /api/whatsapp/messages
+   */
+  fastify.get('/messages', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Get all messages for organization',
+      tags: ['WhatsApp Messages'],
+      security: [{ bearerAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          instanceId: { type: 'string', format: 'uuid' },
+          direction: { type: 'string', enum: ['INCOMING', 'OUTGOING'] },
+          status: { type: 'string' },
+          page: { type: 'string', default: '1' },
+          limit: { type: 'string', default: '20' },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const query = request.query as {
+      instanceId?: string;
+      direction?: 'INCOMING' | 'OUTGOING';
+      status?: string;
+      page?: string;
+      limit?: string;
+    };
+    
+    const result = await service.getAllMessages(user.organizationId, {
+      instanceId: query.instanceId,
+      direction: query.direction,
+      status: query.status,
+      page: query.page ? parseInt(query.page) : 1,
+      limit: query.limit ? parseInt(query.limit) : 20,
+    });
+    return reply.send({ success: true, ...result });
+  });
+
+  /**
+   * Send message (global route with instance_id in body)
+   * POST /api/whatsapp/messages/send
+   */
+  fastify.post('/messages/send', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Send a WhatsApp message',
+      tags: ['WhatsApp Messages'],
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['instance_id', 'to', 'type', 'content'],
+        properties: {
+          instance_id: { type: 'string', format: 'uuid' },
+          to: { type: 'string', minLength: 10 },
+          type: { type: 'string', enum: ['text', 'image', 'document', 'video', 'audio'] },
+          content: {
+            type: 'object',
+            properties: {
+              text: { type: 'string' },
+              caption: { type: 'string' },
+              url: { type: 'string' },
+            },
+          },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const body = request.body as {
+      instance_id: string;
+      to: string;
+      type: string;
+      content: { text?: string; caption?: string; url?: string };
+    };
+    
+    // Verify ownership
+    const instance = await service.getInstance(body.instance_id, user.organizationId);
+    if (!instance) {
+      return reply.status(404).send({ success: false, error: 'Instance not found' });
+    }
+
+    // Send based on type
+    let result;
+    if (body.type === 'text') {
+      result = await service.sendText(body.instance_id, user.organizationId, {
+        to: body.to,
+        message: body.content.text || '',
+        delay: 0,
+      });
+    } else {
+      // For media types
+      result = await service.sendMedia(body.instance_id, user.organizationId, {
+        to: body.to,
+        media_url: body.content.url || '',
+        media_type: body.type as 'image' | 'document' | 'video' | 'audio',
+        caption: body.content.caption,
+      });
+    }
+
+    return reply.send({ success: true, data: result });
+  });
+}

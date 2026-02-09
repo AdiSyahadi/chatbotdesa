@@ -1,0 +1,468 @@
+{
+  "project": {
+    "name": "WhatsApp SaaS - Local Development WITHOUT Docker",
+    "version": "3.1.0 - Lightweight Edition",
+    "description": "Setup untuk develop di laptop/PC tanpa Docker yang bikin lag. Install native services!",
+    "target": "Developer dengan PC/Laptop spek rendah atau Docker lag"
+  },
+  "local_development_native": {
+    "description": "Install semua service native (tanpa Docker) - LEBIH RINGAN!",
+    "why_native": [
+      "Docker makan banyak RAM (minimum 4GB)",
+      "Docker bikin laptop panas",
+      "Startup Docker lambat",
+      "Native install lebih cepat"
+    ],
+    "system_requirements": {
+      "minimum": {
+        "cpu": "2 cores",
+        "ram": "4GB (vs 8GB kalau pakai Docker)",
+        "storage": "20GB",
+        "os": "Windows 10/11, macOS, Linux"
+      }
+    }
+  },
+  "setup_windows": {
+    "description": "Cara install di Windows (tanpa Docker)",
+    "prerequisites": {
+      "node_js": {
+        "download": "https://nodejs.org/en/download/",
+        "version": "20.x LTS",
+        "verify": "node --version && npm --version"
+      },
+      "git": {
+        "download": "https://git-scm.com/download/win",
+        "verify": "git --version"
+      }
+    },
+    "install_mysql": {
+      "method_1_installer": {
+        "description": "Pakai MySQL Installer (Recommended)",
+        "steps": [
+          "Download MySQL Installer: https://dev.mysql.com/downloads/installer/",
+          "Run installer (mysql-installer-community-8.x.x.msi)",
+          "Pilih 'Developer Default' atau 'Server only'",
+          "Set root password: 'root' (untuk development)",
+          "Finish installation",
+          "MySQL akan jalan sebagai Windows Service"
+        ],
+        "create_database": [
+          "Open MySQL Workbench atau Command Prompt",
+          "mysql -u root -p",
+          "CREATE DATABASE whatsapp_saas;",
+          "exit;"
+        ]
+      },
+      "method_2_xampp": {
+        "description": "Pakai XAMPP (Lebih mudah)",
+        "steps": [
+          "Download XAMPP: https://www.apachefriends.org/",
+          "Install XAMPP",
+          "Buka XAMPP Control Panel",
+          "Start MySQL",
+          "Open phpMyAdmin: http://localhost/phpmyadmin",
+          "Create database: whatsapp_saas"
+        ],
+        "note": "XAMPP include Apache, MySQL, phpMyAdmin"
+      }
+    },
+    "install_redis": {
+      "description": "Redis untuk Windows",
+      "steps": [
+        "Download Redis for Windows: https://github.com/tporadowski/redis/releases",
+        "Extract ZIP file",
+        "Run: redis-server.exe",
+        "Redis akan jalan di port 6379",
+        "Test: redis-cli.exe ping (should return PONG)"
+      ],
+      "alternative": {
+        "memurai": {
+          "description": "Redis compatible untuk Windows",
+          "download": "https://www.memurai.com/",
+          "note": "Free untuk development"
+        }
+      },
+      "run_as_service": {
+        "command": "redis-server --service-install redis.windows.conf",
+        "start": "redis-server --service-start",
+        "stop": "redis-server --service-stop"
+      }
+    },
+    "install_minio": {
+      "description": "MinIO untuk Windows (OPTIONAL - bisa skip)",
+      "steps": [
+        "Download: https://min.io/download",
+        "Extract minio.exe",
+        "Create folder: C:\\minio-data",
+        "Run: minio.exe server C:\\minio-data --console-address :9001",
+        "Access console: http://localhost:9001",
+        "Default login: minioadmin / minioadmin"
+      ],
+      "alternative": "Pakai local filesystem saja (storage/ folder)"
+    }
+  },
+  "setup_macos": {
+    "description": "Setup di macOS (tanpa Docker)",
+    "prerequisites": {
+      "homebrew": {
+        "install": "/bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)\"",
+        "verify": "brew --version"
+      },
+      "node_js": {
+        "install": "brew install node@20",
+        "verify": "node --version"
+      }
+    },
+    "install_mysql": {
+      "steps": [
+        "brew install mysql",
+        "brew services start mysql",
+        "mysql_secure_installation",
+        "mysql -u root -p",
+        "CREATE DATABASE whatsapp_saas;",
+        "exit;"
+      ]
+    },
+    "install_redis": {
+      "steps": [
+        "brew install redis",
+        "brew services start redis",
+        "redis-cli ping (should return PONG)"
+      ]
+    },
+    "install_minio": {
+      "steps": [
+        "brew install minio/stable/minio",
+        "mkdir ~/minio-data",
+        "minio server ~/minio-data --console-address :9001"
+      ],
+      "alternative": "Skip dan pakai local storage"
+    }
+  },
+  "setup_linux": {
+    "description": "Setup di Linux (Ubuntu/Debian)",
+    "install_mysql": {
+      "steps": [
+        "sudo apt update",
+        "sudo apt install -y mysql-server",
+        "sudo systemctl start mysql",
+        "sudo mysql_secure_installation",
+        "sudo mysql",
+        "CREATE DATABASE whatsapp_saas;",
+        "CREATE USER 'dev'@'localhost' IDENTIFIED BY 'dev';",
+        "GRANT ALL PRIVILEGES ON whatsapp_saas.* TO 'dev'@'localhost';",
+        "FLUSH PRIVILEGES;",
+        "exit;"
+      ]
+    },
+    "install_redis": {
+      "steps": [
+        "sudo apt install -y redis-server",
+        "sudo systemctl start redis-server",
+        "redis-cli ping"
+      ]
+    },
+    "install_minio": {
+      "steps": [
+        "wget https://dl.min.io/server/minio/release/linux-amd64/minio",
+        "chmod +x minio",
+        "sudo mv minio /usr/local/bin/",
+        "mkdir ~/minio-data",
+        "minio server ~/minio-data --console-address :9001"
+      ]
+    }
+  },
+  "project_setup": {
+    "description": "Setup project setelah services installed",
+    "steps": {
+      "1_clone_project": {
+        "commands": [
+          "git clone <your-repo-url> whatsapp-saas",
+          "cd whatsapp-saas"
+        ]
+      },
+      "2_install_dependencies": {
+        "backend": [
+          "cd backend",
+          "npm install"
+        ],
+        "frontend": [
+          "cd frontend",
+          "npm install"
+        ]
+      },
+      "3_environment_config": {
+        "file": "backend/.env",
+        "copy_from": "backend/.env.example",
+        "edit": {
+          "NODE_ENV": "development",
+          "PORT": "3000",
+          "DATABASE_URL": "mysql://root:root@localhost:3306/whatsapp_saas",
+          "REDIS_URL": "redis://localhost:6379",
+          "JWT_SECRET": "dev-secret-key-change-in-production",
+          "JWT_REFRESH_SECRET": "dev-refresh-secret-key",
+          "FILE_STORAGE_TYPE": "local",
+          "FILE_STORAGE_PATH": "./storage",
+          "MIDTRANS_ENABLED": "false",
+          "APP_URL": "http://localhost:3000",
+          "FRONTEND_URL": "http://localhost:3001"
+        }
+      },
+      "4_database_migration": {
+        "commands": [
+          "cd backend",
+          "npx prisma generate",
+          "npx prisma migrate dev --name init",
+          "npx prisma db seed (optional)"
+        ]
+      },
+      "5_create_storage_folders": {
+        "windows": [
+          "mkdir storage\\payment-proofs",
+          "mkdir storage\\media",
+          "mkdir storage\\sessions",
+          "mkdir storage\\backups"
+        ],
+        "macos_linux": [
+          "mkdir -p storage/payment-proofs",
+          "mkdir -p storage/media",
+          "mkdir -p storage/sessions",
+          "mkdir -p storage/backups"
+        ]
+      }
+    }
+  },
+  "running_development": {
+    "description": "Cara jalankan aplikasi untuk development",
+    "option_1_separate_terminals": {
+      "description": "Jalankan di terminal terpisah (Recommended)",
+      "terminal_1_backend": {
+        "title": "Terminal 1 - Backend API",
+        "commands": [
+          "cd backend",
+          "npm run dev"
+        ],
+        "url": "http://localhost:3000",
+        "swagger": "http://localhost:3000/api/docs"
+      },
+      "terminal_2_frontend": {
+        "title": "Terminal 2 - Frontend",
+        "commands": [
+          "cd frontend",
+          "npm run dev"
+        ],
+        "url": "http://localhost:3001"
+      },
+      "terminal_3_worker": {
+        "title": "Terminal 3 - Queue Worker (Optional)",
+        "commands": [
+          "cd backend",
+          "npm run worker"
+        ],
+        "note": "Hanya perlu kalau test queue/background jobs"
+      }
+    },
+    "option_2_concurrently": {
+      "description": "Jalankan semua sekaligus dengan concurrently",
+      "setup": {
+        "install": "npm install -g concurrently",
+        "package_json_root": {
+          "scripts": {
+            "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+            "dev:backend": "cd backend && npm run dev",
+            "dev:frontend": "cd frontend && npm run dev"
+          }
+        }
+      },
+      "run": "npm run dev",
+      "note": "Jalankan dari root project folder"
+    }
+  },
+  "lightweight_alternatives": {
+    "description": "Alternatif kalau masih berat",
+    "skip_minio": {
+      "description": "MinIO tidak wajib untuk development",
+      "solution": "Pakai local filesystem storage saja",
+      "config": {
+        "FILE_STORAGE_TYPE": "local",
+        "FILE_STORAGE_PATH": "./storage"
+      },
+      "note": "Upload file langsung ke folder ./storage"
+    },
+    "skip_frontend": {
+      "description": "Frontend tidak wajib untuk API development",
+      "solution": "Develop backend dulu, test pakai Swagger UI atau Postman",
+      "run": "cd backend && npm run dev",
+      "test_api": "http://localhost:3000/api/docs"
+    },
+    "skip_worker": {
+      "description": "Queue worker bisa di-skip kalau tidak test background jobs",
+      "impact": "Message queue, webhook dispatch tidak jalan",
+      "solution": "Process message langsung tanpa queue untuk development"
+    },
+    "use_sqlite_for_dev": {
+      "description": "SQLite lebih ringan dari MySQL untuk development",
+      "pros": [
+        "No MySQL service needed",
+        "File-based database",
+        "Sangat ringan",
+        "Instant startup"
+      ],
+      "cons": [
+        "Different dari production (MySQL)",
+        "Limited features",
+        "Not recommended untuk belajar MySQL"
+      ],
+      "setup": {
+        "install": "npm install sqlite3",
+        "env": "DATABASE_URL=file:./dev.db",
+        "prisma_schema": "provider = \"sqlite\""
+      },
+      "recommendation": "Lebih baik pakai MySQL untuk avoid production issues"
+    }
+  },
+  "performance_tips": {
+    "description": "Tips agar development lebih cepat",
+    "close_unused_apps": "Close browser tabs, IDE extensions yang tidak perlu",
+    "use_lightweight_ide": {
+      "alternatives": [
+        "VS Code (recommended)",
+        "Sublime Text (lebih ringan)",
+        "Notepad++ (paling ringan)"
+      ],
+      "disable_extensions": "Disable VS Code extensions yang tidak perlu"
+    },
+    "nodemon_config": {
+      "description": "Optimize Nodemon untuk tidak watch semua file",
+      "file": "backend/nodemon.json",
+      "config": {
+        "watch": ["src"],
+        "ignore": ["node_modules", "dist", "logs", "storage"],
+        "ext": "ts",
+        "delay": "1000"
+      }
+    },
+    "typescript_incremental": {
+      "description": "TypeScript incremental build lebih cepat",
+      "tsconfig": {
+        "compilerOptions": {
+          "incremental": true,
+          "tsBuildInfoFile": ".tsbuildinfo"
+        }
+      }
+    },
+    "prisma_client": {
+      "description": "Generate Prisma client hanya saat schema berubah",
+      "skip": "Tidak perlu generate setiap kali run"
+    }
+  },
+  "minimal_setup": {
+    "description": "Setup PALING MINIMAL - Hanya untuk test backend API",
+    "required_services": {
+      "mysql": "WAJIB - untuk database",
+      "redis": "OPSIONAL - skip kalau tidak test queue",
+      "minio": "SKIP - pakai local storage"
+    },
+    "steps": [
+      "1. Install MySQL (native atau XAMPP)",
+      "2. Install Node.js",
+      "3. Clone project",
+      "4. npm install",
+      "5. Setup .env (MySQL only)",
+      "6. npx prisma migrate dev",
+      "7. npm run dev",
+      "8. Test di Swagger: http://localhost:3000/api/docs"
+    ],
+    "ram_usage": {
+      "mysql": "~200MB",
+      "node_backend": "~150MB",
+      "total": "~350MB (vs 2GB+ dengan Docker)"
+    }
+  },
+  "troubleshooting": {
+    "mysql_not_starting": {
+      "windows": [
+        "Check Windows Services (services.msc)",
+        "Start MySQL service manually",
+        "Check port 3306 not used: netstat -ano | findstr :3306"
+      ],
+      "solution": "Restart MySQL service atau reboot PC"
+    },
+    "redis_not_starting": {
+      "windows": "redis-server.exe not found - check PATH",
+      "solution": "Run redis-server.exe dari folder extract"
+    },
+    "port_already_in_use": {
+      "check": "netstat -ano | findstr :3000",
+      "kill_process_windows": "taskkill /PID <PID> /F",
+      "kill_process_macos": "kill -9 <PID>",
+      "solution": "Change port di .env (PORT=3001)"
+    },
+    "npm_install_failed": {
+      "clear_cache": "npm cache clean --force",
+      "delete_node_modules": "rm -rf node_modules package-lock.json",
+      "install_again": "npm install"
+    },
+    "prisma_migrate_failed": {
+      "reset_db": "npx prisma migrate reset",
+      "force_migrate": "npx prisma migrate dev --skip-seed"
+    }
+  },
+  "recommended_workflow": {
+    "description": "Workflow development yang efficient",
+    "day_to_day": [
+      "1. Start MySQL (kalau belum jalan)",
+      "2. Start Redis (kalau perlu test queue)",
+      "3. Open VS Code",
+      "4. Terminal 1: cd backend && npm run dev",
+      "5. Terminal 2: cd frontend && npm run dev (kalau perlu)",
+      "6. Develop & test",
+      "7. Git commit & push"
+    ],
+    "testing": [
+      "Test API pakai Swagger UI (http://localhost:3000/api/docs)",
+      "Test API pakai Postman",
+      "Test frontend di browser (http://localhost:3001)"
+    ]
+  },
+  "comparison": {
+    "docker_vs_native": {
+      "docker": {
+        "pros": [
+          "Consistent environment",
+          "Easy to share",
+          "Isolated services"
+        ],
+        "cons": [
+          "Heavy RAM usage (4-8GB)",
+          "Slow startup",
+          "Bikin laptop panas",
+          "Butuh Docker Desktop"
+        ]
+      },
+      "native": {
+        "pros": [
+          "Lightweight (~350MB RAM)",
+          "Fast startup",
+          "No overhead",
+          "Lebih cepat"
+        ],
+        "cons": [
+          "Manual installation",
+          "Different per OS",
+          "Tidak isolated"
+        ]
+      }
+    },
+    "recommendation": "Kalau laptop lag pakai Docker, pakai native install!"
+  },
+  "next_steps": {
+    "1": "Install MySQL + Redis native (skip MinIO)",
+    "2": "Clone project & npm install",
+    "3": "Setup .env dengan local config",
+    "4": "Run migrations",
+    "5": "Start backend: npm run dev",
+    "6": "Test di Swagger UI",
+    "7": "Start coding! 🚀"
+  }
+}

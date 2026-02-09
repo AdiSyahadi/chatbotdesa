@@ -1,0 +1,603 @@
+{
+  "project": {
+    "name": "WhatsApp SaaS API Platform (VPS Edition)",
+    "version": "3.0.0 - VPS & Local Development",
+    "description": "Production-ready WhatsApp API SaaS for VPS deployment with local development support. NO AWS REQUIRED!",
+    "constraints": {
+      "hosting": "Single VPS / Dedicated Server",
+      "development": "Local machine (Windows/Mac/Linux)",
+      "budget": "Minimal - no cloud services",
+      "storage": "Local filesystem / Self-hosted MinIO"
+    }
+  },
+  "tech_stack": {
+    "backend": {
+      "runtime": "Node.js 20.x LTS",
+      "language": "TypeScript 5.x",
+      "framework": "Fastify (lightweight & fast)",
+      "whatsapp_library": "@whiskeysockets/baileys",
+      "validation": "Zod",
+      "orm": "Prisma with MySQL",
+      "authentication": "jsonwebtoken + bcrypt"
+    },
+    "database": {
+      "primary": "MySQL 8.0+ (runs in Docker or native)",
+      "why": "User only has MySQL",
+      "connection_pool": "mysql2 with pooling",
+      "cache": "Redis 7+ (Docker or native)",
+      "why_redis": "Queue management, rate limiting, session cache"
+    },
+    "file_storage": {
+      "option_1_local": {
+        "description": "Simple local filesystem",
+        "path": "/var/www/storage or C:/storage",
+        "pros": "Free, simple, no extra setup",
+        "cons": "No redundancy, harder to scale"
+      },
+      "option_2_minio": {
+        "description": "Self-hosted S3-compatible storage",
+        "deployment": "Docker container",
+        "pros": "S3-compatible API, scalable, web UI",
+        "cons": "Need to run extra container",
+        "recommended": true
+      },
+      "recommended": "MinIO for production, local for development"
+    },
+    "queue": {
+      "library": "BullMQ",
+      "storage": "Redis (same instance as cache)",
+      "persistence": "Redis AOF + RDB"
+    },
+    "payment_gateway": {
+      "midtrans": "Optional - can be disabled for testing",
+      "manual_transfer": "Always enabled"
+    },
+    "frontend": {
+      "framework": "Next.js 14 (can run standalone)",
+      "styling": "TailwindCSS",
+      "state": "Zustand + TanStack Query",
+      "ui": "shadcn/ui"
+    },
+    "development_tools": {
+      "containerization": "Docker + Docker Compose",
+      "hot_reload": "Nodemon for backend, Next.js built-in",
+      "database_gui": "phpMyAdmin (Docker) or MySQL Workbench",
+      "redis_gui": "RedisInsight (optional)",
+      "api_testing": "Built-in Swagger UI"
+    },
+    "deployment": {
+      "vps_requirements": {
+        "cpu": "2-4 cores",
+        "ram": "4GB minimum, 8GB recommended",
+        "storage": "50GB SSD",
+        "os": "Ubuntu 22.04 LTS or similar"
+      },
+      "process_manager": "PM2",
+      "reverse_proxy": "Nginx",
+      "ssl": "Let's Encrypt (free)",
+      "no_cloud_dependencies": true
+    }
+  },
+  "local_development_setup": {
+    "description": "Setup untuk develop di laptop/PC lokal",
+    "prerequisites": {
+      "required": [
+        "Node.js 20.x",
+        "Docker Desktop (for MySQL, Redis, MinIO)",
+        "Git",
+        "VS Code or any IDE"
+      ],
+      "optional": [
+        "MySQL Workbench",
+        "Postman",
+        "Redis Insight"
+      ]
+    },
+    "quick_start": {
+      "step_1": "Clone repository",
+      "step_2": "Run: docker-compose up -d (start MySQL, Redis, MinIO)",
+      "step_3": "Copy .env.example to .env",
+      "step_4": "Run: npm install",
+      "step_5": "Run: npx prisma migrate dev",
+      "step_6": "Run: npm run dev",
+      "step_7": "Open: http://localhost:3000"
+    },
+    "docker_compose_local": {
+      "file": "docker-compose.dev.yml",
+      "services": {
+        "mysql": {
+          "image": "mysql:8.0",
+          "port": "3306",
+          "volume": "./docker/mysql-data:/var/lib/mysql",
+          "environment": {
+            "MYSQL_ROOT_PASSWORD": "root",
+            "MYSQL_DATABASE": "whatsapp_saas"
+          }
+        },
+        "redis": {
+          "image": "redis:7-alpine",
+          "port": "6379",
+          "volume": "./docker/redis-data:/data",
+          "command": "redis-server --appendonly yes"
+        },
+        "minio": {
+          "image": "minio/minio:latest",
+          "port": "9000:9000, 9001:9001 (console)",
+          "volume": "./docker/minio-data:/data",
+          "environment": {
+            "MINIO_ROOT_USER": "minioadmin",
+            "MINIO_ROOT_PASSWORD": "minioadmin"
+          },
+          "command": "server /data --console-address :9001"
+        },
+        "phpmyadmin": {
+          "image": "phpmyadmin:latest",
+          "port": "8080",
+          "environment": {
+            "PMA_HOST": "mysql",
+            "PMA_PORT": "3306"
+          }
+        }
+      }
+    },
+    "environment_variables_local": {
+      "NODE_ENV": "development",
+      "PORT": "3000",
+      "DATABASE_URL": "mysql://root:root@localhost:3306/whatsapp_saas",
+      "REDIS_URL": "redis://localhost:6379",
+      "JWT_SECRET": "your-dev-secret-key",
+      "JWT_REFRESH_SECRET": "your-dev-refresh-secret",
+      "FILE_STORAGE_TYPE": "local",
+      "FILE_STORAGE_PATH": "./storage",
+      "MINIO_ENDPOINT": "localhost",
+      "MINIO_PORT": "9000",
+      "MINIO_ACCESS_KEY": "minioadmin",
+      "MINIO_SECRET_KEY": "minioadmin",
+      "MINIO_USE_SSL": "false",
+      "MINIO_BUCKET": "whatsapp-saas",
+      "MIDTRANS_ENABLED": "false",
+      "APP_URL": "http://localhost:3000",
+      "FRONTEND_URL": "http://localhost:3001"
+    }
+  },
+  "file_storage_implementation": {
+    "storage_types": {
+      "local": {
+        "description": "Local filesystem storage",
+        "use_case": "Development & small deployments",
+        "structure": {
+          "base_path": "./storage",
+          "subdirectories": {
+            "payment_proofs": "./storage/payment-proofs",
+            "media": "./storage/media",
+            "sessions": "./storage/sessions",
+            "backups": "./storage/backups"
+          }
+        },
+        "implementation": "class LocalStorage {\n  async upload(file, path) {\n    const fullPath = join(this.basePath, path);\n    await mkdir(dirname(fullPath), { recursive: true });\n    await writeFile(fullPath, file.buffer);\n    return path;\n  }\n  \n  async download(path) {\n    const fullPath = join(this.basePath, path);\n    return await readFile(fullPath);\n  }\n  \n  async delete(path) {\n    const fullPath = join(this.basePath, path);\n    await unlink(fullPath);\n  }\n  \n  getUrl(path) {\n    return `${process.env.APP_URL}/storage/${path}`;\n  }\n}"
+      },
+      "minio": {
+        "description": "Self-hosted S3-compatible storage",
+        "use_case": "Production VPS deployment",
+        "advantages": [
+          "S3-compatible API",
+          "Web UI for management",
+          "Better for scaling",
+          "Supports versioning",
+          "Built-in redundancy"
+        ],
+        "docker_setup": "docker run -p 9000:9000 -p 9001:9001 \\\n  -v /path/to/data:/data \\\n  -e MINIO_ROOT_USER=admin \\\n  -e MINIO_ROOT_PASSWORD=password \\\n  minio/minio server /data --console-address :9001",
+        "implementation": "import { Client } from 'minio';\n\nclass MinIOStorage {\n  private client: Client;\n  \n  constructor() {\n    this.client = new Client({\n      endPoint: process.env.MINIO_ENDPOINT,\n      port: parseInt(process.env.MINIO_PORT),\n      useSSL: process.env.MINIO_USE_SSL === 'true',\n      accessKey: process.env.MINIO_ACCESS_KEY,\n      secretKey: process.env.MINIO_SECRET_KEY\n    });\n  }\n  \n  async upload(file, path) {\n    await this.client.putObject(\n      process.env.MINIO_BUCKET,\n      path,\n      file.buffer,\n      file.size\n    );\n    return path;\n  }\n  \n  async download(path) {\n    return await this.client.getObject(\n      process.env.MINIO_BUCKET,\n      path\n    );\n  }\n  \n  async delete(path) {\n    await this.client.removeObject(\n      process.env.MINIO_BUCKET,\n      path\n    );\n  }\n  \n  async getSignedUrl(path, expiry = 3600) {\n    return await this.client.presignedGetObject(\n      process.env.MINIO_BUCKET,\n      path,\n      expiry\n    );\n  }\n}"
+      }
+    },
+    "storage_factory": "class StorageFactory {\n  static create() {\n    const type = process.env.FILE_STORAGE_TYPE || 'local';\n    \n    switch(type) {\n      case 'minio':\n        return new MinIOStorage();\n      case 'local':\n      default:\n        return new LocalStorage();\n    }\n  }\n}\n\n// Usage\nconst storage = StorageFactory.create();\nawait storage.upload(file, 'path/to/file.jpg');"
+  },
+  "vps_deployment_guide": {
+    "description": "Deploy ke VPS dari provider manapun (Contabo, DigitalOcean, Vultr, etc)",
+    "vps_specs": {
+      "minimum": {
+        "cpu": "2 cores",
+        "ram": "4GB",
+        "storage": "50GB SSD",
+        "bandwidth": "1TB/month",
+        "cost": "$5-10/month"
+      },
+      "recommended": {
+        "cpu": "4 cores",
+        "ram": "8GB",
+        "storage": "100GB SSD",
+        "bandwidth": "2TB/month",
+        "cost": "$15-20/month"
+      }
+    },
+    "deployment_steps": {
+      "1_initial_setup": [
+        "ssh root@your-vps-ip",
+        "apt update && apt upgrade -y",
+        "apt install -y git curl wget nano",
+        "useradd -m -s /bin/bash deploy",
+        "usermod -aG sudo deploy",
+        "su - deploy"
+      ],
+      "2_install_nodejs": [
+        "curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -",
+        "sudo apt install -y nodejs",
+        "node --version",
+        "npm --version"
+      ],
+      "3_install_mysql": [
+        "sudo apt install -y mysql-server",
+        "sudo mysql_secure_installation",
+        "sudo mysql -e \"CREATE DATABASE whatsapp_saas;\"",
+        "sudo mysql -e \"CREATE USER 'saas'@'localhost' IDENTIFIED BY 'your_password';\"",
+        "sudo mysql -e \"GRANT ALL PRIVILEGES ON whatsapp_saas.* TO 'saas'@'localhost';\""
+      ],
+      "4_install_redis": [
+        "sudo apt install -y redis-server",
+        "sudo systemctl enable redis-server",
+        "sudo nano /etc/redis/redis.conf",
+        "# Enable AOF: appendonly yes",
+        "sudo systemctl restart redis-server"
+      ],
+      "5_install_minio": [
+        "wget https://dl.min.io/server/minio/release/linux-amd64/minio",
+        "chmod +x minio",
+        "sudo mv minio /usr/local/bin/",
+        "sudo mkdir -p /var/lib/minio",
+        "sudo useradd -r minio-user -s /sbin/nologin",
+        "sudo chown minio-user:minio-user /var/lib/minio",
+        "# Create systemd service (see below)"
+      ],
+      "6_install_nginx": [
+        "sudo apt install -y nginx",
+        "sudo systemctl enable nginx",
+        "# Create nginx config (see below)"
+      ],
+      "7_install_pm2": [
+        "sudo npm install -g pm2",
+        "pm2 startup",
+        "# Follow the command output"
+      ],
+      "8_clone_project": [
+        "cd ~",
+        "git clone your-repo-url whatsapp-saas",
+        "cd whatsapp-saas",
+        "npm install",
+        "cp .env.example .env",
+        "nano .env # Edit configuration"
+      ],
+      "9_database_migration": [
+        "npx prisma generate",
+        "npx prisma migrate deploy",
+        "npx prisma db seed # Optional"
+      ],
+      "10_build_project": [
+        "npm run build",
+        "cd frontend && npm install && npm run build"
+      ],
+      "11_start_services": [
+        "pm2 start ecosystem.config.js",
+        "pm2 save",
+        "pm2 list"
+      ],
+      "12_setup_ssl": [
+        "sudo apt install -y certbot python3-certbot-nginx",
+        "sudo certbot --nginx -d yourdomain.com -d www.yourdomain.com",
+        "sudo systemctl restart nginx"
+      ]
+    },
+    "systemd_services": {
+      "minio_service": {
+        "file": "/etc/systemd/system/minio.service",
+        "content": "[Unit]\nDescription=MinIO\nDocumentation=https://docs.min.io\nWants=network-online.target\nAfter=network-online.target\n\n[Service]\nUser=minio-user\nGroup=minio-user\nType=notify\nWorkingDirectory=/usr/local/\nExecStart=/usr/local/bin/minio server /var/lib/minio --console-address :9001\nRestart=always\nLimitNOFILE=65536\nEnvironment=\"MINIO_ROOT_USER=minioadmin\"\nEnvironment=\"MINIO_ROOT_PASSWORD=changeme123\"\n\n[Install]\nWantedBy=multi-user.target"
+      }
+    },
+    "nginx_configuration": {
+      "file": "/etc/nginx/sites-available/whatsapp-saas",
+      "content": "# Backend API\nupstream backend {\n  server localhost:3000;\n}\n\n# Frontend\nupstream frontend {\n  server localhost:3001;\n}\n\nserver {\n  listen 80;\n  server_name yourdomain.com www.yourdomain.com;\n  \n  # Redirect to HTTPS\n  return 301 https://$server_name$request_uri;\n}\n\nserver {\n  listen 443 ssl http2;\n  server_name yourdomain.com www.yourdomain.com;\n  \n  # SSL certificates (Let's Encrypt)\n  ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;\n  ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;\n  \n  # Frontend\n  location / {\n    proxy_pass http://frontend;\n    proxy_http_version 1.1;\n    proxy_set_header Upgrade $http_upgrade;\n    proxy_set_header Connection 'upgrade';\n    proxy_set_header Host $host;\n    proxy_cache_bypass $http_upgrade;\n  }\n  \n  # Backend API\n  location /api {\n    proxy_pass http://backend;\n    proxy_http_version 1.1;\n    proxy_set_header Upgrade $http_upgrade;\n    proxy_set_header Connection 'upgrade';\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;\n    proxy_set_header X-Forwarded-Proto $scheme;\n    proxy_cache_bypass $http_upgrade;\n  }\n  \n  # Storage files (if using local storage)\n  location /storage {\n    alias /home/deploy/whatsapp-saas/storage;\n    expires 7d;\n    add_header Cache-Control \"public\";\n  }\n  \n  # File upload size\n  client_max_body_size 25M;\n}\n\n# MinIO Console (optional)\nserver {\n  listen 443 ssl http2;\n  server_name minio.yourdomain.com;\n  \n  ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;\n  ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;\n  \n  location / {\n    proxy_pass http://localhost:9001;\n    proxy_set_header Host $host;\n    proxy_set_header X-Real-IP $remote_addr;\n  }\n}"
+    },
+    "pm2_ecosystem": {
+      "file": "ecosystem.config.js",
+      "content": "module.exports = {\n  apps: [\n    {\n      name: 'whatsapp-api',\n      script: './dist/server.js',\n      instances: 2,\n      exec_mode: 'cluster',\n      env: {\n        NODE_ENV: 'production',\n        PORT: 3000\n      },\n      max_memory_restart: '500M',\n      error_file: './logs/api-error.log',\n      out_file: './logs/api-out.log',\n      log_date_format: 'YYYY-MM-DD HH:mm:ss Z'\n    },\n    {\n      name: 'whatsapp-worker',\n      script: './dist/worker.js',\n      instances: 1,\n      env: {\n        NODE_ENV: 'production'\n      },\n      max_memory_restart: '500M',\n      error_file: './logs/worker-error.log',\n      out_file: './logs/worker-out.log'\n    },\n    {\n      name: 'whatsapp-frontend',\n      script: 'npm',\n      args: 'start',\n      cwd: './frontend',\n      env: {\n        NODE_ENV: 'production',\n        PORT: 3001\n      },\n      error_file: './logs/frontend-error.log',\n      out_file: './logs/frontend-out.log'\n    }\n  ]\n};"
+    }
+  },
+  "backup_strategy_vps": {
+    "description": "Backup tanpa cloud service - semua di VPS atau external storage",
+    "database_backup": {
+      "method": "mysqldump + cron job",
+      "script": {
+        "file": "/home/deploy/scripts/backup-mysql.sh",
+        "content": "#!/bin/bash\nDATE=$(date +%Y%m%d_%H%M%S)\nBACKUP_DIR=\"/home/deploy/backups/mysql\"\nDB_NAME=\"whatsapp_saas\"\nDB_USER=\"saas\"\nDB_PASS=\"your_password\"\n\nmkdir -p $BACKUP_DIR\n\n# Backup database\nmysqldump -u $DB_USER -p$DB_PASS $DB_NAME | gzip > $BACKUP_DIR/backup_$DATE.sql.gz\n\n# Keep only last 30 days\nfind $BACKUP_DIR -name \"backup_*.sql.gz\" -mtime +30 -delete\n\necho \"Backup completed: backup_$DATE.sql.gz\""
+      },
+      "cron": "0 2 * * * /home/deploy/scripts/backup-mysql.sh"
+    },
+    "redis_backup": {
+      "method": "Copy RDB + AOF files",
+      "script": {
+        "file": "/home/deploy/scripts/backup-redis.sh",
+        "content": "#!/bin/bash\nDATE=$(date +%Y%m%d_%H%M%S)\nBACKUP_DIR=\"/home/deploy/backups/redis\"\nREDIS_DIR=\"/var/lib/redis\"\n\nmkdir -p $BACKUP_DIR\n\n# Trigger Redis save\nredis-cli BGSAVE\nsleep 5\n\n# Copy files\ncp $REDIS_DIR/dump.rdb $BACKUP_DIR/dump_$DATE.rdb\ncp $REDIS_DIR/appendonly.aof $BACKUP_DIR/appendonly_$DATE.aof\n\n# Keep only last 7 days\nfind $BACKUP_DIR -name \"dump_*.rdb\" -mtime +7 -delete\nfind $BACKUP_DIR -name \"appendonly_*.aof\" -mtime +7 -delete"
+      },
+      "cron": "0 3 * * * /home/deploy/scripts/backup-redis.sh"
+    },
+    "file_storage_backup": {
+      "local": "Include in daily tarball backup",
+      "minio": "MinIO has built-in versioning",
+      "script": {
+        "file": "/home/deploy/scripts/backup-storage.sh",
+        "content": "#!/bin/bash\nDATE=$(date +%Y%m%d)\nBACKUP_DIR=\"/home/deploy/backups/storage\"\nSTORAGE_DIR=\"/home/deploy/whatsapp-saas/storage\"\n\nmkdir -p $BACKUP_DIR\n\n# Backup storage directory\ntar -czf $BACKUP_DIR/storage_$DATE.tar.gz -C $STORAGE_DIR .\n\n# Keep only last 14 days\nfind $BACKUP_DIR -name \"storage_*.tar.gz\" -mtime +14 -delete"
+      },
+      "cron": "0 4 * * * /home/deploy/scripts/backup-storage.sh"
+    },
+    "offsite_backup": {
+      "options": [
+        "rsync to another VPS",
+        "FTP to external server",
+        "Google Drive (rclone)",
+        "Dropbox (rclone)",
+        "External hard drive"
+      ],
+      "rclone_example": {
+        "install": "curl https://rclone.org/install.sh | sudo bash",
+        "configure": "rclone config # Setup Google Drive or Dropbox",
+        "sync_script": "#!/bin/bash\n# Sync backups to cloud\nrclone sync /home/deploy/backups/ gdrive:whatsapp-backups/ \\\n  --progress \\\n  --transfers 4 \\\n  --log-file=/home/deploy/logs/rclone.log"
+      }
+    }
+  },
+  "environment_variables_vps": {
+    "description": "Configuration untuk production di VPS",
+    "file": ".env",
+    "variables": {
+      "NODE_ENV": "production",
+      "PORT": "3000",
+      "DATABASE_URL": "mysql://saas:password@localhost:3306/whatsapp_saas",
+      "REDIS_URL": "redis://localhost:6379",
+      "JWT_SECRET": "generate-random-64-char-string",
+      "JWT_REFRESH_SECRET": "generate-another-random-64-char-string",
+      "FILE_STORAGE_TYPE": "minio",
+      "FILE_STORAGE_PATH": "/home/deploy/whatsapp-saas/storage",
+      "MINIO_ENDPOINT": "localhost",
+      "MINIO_PORT": "9000",
+      "MINIO_ACCESS_KEY": "your-access-key",
+      "MINIO_SECRET_KEY": "your-secret-key",
+      "MINIO_USE_SSL": "false",
+      "MINIO_BUCKET": "whatsapp-saas",
+      "MIDTRANS_ENABLED": "true",
+      "MIDTRANS_SERVER_KEY": "your-midtrans-server-key",
+      "MIDTRANS_CLIENT_KEY": "your-midtrans-client-key",
+      "MIDTRANS_MERCHANT_ID": "your-merchant-id",
+      "MIDTRANS_ENVIRONMENT": "production",
+      "SMTP_HOST": "smtp.gmail.com",
+      "SMTP_PORT": "587",
+      "SMTP_USER": "your-email@gmail.com",
+      "SMTP_PASS": "your-app-password",
+      "SMTP_FROM": "noreply@yourdomain.com",
+      "APP_URL": "https://yourdomain.com",
+      "FRONTEND_URL": "https://yourdomain.com",
+      "ENCRYPTION_KEY": "generate-32-char-encryption-key",
+      "MAX_FILE_SIZE_MB": "25",
+      "SESSION_BACKUP_ENABLED": "true"
+    }
+  },
+  "monitoring_vps": {
+    "description": "Monitoring tanpa cloud service - semua lokal",
+    "log_management": {
+      "backend_logs": "./logs/api-*.log",
+      "worker_logs": "./logs/worker-*.log",
+      "nginx_logs": "/var/log/nginx/",
+      "mysql_logs": "/var/log/mysql/",
+      "redis_logs": "/var/log/redis/",
+      "rotation": "logrotate configuration",
+      "logrotate_config": {
+        "file": "/etc/logrotate.d/whatsapp-saas",
+        "content": "/home/deploy/whatsapp-saas/logs/*.log {\n  daily\n  rotate 14\n  compress\n  delaycompress\n  notifempty\n  create 0644 deploy deploy\n  sharedscripts\n  postrotate\n    pm2 reloadLogs\n  endscript\n}"
+      }
+    },
+    "system_monitoring": {
+      "tool": "htop + netdata (optional)",
+      "install_netdata": "bash <(curl -Ss https://my-netdata.io/kickstart.sh)",
+      "access": "http://your-vps-ip:19999",
+      "metrics": [
+        "CPU usage",
+        "RAM usage",
+        "Disk I/O",
+        "Network traffic",
+        "MySQL queries",
+        "Redis operations"
+      ]
+    },
+    "health_checks": {
+      "endpoint": "GET /health",
+      "checks": [
+        "Database connection",
+        "Redis connection",
+        "Disk space",
+        "Memory usage"
+      ],
+      "monitoring_script": {
+        "file": "/home/deploy/scripts/health-check.sh",
+        "content": "#!/bin/bash\nAPI_URL=\"http://localhost:3000/health\"\nRESPONSE=$(curl -s -o /dev/null -w \"%{http_code}\" $API_URL)\n\nif [ $RESPONSE -ne 200 ]; then\n  echo \"API is down! Status: $RESPONSE\"\n  # Send notification (email, telegram, etc)\n  # Restart PM2 if needed\n  pm2 restart whatsapp-api\nfi"
+      },
+      "cron": "*/5 * * * * /home/deploy/scripts/health-check.sh"
+    },
+    "telegram_notifications": {
+      "description": "Send alerts to Telegram (free)",
+      "setup": [
+        "Create Telegram bot with @BotFather",
+        "Get bot token",
+        "Get your chat ID",
+        "Use in scripts"
+      ],
+      "send_message": "curl -s -X POST https://api.telegram.org/bot$BOT_TOKEN/sendMessage \\\n  -d chat_id=$CHAT_ID \\\n  -d text=\"🚨 Alert: API is down!\""
+    }
+  },
+  "cost_breakdown": {
+    "vps": {
+      "provider_options": [
+        "Contabo: €4-8/month (German)",
+        "Hetzner: €4-10/month (German)",
+        "DigitalOcean: $6-12/month (US)",
+        "Vultr: $6-12/month (US/Global)",
+        "OVH: €5-10/month (Europe)",
+        "Niagahoster: Rp 100-300k/month (Indonesia)",
+        "IDCloudHost: Rp 150-400k/month (Indonesia)"
+      ],
+      "recommended": "Hetzner or Contabo for best value"
+    },
+    "domain": {
+      "provider": "Namecheap, Cloudflare, Niagahoster",
+      "cost": "$10-15/year",
+      "ssl": "Free with Let's Encrypt"
+    },
+    "email": {
+      "option_1": "Gmail SMTP (free for low volume)",
+      "option_2": "Mailgun (free tier: 5000 emails/month)",
+      "option_3": "SendGrid (free tier: 100 emails/day)"
+    },
+    "midtrans": {
+      "setup": "Free registration",
+      "fee": "2.9% + Rp 2000 per transaction",
+      "alternatives": "Xendit, Doku, Faspay"
+    },
+    "total_monthly": {
+      "minimum": "$10-15/month (VPS + domain)",
+      "recommended": "$15-25/month (better VPS)",
+      "note": "No AWS bills! 🎉"
+    }
+  },
+  "project_structure_simplified": {
+    "root": {
+      "backend/": "Node.js + TypeScript API",
+      "frontend/": "Next.js dashboard",
+      "docker/": "Docker configs for local dev",
+      "scripts/": "Backup & deployment scripts",
+      "storage/": "Local file storage",
+      "logs/": "Application logs",
+      "docker-compose.dev.yml": "Local development",
+      "docker-compose.prod.yml": "Production (optional)",
+      "ecosystem.config.js": "PM2 configuration",
+      ".env.example": "Environment template",
+      "README.md": "Setup instructions"
+    }
+  },
+  "testing_strategy": {
+    "local_testing": {
+      "unit_tests": "Jest + ts-jest",
+      "integration_tests": "Supertest for API",
+      "e2e_tests": "Playwright (optional)",
+      "command": "npm test"
+    },
+    "manual_testing": {
+      "swagger_ui": "http://localhost:3000/api/docs",
+      "postman_collection": "Export and share",
+      "test_data": "Seeder scripts"
+    }
+  },
+  "database_schema_vps": {
+    "note": "Same as MySQL blueprint from v2.0, optimized for VPS resources",
+    "optimizations": [
+      "Proper indexing for fast queries",
+      "Partitioning for large tables",
+      "Connection pooling (max 20)",
+      "Query caching disabled (MySQL 8.0+)",
+      "InnoDB buffer pool = 50% RAM"
+    ],
+    "tables": "See PROJECT_BLUEPRINT_FIXED.json for complete schema"
+  },
+  "security_vps": {
+    "server_hardening": [
+      "Firewall: ufw allow 80,443,22",
+      "SSH: Disable root login, use key-based auth",
+      "fail2ban: Auto-ban brute force attempts",
+      "Regular updates: apt update && apt upgrade",
+      "Non-root user for application"
+    ],
+    "application_security": [
+      "JWT with short expiry",
+      "Rate limiting with Redis",
+      "Input validation with Zod",
+      "Helmet.js for HTTP headers",
+      "CORS whitelist",
+      "Encrypted sensitive data",
+      "No secrets in code (use .env)"
+    ]
+  },
+  "scalability_vps": {
+    "single_vps": {
+      "max_users": "500-1000 organizations",
+      "max_instances": "100-200 WhatsApp instances",
+      "max_messages": "10k-50k messages/day",
+      "bottleneck": "CPU & Memory"
+    },
+    "upgrade_path": {
+      "step_1": "Upgrade VPS specs (more RAM/CPU)",
+      "step_2": "Add read replica for MySQL",
+      "step_3": "Separate Redis server",
+      "step_4": "Load balancer + multiple app servers",
+      "step_5": "Database clustering"
+    }
+  },
+  "troubleshooting_guide": {
+    "common_issues": {
+      "mysql_connection_failed": {
+        "check": "sudo systemctl status mysql",
+        "fix": "sudo systemctl restart mysql"
+      },
+      "redis_connection_failed": {
+        "check": "redis-cli ping",
+        "fix": "sudo systemctl restart redis-server"
+      },
+      "out_of_memory": {
+        "check": "free -h",
+        "fix": "Upgrade VPS or optimize code"
+      },
+      "disk_full": {
+        "check": "df -h",
+        "fix": "Clean logs, old backups, optimize storage"
+      },
+      "pm2_app_crashed": {
+        "check": "pm2 logs",
+        "fix": "pm2 restart all"
+      }
+    }
+  },
+  "quick_commands_cheatsheet": {
+    "local_development": {
+      "start_services": "docker-compose up -d",
+      "stop_services": "docker-compose down",
+      "start_backend": "npm run dev",
+      "start_frontend": "cd frontend && npm run dev",
+      "run_migration": "npx prisma migrate dev",
+      "view_logs": "docker-compose logs -f"
+    },
+    "vps_production": {
+      "deploy_update": "git pull && npm install && npm run build && pm2 restart all",
+      "view_logs": "pm2 logs",
+      "restart_app": "pm2 restart whatsapp-api",
+      "monitor": "pm2 monit",
+      "backup_db": "/home/deploy/scripts/backup-mysql.sh",
+      "check_disk": "df -h",
+      "check_memory": "free -h",
+      "check_processes": "htop"
+    }
+  },
+  "next_steps": {
+    "1_setup_local": "Setup Docker Compose for local development",
+    "2_develop": "Build backend API endpoints",
+    "3_test_local": "Test thoroughly on local machine",
+    "4_prepare_vps": "Rent VPS and setup server",
+    "5_deploy": "Deploy to VPS following guide",
+    "6_configure": "Setup domain, SSL, backups",
+    "7_monitor": "Setup monitoring and alerts",
+    "8_launch": "Go live! 🚀"
+  },
+  "summary": {
+    "no_aws": "✅ No AWS S3, No Lambda, No CloudWatch",
+    "no_cloud_costs": "✅ Only VPS cost ($10-25/month)",
+    "local_dev": "✅ Full Docker setup for local development",
+    "vps_friendly": "✅ Deploy to any VPS provider",
+    "self_hosted": "✅ MySQL, Redis, MinIO all self-hosted",
+    "easy_backup": "✅ Simple bash scripts for backup",
+    "scalable": "✅ Can scale when needed",
+    "production_ready": "✅ All features from v2.0 included"
+  }
+}

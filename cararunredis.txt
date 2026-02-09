@@ -1,0 +1,7 @@
+cd "C:\Program Files\Redis"
+.\redis-server.exe
+
+
+API : wa_f847eb80657c7ebcbc00f3438aaa54ce32c3e8bd859e037d64a125a3b0ddd933
+
+pi gwmini : AIzaSyAAiQK2KGqGAQnt4SVN_Uf_d8cvZEJ_mc0

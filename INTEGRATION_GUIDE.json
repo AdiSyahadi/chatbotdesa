@@ -1,0 +1,422 @@
+{
+  "project": {
+    "name": "WhatsApp SaaS - Integration Guide",
+    "version": "1.0.0",
+    "description": "Complete guide for integrating WhatsApp SaaS API with n8n, Laravel CRM, and other systems",
+    "compatibility": ["n8n", "Zapier", "Make (Integromat)", "Laravel", "PHP", "Node.js", "Python", "Any HTTP Client"]
+  },
+
+  "integration_overview": {
+    "description": "WhatsApp SaaS API menggunakan standar REST API yang kompatibel dengan semua sistem",
+    "features": {
+      "rest_api": "Standard REST API dengan JSON",
+      "api_key_auth": "Simple API Key authentication untuk integrasi",
+      "webhooks": "Receive events via HTTP POST webhooks",
+      "swagger_docs": "Interactive API documentation"
+    },
+    "supported_operations": [
+      "Send text messages",
+      "Send media messages (image, video, document)",
+      "Receive incoming messages via webhook",
+      "Track message delivery status",
+      "Manage contacts",
+      "Broadcast messages",
+      "Get instance status"
+    ]
+  },
+
+  "n8n_integration": {
+    "description": "Integrasi dengan n8n (self-hosted automation)",
+    "compatibility": "100% Compatible",
+    "setup_steps": [
+      "1. Login ke WhatsApp SaaS Dashboard",
+      "2. Buat API Key di menu 'API Keys'",
+      "3. Copy API Key (hanya ditampilkan sekali!)",
+      "4. Di n8n, gunakan HTTP Request node",
+      "5. Setup webhook di WhatsApp SaaS untuk receive events"
+    ],
+    
+    "n8n_nodes_to_use": {
+      "send_message": "HTTP Request Node",
+      "receive_message": "Webhook Node",
+      "trigger_on_event": "Webhook Node"
+    },
+
+    "example_workflows": {
+      "send_whatsapp_from_form": {
+        "description": "Kirim WhatsApp otomatis ketika ada form submission",
+        "workflow": [
+          "Webhook (receive form data)",
+          "HTTP Request (send to WhatsApp SaaS API)",
+          "Response handling"
+        ],
+        "n8n_config": {
+          "http_request_node": {
+            "method": "POST",
+            "url": "https://your-domain.com/api/whatsapp/messages/send",
+            "authentication": "Header Auth",
+            "header_name": "X-API-Key",
+            "header_value": "={{$credentials.whatsappApiKey}}",
+            "body_type": "JSON",
+            "body": {
+              "instance_id": "your-instance-uuid",
+              "to": "={{$json.phone}}",
+              "type": "TEXT",
+              "content": "Halo {{$json.name}}, terima kasih telah menghubungi kami!"
+            }
+          }
+        }
+      },
+
+      "auto_reply_incoming": {
+        "description": "Auto-reply untuk pesan masuk",
+        "workflow": [
+          "Webhook (receive WhatsApp event)",
+          "IF (check if incoming message)",
+          "HTTP Request (send reply)",
+          "Log to Google Sheets (optional)"
+        ],
+        "n8n_webhook_setup": {
+          "webhook_url": "https://your-n8n.com/webhook/whatsapp-incoming",
+          "method": "POST",
+          "in_whatsapp_saas": {
+            "go_to": "Dashboard > Webhooks",
+            "create_webhook": {
+              "instance_id": "select your instance",
+              "url": "https://your-n8n.com/webhook/whatsapp-incoming",
+              "events": ["message.received"],
+              "secret": "your-webhook-secret"
+            }
+          }
+        },
+        "n8n_workflow_json": {
+          "trigger": {
+            "node": "Webhook",
+            "parameters": {
+              "httpMethod": "POST",
+              "path": "whatsapp-incoming"
+            }
+          },
+          "process": {
+            "node": "IF",
+            "condition": "{{$json.event}} === 'message.received'"
+          },
+          "reply": {
+            "node": "HTTP Request",
+            "parameters": {
+              "method": "POST",
+              "url": "https://your-domain.com/api/whatsapp/messages/send",
+              "headers": {
+                "X-API-Key": "your-api-key"
+              },
+              "body": {
+                "instance_id": "={{$json.instance_id}}",
+                "to": "={{$json.data.from}}",
+                "type": "TEXT",
+                "content": "Terima kasih atas pesan Anda. Tim kami akan segera merespons."
+              }
+            }
+          }
+        }
+      },
+
+      "broadcast_from_google_sheets": {
+        "description": "Broadcast WhatsApp dari data Google Sheets",
+        "workflow": [
+          "Google Sheets Trigger (new row)",
+          "Loop (for each contact)",
+          "HTTP Request (send message)",
+          "Wait (delay between messages)",
+          "Update status in Sheets"
+        ]
+      },
+
+      "crm_notification": {
+        "description": "Notifikasi WhatsApp untuk CRM events",
+        "use_cases": [
+          "New lead notification",
+          "Deal won/lost notification",
+          "Invoice reminder",
+          "Follow-up reminder"
+        ]
+      }
+    },
+
+    "n8n_credentials_setup": {
+      "description": "Setup credentials di n8n",
+      "steps": [
+        "Go to Settings > Credentials",
+        "Add Credential > Header Auth",
+        "Name: 'WhatsApp SaaS API'",
+        "Header Name: 'X-API-Key'",
+        "Header Value: 'wsa_your_api_key_here'"
+      ]
+    },
+
+    "common_n8n_expressions": {
+      "format_phone": "={{$json.phone.replace(/[^0-9]/g, '')}}",
+      "add_country_code": "={{$json.phone.startsWith('0') ? '62' + $json.phone.slice(1) : $json.phone}}",
+      "current_datetime": "={{new Date().toISOString()}}",
+      "check_event_type": "={{$json.event === 'message.received'}}"
+    }
+  },
+
+  "laravel_integration": {
+    "description": "Integrasi dengan Laravel CRM atau aplikasi Laravel lainnya",
+    "compatibility": "100% Compatible",
+    
+    "installation": {
+      "description": "Tidak perlu package khusus - gunakan Guzzle HTTP client bawaan Laravel",
+      "config_setup": {
+        "file": "config/services.php",
+        "add": {
+          "whatsapp_saas": {
+            "base_url": "env('WHATSAPP_SAAS_URL', 'https://your-domain.com')",
+            "api_key": "env('WHATSAPP_SAAS_API_KEY')",
+            "instance_id": "env('WHATSAPP_SAAS_INSTANCE_ID')"
+          }
+        }
+      },
+      "env_file": {
+        "WHATSAPP_SAAS_URL": "https://your-whatsapp-saas.com",
+        "WHATSAPP_SAAS_API_KEY": "wsa_your_api_key_here",
+        "WHATSAPP_SAAS_INSTANCE_ID": "your-default-instance-uuid"
+      }
+    },
+
+    "service_class": {
+      "description": "Buat service class untuk WhatsApp",
+      "file": "app/Services/WhatsAppService.php",
+      "code": "<?php\n\nnamespace App\\Services;\n\nuse Illuminate\\Support\\Facades\\Http;\nuse Illuminate\\Support\\Facades\\Log;\n\nclass WhatsAppService\n{\n    protected $baseUrl;\n    protected $apiKey;\n    protected $instanceId;\n\n    public function __construct()\n    {\n        $this->baseUrl = config('services.whatsapp_saas.base_url');\n        $this->apiKey = config('services.whatsapp_saas.api_key');\n        $this->instanceId = config('services.whatsapp_saas.instance_id');\n    }\n\n    /**\n     * Send text message\n     */\n    public function sendMessage(string $to, string $message, ?string $instanceId = null): array\n    {\n        $response = Http::withHeaders([\n            'X-API-Key' => $this->apiKey,\n            'Content-Type' => 'application/json',\n        ])->post(\"{$this->baseUrl}/api/whatsapp/messages/send\", [\n            'instance_id' => $instanceId ?? $this->instanceId,\n            'to' => $this->formatPhoneNumber($to),\n            'type' => 'TEXT',\n            'content' => $message,\n        ]);\n\n        if ($response->failed()) {\n            Log::error('WhatsApp send failed', [\n                'to' => $to,\n                'error' => $response->json()\n            ]);\n            throw new \\Exception('Failed to send WhatsApp message: ' . $response->body());\n        }\n\n        return $response->json();\n    }\n\n    /**\n     * Send media message (image/video/document)\n     */\n    public function sendMedia(string $to, string $type, string $mediaUrl, ?string $caption = null): array\n    {\n        $response = Http::withHeaders([\n            'X-API-Key' => $this->apiKey,\n        ])->post(\"{$this->baseUrl}/api/whatsapp/messages/send\", [\n            'instance_id' => $this->instanceId,\n            'to' => $this->formatPhoneNumber($to),\n            'type' => strtoupper($type), // IMAGE, VIDEO, DOCUMENT\n            'media_url' => $mediaUrl,\n            'caption' => $caption,\n        ]);\n\n        return $response->json();\n    }\n\n    /**\n     * Send bulk messages\n     */\n    public function sendBulk(array $recipients, string $message): array\n    {\n        $formattedRecipients = array_map(fn($r) => $this->formatPhoneNumber($r), $recipients);\n\n        $response = Http::withHeaders([\n            'X-API-Key' => $this->apiKey,\n        ])->post(\"{$this->baseUrl}/api/whatsapp/messages/send-bulk\", [\n            'instance_id' => $this->instanceId,\n            'recipients' => $formattedRecipients,\n            'type' => 'TEXT',\n            'content' => $message,\n        ]);\n\n        return $response->json();\n    }\n\n    /**\n     * Get instance status\n     */\n    public function getInstanceStatus(?string $instanceId = null): array\n    {\n        $response = Http::withHeaders([\n            'X-API-Key' => $this->apiKey,\n        ])->get(\"{$this->baseUrl}/api/whatsapp/instances/\" . ($instanceId ?? $this->instanceId) . '/status');\n\n        return $response->json();\n    }\n\n    /**\n     * Format phone number to international format\n     */\n    protected function formatPhoneNumber(string $phone): string\n    {\n        // Remove all non-numeric characters\n        $phone = preg_replace('/[^0-9]/', '', $phone);\n\n        // If starts with 0, replace with 62 (Indonesia)\n        if (str_starts_with($phone, '0')) {\n            $phone = '62' . substr($phone, 1);\n        }\n\n        // If doesn't start with country code, add 62\n        if (!str_starts_with($phone, '62')) {\n            $phone = '62' . $phone;\n        }\n\n        return $phone;\n    }\n}\n"
+    },
+
+    "service_provider": {
+      "description": "Register service di AppServiceProvider",
+      "file": "app/Providers/AppServiceProvider.php",
+      "code": "public function register()\n{\n    $this->app->singleton(\\App\\Services\\WhatsAppService::class, function ($app) {\n        return new \\App\\Services\\WhatsAppService();\n    });\n}"
+    },
+
+    "usage_examples": {
+      "in_controller": {
+        "description": "Kirim WhatsApp dari controller",
+        "code": "<?php\n\nnamespace App\\Http\\Controllers;\n\nuse App\\Services\\WhatsAppService;\nuse App\\Models\\Customer;\n\nclass CustomerController extends Controller\n{\n    protected $whatsapp;\n\n    public function __construct(WhatsAppService $whatsapp)\n    {\n        $this->whatsapp = $whatsapp;\n    }\n\n    public function sendNotification(Customer $customer)\n    {\n        try {\n            $result = $this->whatsapp->sendMessage(\n                $customer->phone,\n                \"Halo {$customer->name}, pesanan Anda sedang diproses.\"\n            );\n\n            return response()->json(['success' => true, 'data' => $result]);\n        } catch (\\Exception $e) {\n            return response()->json(['success' => false, 'error' => $e->getMessage()], 500);\n        }\n    }\n}\n"
+      },
+
+      "in_event_listener": {
+        "description": "Kirim WhatsApp otomatis saat event terjadi",
+        "event": "App\\Events\\OrderCreated",
+        "listener_code": "<?php\n\nnamespace App\\Listeners;\n\nuse App\\Events\\OrderCreated;\nuse App\\Services\\WhatsAppService;\n\nclass SendOrderWhatsAppNotification\n{\n    protected $whatsapp;\n\n    public function __construct(WhatsAppService $whatsapp)\n    {\n        $this->whatsapp = $whatsapp;\n    }\n\n    public function handle(OrderCreated $event)\n    {\n        $order = $event->order;\n        $customer = $order->customer;\n\n        $message = \"Halo {$customer->name},\\n\\n\";\n        $message .= \"Pesanan #{$order->order_number} telah kami terima.\\n\";\n        $message .= \"Total: Rp \" . number_format($order->total, 0, ',', '.');\n        $message .= \"\\n\\nTerima kasih!\";\n\n        $this->whatsapp->sendMessage($customer->phone, $message);\n    }\n}\n"
+      },
+
+      "in_notification": {
+        "description": "Buat Laravel Notification channel",
+        "channel_code": "<?php\n\nnamespace App\\Notifications\\Channels;\n\nuse App\\Services\\WhatsAppService;\nuse Illuminate\\Notifications\\Notification;\n\nclass WhatsAppChannel\n{\n    protected $whatsapp;\n\n    public function __construct(WhatsAppService $whatsapp)\n    {\n        $this->whatsapp = $whatsapp;\n    }\n\n    public function send($notifiable, Notification $notification)\n    {\n        if (method_exists($notification, 'toWhatsApp')) {\n            $message = $notification->toWhatsApp($notifiable);\n            \n            return $this->whatsapp->sendMessage(\n                $notifiable->routeNotificationFor('whatsapp'),\n                $message\n            );\n        }\n    }\n}\n",
+        "notification_code": "<?php\n\nnamespace App\\Notifications;\n\nuse Illuminate\\Notifications\\Notification;\nuse App\\Notifications\\Channels\\WhatsAppChannel;\n\nclass InvoiceReminder extends Notification\n{\n    protected $invoice;\n\n    public function __construct($invoice)\n    {\n        $this->invoice = $invoice;\n    }\n\n    public function via($notifiable)\n    {\n        return [WhatsAppChannel::class];\n    }\n\n    public function toWhatsApp($notifiable)\n    {\n        return \"Reminder: Invoice #{$this->invoice->number} jatuh tempo pada {$this->invoice->due_date->format('d M Y')}. Total: Rp \" . number_format($this->invoice->total, 0, ',', '.');\n    }\n}\n",
+        "model_code": "// In User or Customer model\npublic function routeNotificationForWhatsapp()\n{\n    return $this->phone; // or $this->whatsapp_number\n}"
+      },
+
+      "in_artisan_command": {
+        "description": "Scheduled reminder command",
+        "code": "<?php\n\nnamespace App\\Console\\Commands;\n\nuse Illuminate\\Console\\Command;\nuse App\\Services\\WhatsAppService;\nuse App\\Models\\Invoice;\n\nclass SendInvoiceReminders extends Command\n{\n    protected $signature = 'invoices:remind';\n    protected $description = 'Send WhatsApp reminders for due invoices';\n\n    public function handle(WhatsAppService $whatsapp)\n    {\n        $dueInvoices = Invoice::where('status', 'pending')\n            ->whereDate('due_date', '<=', now()->addDays(3))\n            ->with('customer')\n            ->get();\n\n        foreach ($dueInvoices as $invoice) {\n            $whatsapp->sendMessage(\n                $invoice->customer->phone,\n                \"Reminder: Invoice #{$invoice->number} akan jatuh tempo pada {$invoice->due_date->format('d M Y')}.\"\n            );\n\n            $this->info(\"Sent reminder for invoice #{$invoice->number}\");\n        }\n    }\n}\n"
+      }
+    },
+
+    "webhook_handling": {
+      "description": "Handle webhook events dari WhatsApp SaaS di Laravel",
+      "route": "Route::post('/webhooks/whatsapp', [WebhookController::class, 'handleWhatsApp'])->name('webhooks.whatsapp');",
+      "controller_code": "<?php\n\nnamespace App\\Http\\Controllers;\n\nuse Illuminate\\Http\\Request;\nuse Illuminate\\Support\\Facades\\Log;\nuse App\\Models\\Message;\nuse App\\Events\\WhatsAppMessageReceived;\n\nclass WebhookController extends Controller\n{\n    public function handleWhatsApp(Request $request)\n    {\n        // Verify webhook signature (optional but recommended)\n        $signature = $request->header('X-Webhook-Signature');\n        $payload = $request->getContent();\n        $expectedSignature = hash_hmac('sha256', $payload, config('services.whatsapp_saas.webhook_secret'));\n\n        if ($signature !== $expectedSignature) {\n            Log::warning('Invalid WhatsApp webhook signature');\n            return response()->json(['error' => 'Invalid signature'], 401);\n        }\n\n        $event = $request->input('event');\n        $data = $request->input('data');\n\n        switch ($event) {\n            case 'message.received':\n                $this->handleIncomingMessage($data);\n                break;\n\n            case 'message.sent':\n            case 'message.delivered':\n            case 'message.read':\n                $this->handleMessageStatus($data);\n                break;\n\n            case 'connection.update':\n                $this->handleConnectionUpdate($data);\n                break;\n\n            default:\n                Log::info('Unhandled WhatsApp event', ['event' => $event]);\n        }\n\n        return response()->json(['success' => true]);\n    }\n\n    protected function handleIncomingMessage(array $data)\n    {\n        // Save to database\n        $message = Message::create([\n            'wa_message_id' => $data['message_id'],\n            'from' => $data['from'],\n            'from_name' => $data['from_name'] ?? null,\n            'content' => $data['content'],\n            'type' => $data['type'],\n            'direction' => 'incoming',\n            'received_at' => now(),\n        ]);\n\n        // Fire event for further processing\n        event(new WhatsAppMessageReceived($message));\n\n        Log::info('Incoming WhatsApp message saved', ['id' => $message->id]);\n    }\n\n    protected function handleMessageStatus(array $data)\n    {\n        Message::where('wa_message_id', $data['wa_message_id'])\n            ->update(['status' => strtolower($data['status'])]);\n    }\n\n    protected function handleConnectionUpdate(array $data)\n    {\n        Log::info('WhatsApp connection update', $data);\n        // Notify admin if disconnected\n    }\n}\n",
+      "disable_csrf": {
+        "file": "app/Http/Middleware/VerifyCsrfToken.php",
+        "code": "protected $except = [\n    'webhooks/whatsapp',\n];"
+      }
+    },
+
+    "queue_integration": {
+      "description": "Send WhatsApp messages via queue untuk performa lebih baik",
+      "job_code": "<?php\n\nnamespace App\\Jobs;\n\nuse App\\Services\\WhatsAppService;\nuse Illuminate\\Bus\\Queueable;\nuse Illuminate\\Contracts\\Queue\\ShouldQueue;\nuse Illuminate\\Foundation\\Bus\\Dispatchable;\nuse Illuminate\\Queue\\InteractsWithQueue;\nuse Illuminate\\Queue\\SerializesModels;\n\nclass SendWhatsAppMessage implements ShouldQueue\n{\n    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;\n\n    public $tries = 3;\n    public $backoff = [10, 30, 60];\n\n    protected $to;\n    protected $message;\n\n    public function __construct(string $to, string $message)\n    {\n        $this->to = $to;\n        $this->message = $message;\n    }\n\n    public function handle(WhatsAppService $whatsapp)\n    {\n        $whatsapp->sendMessage($this->to, $this->message);\n    }\n}\n",
+      "usage": "// Dispatch job\nSendWhatsAppMessage::dispatch($customer->phone, 'Hello World!');\n\n// With delay\nSendWhatsAppMessage::dispatch($phone, $message)->delay(now()->addMinutes(5));"
+    }
+  },
+
+  "php_integration": {
+    "description": "Pure PHP integration tanpa framework",
+    "code": "<?php\n\nclass WhatsAppSaaS\n{\n    private $baseUrl;\n    private $apiKey;\n    private $instanceId;\n\n    public function __construct(string $baseUrl, string $apiKey, string $instanceId)\n    {\n        $this->baseUrl = rtrim($baseUrl, '/');\n        $this->apiKey = $apiKey;\n        $this->instanceId = $instanceId;\n    }\n\n    public function sendMessage(string $to, string $message): array\n    {\n        return $this->request('POST', '/api/whatsapp/messages/send', [\n            'instance_id' => $this->instanceId,\n            'to' => $to,\n            'type' => 'TEXT',\n            'content' => $message,\n        ]);\n    }\n\n    public function sendMedia(string $to, string $type, string $mediaUrl, ?string $caption = null): array\n    {\n        return $this->request('POST', '/api/whatsapp/messages/send', [\n            'instance_id' => $this->instanceId,\n            'to' => $to,\n            'type' => $type,\n            'media_url' => $mediaUrl,\n            'caption' => $caption,\n        ]);\n    }\n\n    public function getStatus(): array\n    {\n        return $this->request('GET', \"/api/whatsapp/instances/{$this->instanceId}/status\");\n    }\n\n    private function request(string $method, string $endpoint, array $data = []): array\n    {\n        $ch = curl_init();\n\n        $url = $this->baseUrl . $endpoint;\n\n        curl_setopt_array($ch, [\n            CURLOPT_URL => $url,\n            CURLOPT_RETURNTRANSFER => true,\n            CURLOPT_HTTPHEADER => [\n                'X-API-Key: ' . $this->apiKey,\n                'Content-Type: application/json',\n                'Accept: application/json',\n            ],\n        ]);\n\n        if ($method === 'POST') {\n            curl_setopt($ch, CURLOPT_POST, true);\n            curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));\n        }\n\n        $response = curl_exec($ch);\n        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);\n        curl_close($ch);\n\n        $result = json_decode($response, true);\n\n        if ($httpCode >= 400) {\n            throw new Exception('WhatsApp API Error: ' . ($result['error']['message'] ?? 'Unknown error'));\n        }\n\n        return $result;\n    }\n}\n\n// Usage\n$wa = new WhatsAppSaaS(\n    'https://your-domain.com',\n    'wsa_your_api_key',\n    'your-instance-uuid'\n);\n\n$result = $wa->sendMessage('6281234567890', 'Hello from PHP!');\nprint_r($result);\n"
+  },
+
+  "python_integration": {
+    "description": "Python integration example",
+    "code": "import requests\nimport json\n\nclass WhatsAppSaaS:\n    def __init__(self, base_url: str, api_key: str, instance_id: str):\n        self.base_url = base_url.rstrip('/')\n        self.api_key = api_key\n        self.instance_id = instance_id\n        self.headers = {\n            'X-API-Key': api_key,\n            'Content-Type': 'application/json'\n        }\n\n    def send_message(self, to: str, message: str) -> dict:\n        \"\"\"Send text message\"\"\"\n        payload = {\n            'instance_id': self.instance_id,\n            'to': to,\n            'type': 'TEXT',\n            'content': message\n        }\n        response = requests.post(\n            f'{self.base_url}/api/whatsapp/messages/send',\n            headers=self.headers,\n            json=payload\n        )\n        response.raise_for_status()\n        return response.json()\n\n    def send_media(self, to: str, media_type: str, media_url: str, caption: str = None) -> dict:\n        \"\"\"Send media message (IMAGE, VIDEO, DOCUMENT)\"\"\"\n        payload = {\n            'instance_id': self.instance_id,\n            'to': to,\n            'type': media_type.upper(),\n            'media_url': media_url,\n            'caption': caption\n        }\n        response = requests.post(\n            f'{self.base_url}/api/whatsapp/messages/send',\n            headers=self.headers,\n            json=payload\n        )\n        response.raise_for_status()\n        return response.json()\n\n    def get_status(self) -> dict:\n        \"\"\"Get instance connection status\"\"\"\n        response = requests.get(\n            f'{self.base_url}/api/whatsapp/instances/{self.instance_id}/status',\n            headers=self.headers\n        )\n        response.raise_for_status()\n        return response.json()\n\n\n# Usage\nwa = WhatsAppSaaS(\n    base_url='https://your-domain.com',\n    api_key='wsa_your_api_key',\n    instance_id='your-instance-uuid'\n)\n\nresult = wa.send_message('6281234567890', 'Hello from Python!')\nprint(result)\n"
+  },
+
+  "nodejs_integration": {
+    "description": "Node.js/JavaScript integration example",
+    "code": "const axios = require('axios');\n\nclass WhatsAppSaaS {\n  constructor(baseUrl, apiKey, instanceId) {\n    this.baseUrl = baseUrl.replace(/\\/+$/, '');\n    this.apiKey = apiKey;\n    this.instanceId = instanceId;\n    this.client = axios.create({\n      baseURL: this.baseUrl,\n      headers: {\n        'X-API-Key': apiKey,\n        'Content-Type': 'application/json'\n      }\n    });\n  }\n\n  async sendMessage(to, message) {\n    const response = await this.client.post('/api/whatsapp/messages/send', {\n      instance_id: this.instanceId,\n      to,\n      type: 'TEXT',\n      content: message\n    });\n    return response.data;\n  }\n\n  async sendMedia(to, type, mediaUrl, caption = null) {\n    const response = await this.client.post('/api/whatsapp/messages/send', {\n      instance_id: this.instanceId,\n      to,\n      type: type.toUpperCase(),\n      media_url: mediaUrl,\n      caption\n    });\n    return response.data;\n  }\n\n  async getStatus() {\n    const response = await this.client.get(`/api/whatsapp/instances/${this.instanceId}/status`);\n    return response.data;\n  }\n\n  async sendBulk(recipients, message) {\n    const response = await this.client.post('/api/whatsapp/messages/send-bulk', {\n      instance_id: this.instanceId,\n      recipients,\n      type: 'TEXT',\n      content: message\n    });\n    return response.data;\n  }\n}\n\n// Usage\nconst wa = new WhatsAppSaaS(\n  'https://your-domain.com',\n  'wsa_your_api_key',\n  'your-instance-uuid'\n);\n\n(async () => {\n  const result = await wa.sendMessage('6281234567890', 'Hello from Node.js!');\n  console.log(result);\n})();\n\nmodule.exports = WhatsAppSaaS;\n"
+  },
+
+  "common_use_cases": {
+    "crm_integration": {
+      "description": "Use cases untuk CRM",
+      "scenarios": [
+        {
+          "name": "New Lead Notification",
+          "trigger": "When new lead created in CRM",
+          "action": "Send WhatsApp to sales team"
+        },
+        {
+          "name": "Lead Follow-up",
+          "trigger": "Scheduled (e.g., 24 hours after no response)",
+          "action": "Send follow-up message to lead"
+        },
+        {
+          "name": "Deal Won Notification",
+          "trigger": "When deal status changed to 'Won'",
+          "action": "Send thank you message to customer"
+        },
+        {
+          "name": "Invoice Reminder",
+          "trigger": "Scheduled (e.g., 3 days before due date)",
+          "action": "Send payment reminder"
+        },
+        {
+          "name": "Support Ticket Update",
+          "trigger": "When ticket status changed",
+          "action": "Notify customer via WhatsApp"
+        },
+        {
+          "name": "Birthday/Anniversary",
+          "trigger": "Scheduled daily check",
+          "action": "Send personalized greeting"
+        }
+      ]
+    },
+    
+    "ecommerce_integration": {
+      "description": "Use cases untuk E-commerce",
+      "scenarios": [
+        {
+          "name": "Order Confirmation",
+          "trigger": "After successful checkout",
+          "action": "Send order details via WhatsApp"
+        },
+        {
+          "name": "Shipping Update",
+          "trigger": "When order shipped",
+          "action": "Send tracking number"
+        },
+        {
+          "name": "Delivery Confirmation",
+          "trigger": "When order delivered",
+          "action": "Ask for review/feedback"
+        },
+        {
+          "name": "Abandoned Cart",
+          "trigger": "1 hour after cart abandoned",
+          "action": "Send reminder with cart items"
+        },
+        {
+          "name": "Stock Alert",
+          "trigger": "When wishlisted item back in stock",
+          "action": "Notify customer"
+        }
+      ]
+    },
+
+    "automation_tools": {
+      "description": "Tools yang bisa diintegrasikan",
+      "list": [
+        {
+          "name": "n8n",
+          "type": "Self-hosted automation",
+          "method": "HTTP Request + Webhook nodes"
+        },
+        {
+          "name": "Zapier",
+          "type": "Cloud automation",
+          "method": "Webhooks by Zapier"
+        },
+        {
+          "name": "Make (Integromat)",
+          "type": "Cloud automation",
+          "method": "HTTP module + Webhooks"
+        },
+        {
+          "name": "Pabbly Connect",
+          "type": "Cloud automation",
+          "method": "Webhook trigger + API call"
+        },
+        {
+          "name": "Pipedream",
+          "type": "Developer-focused automation",
+          "method": "HTTP triggers + Node.js code"
+        }
+      ]
+    }
+  },
+
+  "webhook_verification": {
+    "description": "Cara verifikasi webhook signature",
+    "php_example": "<?php\n$signature = $_SERVER['HTTP_X_WEBHOOK_SIGNATURE'] ?? '';\n$payload = file_get_contents('php://input');\n$secret = 'your-webhook-secret';\n\n$expectedSignature = hash_hmac('sha256', $payload, $secret);\n\nif (!hash_equals($expectedSignature, $signature)) {\n    http_response_code(401);\n    exit('Invalid signature');\n}\n\n// Process webhook...\n$data = json_decode($payload, true);\n",
+    "nodejs_example": "const crypto = require('crypto');\n\nfunction verifyWebhook(payload, signature, secret) {\n  const expectedSignature = crypto\n    .createHmac('sha256', secret)\n    .update(payload)\n    .digest('hex');\n  \n  return crypto.timingSafeEqual(\n    Buffer.from(signature),\n    Buffer.from(expectedSignature)\n  );\n}\n\n// In Express.js\napp.post('/webhook', express.raw({type: 'application/json'}), (req, res) => {\n  const signature = req.headers['x-webhook-signature'];\n  \n  if (!verifyWebhook(req.body, signature, process.env.WEBHOOK_SECRET)) {\n    return res.status(401).send('Invalid signature');\n  }\n  \n  const data = JSON.parse(req.body);\n  // Process webhook...\n});\n"
+  },
+
+  "troubleshooting": {
+    "common_issues": {
+      "401_unauthorized": {
+        "cause": "API key invalid or expired",
+        "solution": "Check API key, generate new if needed"
+      },
+      "403_forbidden": {
+        "cause": "API key doesn't have required permission",
+        "solution": "Check API key permissions in dashboard"
+      },
+      "404_not_found": {
+        "cause": "Wrong endpoint URL or resource doesn't exist",
+        "solution": "Check API documentation for correct endpoint"
+      },
+      "429_too_many_requests": {
+        "cause": "Rate limit exceeded",
+        "solution": "Reduce request frequency or upgrade plan"
+      },
+      "500_server_error": {
+        "cause": "Server-side issue",
+        "solution": "Contact support with request details"
+      },
+      "instance_not_connected": {
+        "cause": "WhatsApp instance disconnected",
+        "solution": "Reconnect instance via dashboard"
+      },
+      "message_failed": {
+        "cause": "Number not on WhatsApp or blocked",
+        "solution": "Verify recipient's WhatsApp status"
+      },
+      "webhook_not_receiving": {
+        "cause": "URL not accessible or HTTPS required",
+        "solution": "Ensure URL is publicly accessible with valid SSL"
+      }
+    }
+  },
+
+  "best_practices": {
+    "api_usage": [
+      "Store API key securely (environment variables)",
+      "Implement retry logic with exponential backoff",
+      "Handle rate limits gracefully",
+      "Validate phone numbers before sending",
+      "Use queue for bulk sending"
+    ],
+    "webhook_handling": [
+      "Verify webhook signatures",
+      "Respond quickly (< 5 seconds)",
+      "Process heavy operations asynchronously",
+      "Implement idempotency",
+      "Log all incoming webhooks"
+    ],
+    "message_sending": [
+      "Format phone numbers consistently",
+      "Personalize messages where possible",
+      "Respect anti-spam guidelines",
+      "Monitor delivery rates",
+      "Handle failed messages appropriately"
+    ]
+  }
+}
