@@ -23,6 +23,7 @@ import {
   sessionExists,
 } from './session.service';
 import { WARMING_PHASE_LIMITS, WarmingPhaseType } from './whatsapp.schema';
+import { validateMediaUrl } from '../../utils/url-validator';
 
 // ============================================
 // BAILEYS SERVICE
@@ -809,6 +810,12 @@ export async function sendMediaMessage(
     return { success: false, error: canSend.reason };
   }
 
+  // SSRF protection: validate media URL before fetching
+  const urlValidation = await validateMediaUrl(mediaUrl);
+  if (!urlValidation.valid) {
+    return { success: false, error: `Invalid media URL: ${urlValidation.error}` };
+  }
+
   try {
     const jid = formatPhoneToJid(to);
     
@@ -885,6 +892,12 @@ export async function sendLocationMessage(
     return { success: false, error: 'Instance not connected' };
   }
 
+  // Check daily sending limit (same as sendTextMessage)
+  const canSend = await canSendMessage(instanceId);
+  if (!canSend.allowed) {
+    return { success: false, error: canSend.reason };
+  }
+
   try {
     const jid = formatPhoneToJid(to);
     
@@ -894,6 +907,15 @@ export async function sendLocationMessage(
         degreesLongitude: longitude,
         name,
         address,
+      },
+    });
+
+    // Increment daily message count (same as sendTextMessage)
+    await prisma.whatsAppInstance.update({
+      where: { id: instanceId },
+      data: {
+        daily_message_count: { increment: 1 },
+        last_message_at: new Date(),
       },
     });
 

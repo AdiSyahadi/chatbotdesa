@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
 import path from 'path';
+import crypto from 'crypto';
 
 // Load .env file from backend root directory
 dotenv.config({ path: path.resolve(__dirname, '../../.env') });
@@ -83,8 +84,26 @@ const config: Config = {
     db: parseInt(process.env.REDIS_DB || '0', 10),
   },
   jwt: {
-    secret: process.env.JWT_SECRET || 'your-super-secret-jwt-key',
-    refreshSecret: process.env.JWT_REFRESH_SECRET || 'your-super-secret-refresh-key',
+    secret: (() => {
+      const secret = process.env.JWT_SECRET;
+      if (!secret && process.env.NODE_ENV === 'production') {
+        throw new Error('FATAL: JWT_SECRET environment variable is required in production');
+      }
+      if (!secret) {
+        console.warn('⚠️  JWT_SECRET not set — using random secret (sessions will not persist across restarts)');
+      }
+      return secret || crypto.randomBytes(64).toString('hex');
+    })(),
+    refreshSecret: (() => {
+      const secret = process.env.JWT_REFRESH_SECRET;
+      if (!secret && process.env.NODE_ENV === 'production') {
+        throw new Error('FATAL: JWT_REFRESH_SECRET environment variable is required in production');
+      }
+      if (!secret) {
+        console.warn('⚠️  JWT_REFRESH_SECRET not set — using random secret (sessions will not persist across restarts)');
+      }
+      return secret || crypto.randomBytes(64).toString('hex');
+    })(),
     expiresIn: process.env.JWT_EXPIRES_IN || '15m',
     refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
   },

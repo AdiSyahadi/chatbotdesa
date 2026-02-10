@@ -367,6 +367,16 @@ export class ApiKeyService {
         return { valid: false, error: 'Organization is disabled' };
       }
 
+      // Check subscription status
+      const subStatus = key.organization.subscription_status;
+      const BLOCKED_STATUSES = ['EXPIRED', 'CANCELED', 'SUSPENDED'];
+      if (subStatus && BLOCKED_STATUSES.includes(subStatus)) {
+        return {
+          valid: false,
+          error: `Subscription is ${subStatus.toLowerCase()}. Please renew your subscription to continue using the API.`,
+        };
+      }
+
       // Update last used timestamp (fire and forget)
       prisma.apiKey.update({
         where: { id: key.id },

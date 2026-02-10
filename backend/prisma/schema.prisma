@@ -143,6 +143,10 @@ model WhatsAppInstance {
   webhook_events    Json?    // Array of events: ["message", "status", "qr"]
   webhook_secret    String?  @db.VarChar(255)
   
+  // Auto-reply control
+  auto_reply_enabled     Boolean  @default(false)
+  auto_reply_max_per_hour Int     @default(30)
+  
   // Metadata
   created_at        DateTime @default(now())
   updated_at        DateTime @updatedAt
@@ -269,7 +273,7 @@ model Webhook {
   // Delivery status
   status            WebhookStatus @default(PENDING)
   attempts          Int      @default(0)
-  max_attempts      Int      @default(3)
+  max_attempts      Int      @default(5)
   
   next_retry_at     DateTime?
   last_attempt_at   DateTime?

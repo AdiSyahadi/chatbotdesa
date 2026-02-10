@@ -8,7 +8,8 @@ import prisma from '../config/database';
 import logger from '../config/logger';
 import { WebhookService } from '../modules/webhooks/webhooks.service';
 import { WebhookPayload } from '../modules/webhooks/webhooks.schema';
-import { getSocket, extractPhoneFromJid } from '../modules/whatsapp/baileys.service';
+import { getSocket, extractPhoneFromJid, canSendMessage } from '../modules/whatsapp/baileys.service';
+import { WEBHOOK_CONFIG } from '../config/constants';
 
 // Redis connection options for BullMQ (requires separate connection)
 const redisConnectionOptions = {
@@ -60,15 +61,39 @@ async function processWebhook(job: Job<WebhookJobData>): Promise<void> {
 
       // ============================================
       // AUTO-REPLY: Send webhook response back to WhatsApp
-      // If the webhook response contains a "message" field,
-      // automatically send it as a reply to the original sender.
-      // This enables "Respond to Webhook" pattern in n8n.
+      // Only if auto_reply_enabled is true for this instance (opt-in)
       // ============================================
       if (payload.event === 'message.received' && result.responseBody) {
-        await handleAutoReply(payload, result.responseBody, webhookId);
+        // Check if auto-reply is enabled for this instance
+        const instance = await prisma.whatsAppInstance.findUnique({
+          where: { id: payload.instance_id },
+          select: { auto_reply_enabled: true, auto_reply_max_per_hour: true },
+        });
+
+        if (instance?.auto_reply_enabled) {
+          // Check hourly rate limit for auto-replies
+          const hourAgo = new Date(Date.now() - 3600000);
+          const recentAutoReplies = await prisma.message.count({
+            where: {
+              instance_id: payload.instance_id,
+              direction: 'OUTGOING',
+              created_at: { gte: hourAgo },
+            },
+          });
+
+          const maxPerHour = instance.auto_reply_max_per_hour || 30;
+          if (recentAutoReplies < maxPerHour) {
+            await handleAutoReply(payload, result.responseBody, webhookId);
+          } else {
+            logger.warn(
+              { instanceId: payload.instance_id, recentAutoReplies, maxPerHour },
+              'Auto-reply rate limit reached — skipping'
+            );
+          }
+        }
       }
     } else {
-      const maxAttempts = job.opts.attempts || 5;
+      const maxAttempts = WEBHOOK_CONFIG.MAX_ATTEMPTS;
       const isLastAttempt = job.attemptsMade >= maxAttempts - 1;
 
       logger.warn(
@@ -163,6 +188,13 @@ async function handleAutoReply(
 
     // Clean up the reply text
     replyText = replyText.trim();
+
+    // Check daily sending limit before auto-replying
+    const canSend = await canSendMessage(instanceId);
+    if (!canSend.allowed) {
+      logger.warn({ instanceId, webhookId, reason: canSend.reason }, 'Auto-reply blocked by daily limit');
+      return;
+    }
 
     console.log(`🤖 [AUTO-REPLY] Sending reply to ${senderJid} (${replyText.substring(0, 50)}...)`);
 

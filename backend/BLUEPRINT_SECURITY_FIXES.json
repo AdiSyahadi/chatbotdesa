@@ -1,0 +1,430 @@
+{
+  "blueprint": {
+    "title": "SaaS WA API — Security & Production Readiness Blueprint",
+    "version": "1.0.0",
+    "created_at": "2026-02-10",
+    "author": "Code Review Agent",
+    "summary": "13 issues identified across 3 priority levels. This blueprint provides the most proper solution for each issue with exact file locations, current problematic code, and production-grade replacement code.",
+    "status": "PENDING_IMPLEMENTATION"
+  },
+
+  "issues": [
+    {
+      "id": 1,
+      "priority": "P0_CRITICAL",
+      "title": "JWT Secret Hardcoded di Config Fallback",
+      "category": "SECURITY",
+      "impact": "Siapa pun yang baca source code bisa forge JWT token dan bypass authentication sepenuhnya",
+      "cvss_equivalent": "9.8 (Critical)",
+      "file": "backend/src/config/index.ts",
+      "lines": "85-90",
+      "current_code": "jwt: {\n  secret: process.env.JWT_SECRET || 'your-super-secret-jwt-key',\n  refreshSecret: process.env.JWT_REFRESH_SECRET || 'your-super-secret-refresh-key',\n  expiresIn: process.env.JWT_EXPIRES_IN || '15m',\n  refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',\n}",
+      "solution": {
+        "approach": "Throw error on startup if JWT secrets are not set in production. Generate random fallback only for development mode.",
+        "fixed_code": "jwt: {\n  secret: (() => {\n    const secret = process.env.JWT_SECRET;\n    if (!secret && process.env.NODE_ENV === 'production') {\n      throw new Error('FATAL: JWT_SECRET environment variable is required in production');\n    }\n    return secret || require('crypto').randomBytes(64).toString('hex');\n  })(),\n  refreshSecret: (() => {\n    const secret = process.env.JWT_REFRESH_SECRET;\n    if (!secret && process.env.NODE_ENV === 'production') {\n      throw new Error('FATAL: JWT_REFRESH_SECRET environment variable is required in production');\n    }\n    return secret || require('crypto').randomBytes(64).toString('hex');\n  })(),\n  expiresIn: process.env.JWT_EXPIRES_IN || '15m',\n  refreshExpiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',\n}",
+        "additional_steps": [
+          "Add startup validation function that checks all critical env vars",
+          "Log warning in development mode when using generated secrets",
+          "Add JWT_SECRET and JWT_REFRESH_SECRET to .env.example with instructions to generate"
+        ],
+        "env_example": "# Generate with: node -e \"console.log(require('crypto').randomBytes(64).toString('hex'))\"\nJWT_SECRET=\nJWT_REFRESH_SECRET="
+      },
+      "effort": "15 minutes",
+      "risk": "LOW — no functional change if env vars are already set"
+    },
+
+    {
+      "id": 2,
+      "priority": "P0_CRITICAL",
+      "title": "Conversations Endpoint Load SEMUA Messages ke Memory (OOM Risk)",
+      "category": "PERFORMANCE",
+      "impact": "Server crash (Out of Memory) ketika tenant punya 100K+ messages. Single-process architecture = semua tenant ikut down.",
+      "file": "backend/src/modules/external-api/external-api.routes.ts",
+      "lines": "813-854",
+      "current_code": "const allMessages = await prisma.message.findMany({\n  where,\n  select: { chat_jid: true, instance_id: true, created_at: true },\n  orderBy: { created_at: 'desc' },\n});\n// Group by chat_jid + instance_id in JavaScript memory",
+      "solution": {
+        "approach": "Replace in-memory grouping with SQL GROUP BY query using Prisma raw query or groupBy. This pushes the aggregation to the database engine where it belongs.",
+        "fixed_code": "// Step 1: Use Prisma groupBy to get conversations efficiently\nconst conversationGroups = await prisma.message.groupBy({\n  by: ['chat_jid', 'instance_id'],\n  where,\n  _count: { id: true },\n  _max: { created_at: true },\n  orderBy: { _max: { created_at: 'desc' } },\n});\n\nconst total = conversationGroups.length;\nconst paginatedGroups = conversationGroups.slice(offset, offset + limit);\n\n// Step 2: Batch-fetch last messages for paginated conversations only\nconst conversationKeys = paginatedGroups.map(g => ({\n  chat_jid: g.chat_jid,\n  instance_id: g.instance_id,\n}));\n\n// Use a single query with OR conditions instead of N+1\nconst lastMessages = await prisma.$queryRaw`\n  SELECT m.* FROM messages m\n  INNER JOIN (\n    SELECT chat_jid, instance_id, MAX(created_at) as max_created\n    FROM messages\n    WHERE organization_id = ${orgId}\n    GROUP BY chat_jid, instance_id\n  ) latest ON m.chat_jid = latest.chat_jid\n    AND m.instance_id = latest.instance_id\n    AND m.created_at = latest.max_created\n  WHERE m.organization_id = ${orgId}\n  ORDER BY m.created_at DESC\n  LIMIT ${limit} OFFSET ${offset}\n`;\n\n// Step 3: Batch-fetch contacts\nconst chatJids = paginatedGroups.map(g => g.chat_jid);\nconst contacts = await prisma.contact.findMany({\n  where: { jid: { in: chatJids }, organization_id: orgId },\n});\nconst contactMap = new Map(contacts.map(c => [c.jid, c]));",
+        "additional_steps": [
+          "Add database index on (organization_id, chat_jid, instance_id, created_at) if not exists",
+          "Consider materializing conversations as a separate table/view for further optimization",
+          "Add query timeout to prevent long-running queries from blocking connection pool"
+        ],
+        "prisma_index": "@@index([organization_id, chat_jid, instance_id, created_at], name: 'idx_message_conversations')"
+      },
+      "effort": "1-2 hours",
+      "risk": "MEDIUM — requires careful testing of query output format"
+    },
+
+    {
+      "id": 3,
+      "priority": "P0_CRITICAL",
+      "title": "Math.random() untuk Security Token (Predictable Tokens)",
+      "category": "SECURITY",
+      "impact": "Token reset password dan invitation bisa diprediksi oleh attacker. Math.random() menggunakan PRNG yang bisa di-reverse-engineer.",
+      "cvss_equivalent": "7.5 (High)",
+      "file": "backend/src/utils/crypto.ts",
+      "lines": "16-23",
+      "current_code": "export const generateRandomToken = (length: number = 32): string => {\n  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';\n  let result = '';\n  for (let i = 0; i < length; i++) {\n    result += chars.charAt(Math.floor(Math.random() * chars.length));\n  }\n  return result;\n};",
+      "solution": {
+        "approach": "Replace Math.random() with Node.js crypto.randomBytes() which uses the OS CSPRNG (Cryptographically Secure Pseudo-Random Number Generator).",
+        "fixed_code": "import crypto from 'crypto';\n\nexport const generateRandomToken = (length: number = 32): string => {\n  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';\n  const randomBytes = crypto.randomBytes(length);\n  let result = '';\n  for (let i = 0; i < length; i++) {\n    result += chars.charAt(randomBytes[i] % chars.length);\n  }\n  return result;\n};\n\n// Alternative: Even simpler, URL-safe base64 token\nexport const generateSecureToken = (byteLength: number = 32): string => {\n  return crypto.randomBytes(byteLength).toString('base64url');\n};",
+        "additional_steps": [
+          "Audit all other usages of Math.random() in the codebase",
+          "Replace any crypto-sensitive randomness with the fixed function",
+          "Consider using generateSecureToken() for URL tokens (password reset, invitation links)"
+        ]
+      },
+      "effort": "15 minutes",
+      "risk": "LOW — drop-in replacement, same function signature"
+    },
+
+    {
+      "id": 4,
+      "priority": "P1_HIGH",
+      "title": "Rate Limiting FAKE — Header Dekorasi, Tidak Pernah Enforce",
+      "category": "SECURITY",
+      "impact": "API bisa di-abuse tanpa batas. Satu API key bisa kirim jutaan request/menit. Tidak ada proteksi DDoS per-tenant.",
+      "file": "backend/src/modules/external-api/external-api.routes.ts",
+      "lines": "25-30",
+      "current_code": "function addRateLimitHeaders(reply: FastifyReply, req: ApiKeyAuthenticatedRequest) {\n  const rateLimit = req.apiKey.rate_limit || 1000;\n  reply.header('X-RateLimit-Limit', rateLimit);\n  reply.header('X-RateLimit-Remaining', Math.max(0, rateLimit - 1)); // Approximate\n  reply.header('X-RateLimit-Reset', new Date(Date.now() + 60000).toISOString());\n}",
+      "solution": {
+        "approach": "Implement Redis-backed sliding window rate limiter per API key. Use Redis MULTI/EXEC with INCR + EXPIRE for atomic counter operations. Create as Fastify preHandler hook.",
+        "new_file": "backend/src/middleware/api-rate-limiter.ts",
+        "fixed_code": "import { FastifyRequest, FastifyReply } from 'fastify';\nimport Redis from 'ioredis';\nimport { config } from '../config';\n\nconst redis = new Redis({\n  host: config.redis.host,\n  port: config.redis.port,\n  password: config.redis.password || undefined,\n  db: config.redis.db || 0,\n});\n\ninterface RateLimitResult {\n  allowed: boolean;\n  limit: number;\n  remaining: number;\n  resetAt: Date;\n}\n\nasync function checkRateLimit(apiKeyId: string, limit: number, windowMs: number = 60000): Promise<RateLimitResult> {\n  const now = Date.now();\n  const windowStart = now - windowMs;\n  const key = `ratelimit:${apiKeyId}`;\n\n  // Sliding window using sorted set\n  const pipeline = redis.pipeline();\n  pipeline.zremrangebyscore(key, 0, windowStart); // Remove expired entries\n  pipeline.zadd(key, now.toString(), `${now}:${Math.random()}`); // Add current request\n  pipeline.zcard(key); // Count requests in window\n  pipeline.pexpire(key, windowMs); // Set TTL\n\n  const results = await pipeline.exec();\n  const count = (results?.[2]?.[1] as number) || 0;\n\n  return {\n    allowed: count <= limit,\n    limit,\n    remaining: Math.max(0, limit - count),\n    resetAt: new Date(now + windowMs),\n  };\n}\n\nexport async function apiRateLimitHook(req: FastifyRequest, reply: FastifyReply): Promise<void> {\n  const apiKey = (req as any).apiKey;\n  if (!apiKey) return;\n\n  const limit = apiKey.rate_limit || 1000; // per minute\n  const result = await checkRateLimit(apiKey.id, limit, 60000);\n\n  reply.header('X-RateLimit-Limit', result.limit);\n  reply.header('X-RateLimit-Remaining', result.remaining);\n  reply.header('X-RateLimit-Reset', result.resetAt.toISOString());\n\n  if (!result.allowed) {\n    reply.status(429).send({\n      success: false,\n      error: {\n        code: 'RATE_LIMIT_EXCEEDED',\n        message: `Rate limit of ${result.limit} requests per minute exceeded`,\n        retry_after: Math.ceil((result.resetAt.getTime() - Date.now()) / 1000),\n      },\n    });\n    return;\n  }\n}",
+        "integration": "// In external-api.routes.ts, register as preHandler:\nimport { apiRateLimitHook } from '../../middleware/api-rate-limiter';\n\n// Add to route registration:\nfastify.addHook('preHandler', apiRateLimitHook);\n\n// Remove the old addRateLimitHeaders function and all its calls",
+        "additional_steps": [
+          "Remove the fake addRateLimitHeaders function",
+          "Remove all addRateLimitHeaders() calls from route handlers",
+          "Add rate limit info to API documentation",
+          "Consider different limits per plan tier (free: 100/min, pro: 1000/min, enterprise: 10000/min)"
+        ]
+      },
+      "effort": "1 hour",
+      "risk": "LOW — new middleware, no breaking changes to API response format"
+    },
+
+    {
+      "id": 5,
+      "priority": "P1_HIGH",
+      "title": "SSRF via Media URL — Internal Network Exposure",
+      "category": "SECURITY",
+      "impact": "Attacker bisa scan internal network, akses AWS/GCP metadata endpoint (169.254.169.254), atau probe internal services.",
+      "cvss_equivalent": "8.6 (High)",
+      "file": "backend/src/modules/whatsapp/baileys.service.ts",
+      "lines": "793-870",
+      "current_code": "// mediaUrl passed directly to Baileys without validation\ncase 'image':\n  messageContent = {\n    image: { url: mediaUrl },\n    caption,\n  };",
+      "solution": {
+        "approach": "Create a URL validator that blocks private/reserved IP ranges, internal hostnames, and non-HTTP(S) schemes. Resolve DNS first to prevent DNS rebinding attacks.",
+        "new_file": "backend/src/utils/url-validator.ts",
+        "fixed_code": "import { URL } from 'url';\nimport dns from 'dns/promises';\nimport net from 'net';\n\n// Private/reserved IP ranges that should never be accessed\nconst BLOCKED_IP_RANGES = [\n  // IPv4 private ranges\n  { start: '10.0.0.0', end: '10.255.255.255' },\n  { start: '172.16.0.0', end: '172.31.255.255' },\n  { start: '192.168.0.0', end: '192.168.255.255' },\n  // Loopback\n  { start: '127.0.0.0', end: '127.255.255.255' },\n  // Link-local\n  { start: '169.254.0.0', end: '169.254.255.255' },\n  // AWS/cloud metadata\n  { start: '169.254.169.254', end: '169.254.169.254' },\n  // Localhost IPv4\n  { start: '0.0.0.0', end: '0.255.255.255' },\n];\n\nconst BLOCKED_HOSTNAMES = [\n  'localhost',\n  'metadata.google.internal',\n  'metadata.google.com',\n  '169.254.169.254',\n];\n\nfunction ipToLong(ip: string): number {\n  return ip.split('.').reduce((acc, octet) => (acc << 8) + parseInt(octet), 0) >>> 0;\n}\n\nfunction isPrivateIP(ip: string): boolean {\n  if (net.isIPv6(ip)) return ip === '::1' || ip.startsWith('fe80:') || ip.startsWith('fc') || ip.startsWith('fd');\n  const ipLong = ipToLong(ip);\n  return BLOCKED_IP_RANGES.some(range => {\n    const start = ipToLong(range.start);\n    const end = ipToLong(range.end);\n    return ipLong >= start && ipLong <= end;\n  });\n}\n\nexport async function validateMediaUrl(urlString: string): Promise<{ valid: boolean; error?: string }> {\n  // 1. Parse URL\n  let parsed: URL;\n  try {\n    parsed = new URL(urlString);\n  } catch {\n    return { valid: false, error: 'Invalid URL format' };\n  }\n\n  // 2. Only allow http and https\n  if (!['http:', 'https:'].includes(parsed.protocol)) {\n    return { valid: false, error: `Protocol '${parsed.protocol}' not allowed. Only http and https are supported.` };\n  }\n\n  // 3. Block known internal hostnames\n  const hostname = parsed.hostname.toLowerCase();\n  if (BLOCKED_HOSTNAMES.includes(hostname)) {\n    return { valid: false, error: `Hostname '${hostname}' is not allowed` };\n  }\n\n  // 4. Resolve DNS and check if IP is private (prevents DNS rebinding)\n  try {\n    const addresses = await dns.resolve4(hostname).catch(() => []);\n    const addresses6 = await dns.resolve6(hostname).catch(() => []);\n    const allAddresses = [...addresses, ...addresses6];\n\n    if (allAddresses.length === 0) {\n      // If hostname is already an IP, check directly\n      if (net.isIP(hostname)) {\n        if (isPrivateIP(hostname)) {\n          return { valid: false, error: 'URLs pointing to private/internal IP addresses are not allowed' };\n        }\n      }\n      // else: DNS didn't resolve, let Baileys handle the error naturally\n      return { valid: true };\n    }\n\n    for (const addr of allAddresses) {\n      if (isPrivateIP(addr)) {\n        return { valid: false, error: 'URLs pointing to private/internal IP addresses are not allowed' };\n      }\n    }\n  } catch {\n    // DNS resolution failed — URL may still be valid (e.g., CDN with CNAME)\n    return { valid: true };\n  }\n\n  return { valid: true };\n}",
+        "integration": "// In baileys.service.ts sendMediaMessage function, add before creating messageContent:\nimport { validateMediaUrl } from '../../utils/url-validator';\n\nconst urlValidation = await validateMediaUrl(mediaUrl);\nif (!urlValidation.valid) {\n  return { success: false, error: `Invalid media URL: ${urlValidation.error}` };\n}",
+        "additional_steps": [
+          "Add SSRF protection logging for security audit trail",
+          "Consider allowing an admin-configured allowlist for internal URLs if needed",
+          "Add timeout for DNS resolution to prevent hanging"
+        ]
+      },
+      "effort": "45 minutes",
+      "risk": "LOW — adds validation before existing logic"
+    },
+
+    {
+      "id": 6,
+      "priority": "P1_HIGH",
+      "title": "Auto-Reply dari Webhook Response Tanpa Opt-In",
+      "category": "SECURITY",
+      "impact": "Webhook endpoint jahat bisa kirim spam melalui WhatsApp number kamu, trigger anti-ban, atau kirim konten abusif atas nama user.",
+      "file": "backend/src/workers/webhook.worker.ts",
+      "lines": "62-68, 175-177",
+      "current_code": "// Auto-reply fires automatically for ALL webhook responses with message field\nif (payload.event === 'message.received' && result.responseBody) {\n  await handleAutoReply(payload, result.responseBody, webhookId);\n}\n\n// handleAutoReply bypasses canSendMessage() — calls socket.sendMessage directly\nawait socket.sendMessage(senderJid, { text: replyText });",
+      "solution": {
+        "approach": "Make auto-reply opt-in per instance via a database flag. Add canSendMessage() check before sending. Add rate limiting specifically for auto-replies.",
+        "schema_change": "// Add to WhatsAppInstance model in schema.prisma:\nauto_reply_enabled   Boolean  @default(false)\nauto_reply_max_per_hour Int   @default(30)",
+        "fixed_code": "// In webhook.worker.ts — replace the auto-reply trigger:\nif (payload.event === 'message.received' && result.responseBody) {\n  // Check if auto-reply is enabled for this instance\n  const instance = await prisma.whatsAppInstance.findUnique({\n    where: { id: payload.instance_id },\n    select: { auto_reply_enabled: true, auto_reply_max_per_hour: true },\n  });\n\n  if (instance?.auto_reply_enabled) {\n    // Check rate limit for auto-replies\n    const hourAgo = new Date(Date.now() - 3600000);\n    const recentAutoReplies = await prisma.message.count({\n      where: {\n        instance_id: payload.instance_id,\n        direction: 'outgoing',\n        metadata: { path: ['source'], equals: 'auto_reply' },\n        created_at: { gte: hourAgo },\n      },\n    });\n\n    if (recentAutoReplies < (instance.auto_reply_max_per_hour || 30)) {\n      await handleAutoReply(payload, result.responseBody, webhookId);\n    } else {\n      logger.warn(`Auto-reply rate limit reached for instance ${payload.instance_id}`);\n    }\n  }\n}\n\n// In handleAutoReply — add canSendMessage check:\nasync function handleAutoReply(...) {\n  // ... existing parse logic ...\n\n  // Check daily sending limit BEFORE sending\n  const canSend = await canSendMessage(instanceId);\n  if (!canSend.allowed) {\n    logger.warn(`Auto-reply blocked: ${canSend.reason}`);\n    return;\n  }\n\n  // Send with metadata tagging\n  await socket.sendMessage(senderJid, { text: replyText });\n  // Tag the outgoing message as auto_reply source\n}",
+        "api_endpoint": "// Add to external-api.routes.ts:\n// PATCH /instances/:instanceId/auto-reply\nfastify.patch('/instances/:instanceId/auto-reply', {\n  preHandler: [apiKeyAuth],\n  handler: async (req, reply) => {\n    const { instanceId } = req.params;\n    const { enabled, max_per_hour } = req.body;\n    // Update instance auto_reply_enabled and auto_reply_max_per_hour\n  },\n});",
+        "additional_steps": [
+          "Create Prisma migration for new fields",
+          "Add auto_reply_enabled toggle in frontend dashboard",
+          "Log all auto-replies with source='auto_reply' metadata for audit",
+          "Add webhook response size limit (max 1KB) to prevent abuse"
+        ]
+      },
+      "effort": "1.5 hours",
+      "risk": "MEDIUM — requires schema migration + behavior change (auto-reply will stop working until explicitly enabled)"
+    },
+
+    {
+      "id": 7,
+      "priority": "P1_HIGH",
+      "title": "Subscription Status Tidak Dicek di API Key Validation",
+      "category": "BUSINESS_LOGIC",
+      "impact": "Organization dengan subscription expired/canceled masih bisa akses API penuh. Revenue loss dan potential abuse.",
+      "file": "backend/src/modules/api-keys/api-keys.service.ts",
+      "lines": "369-371",
+      "current_code": "if (!key.organization.is_active) {\n  return { valid: false, error: 'Organization is disabled' };\n}\n// No subscription_status check — expired orgs can still use API",
+      "solution": {
+        "approach": "Add subscription status validation after the is_active check. Allow a grace period for recently expired subscriptions.",
+        "fixed_code": "if (!key.organization.is_active) {\n  return { valid: false, error: 'Organization is disabled' };\n}\n\n// Check subscription status\nconst subStatus = key.organization.subscription_status;\nconst ALLOWED_STATUSES = ['ACTIVE', 'TRIALING', 'PAST_DUE']; // PAST_DUE gets grace period\nconst BLOCKED_STATUSES = ['EXPIRED', 'CANCELED', 'SUSPENDED'];\n\nif (subStatus && BLOCKED_STATUSES.includes(subStatus)) {\n  return {\n    valid: false,\n    error: `Subscription is ${subStatus.toLowerCase()}. Please renew your subscription to continue using the API.`,\n  };\n}\n\n// Optional: Check grace period for PAST_DUE\nif (subStatus === 'PAST_DUE') {\n  const gracePeriodDays = 7;\n  const subscriptionEnd = key.organization.subscription_end_date;\n  if (subscriptionEnd) {\n    const graceDeadline = new Date(subscriptionEnd.getTime() + gracePeriodDays * 86400000);\n    if (new Date() > graceDeadline) {\n      return {\n        valid: false,\n        error: 'Subscription grace period has expired. Please renew to continue.',\n      };\n    }\n  }\n}",
+        "additional_steps": [
+          "Ensure subscription_end_date is included in the Prisma select for validateApiKey",
+          "Add subscription status to API key validation response for debugging",
+          "Create webhook event for subscription status changes",
+          "Add X-Subscription-Status header to API responses for client awareness"
+        ]
+      },
+      "effort": "30 minutes",
+      "risk": "LOW — additive check, won't affect active subscriptions"
+    },
+
+    {
+      "id": 8,
+      "priority": "P1_HIGH",
+      "title": "Static Files /uploads/ Tanpa Authentication",
+      "category": "SECURITY",
+      "impact": "File upload bisa diakses siapa saja yang tahu atau menebak URL. Termasuk media dari private conversations.",
+      "file": "backend/src/index.ts",
+      "lines": "152-163",
+      "current_code": "await fastify.register(fastifyStatic, {\n  root: uploadsRoot,\n  prefix: '/uploads/',\n  decorateReply: false,\n});",
+      "solution": {
+        "approach": "Replace static file serving with an authenticated endpoint that validates API key or JWT, checks organization ownership, and serves the file. Use signed URLs for time-limited access.",
+        "fixed_code": "// Remove fastifyStatic registration for /uploads/\n// Replace with authenticated file serving endpoint:\n\nfastify.get('/api/v1/files/:organizationId/:filename', {\n  preHandler: [apiKeyAuth], // or JWT auth\n  handler: async (req, reply) => {\n    const { organizationId, filename } = req.params as any;\n    const authenticatedOrgId = (req as any).apiKey?.organization_id || (req as any).user?.organizationId;\n\n    // Verify org ownership\n    if (organizationId !== authenticatedOrgId) {\n      return reply.status(403).send({ success: false, error: 'Access denied' });\n    }\n\n    // Sanitize filename to prevent path traversal\n    const sanitizedFilename = path.basename(filename);\n    const filePath = path.join(uploadsRoot, organizationId, sanitizedFilename);\n\n    // Verify file is within uploads directory (prevent ../ attacks)\n    const resolvedPath = path.resolve(filePath);\n    if (!resolvedPath.startsWith(path.resolve(uploadsRoot))) {\n      return reply.status(400).send({ success: false, error: 'Invalid file path' });\n    }\n\n    if (!fs.existsSync(resolvedPath)) {\n      return reply.status(404).send({ success: false, error: 'File not found' });\n    }\n\n    return reply.sendFile(sanitizedFilename, path.join(uploadsRoot, organizationId));\n  },\n});\n\n// Alternative: Signed URL approach for time-limited access\nfastify.get('/api/v1/files/signed-url', {\n  preHandler: [apiKeyAuth],\n  handler: async (req, reply) => {\n    const { file_path } = req.query as any;\n    const orgId = (req as any).apiKey.organization_id;\n    const expiresAt = Date.now() + 3600000; // 1 hour\n    const signature = crypto\n      .createHmac('sha256', config.jwt.secret)\n      .update(`${orgId}:${file_path}:${expiresAt}`)\n      .digest('hex');\n\n    return reply.send({\n      success: true,\n      data: {\n        url: `/files/${orgId}/${file_path}?expires=${expiresAt}&sig=${signature}`,\n        expires_at: new Date(expiresAt).toISOString(),\n      },\n    });\n  },\n});",
+        "additional_steps": [
+          "Update all existing file URL references in the codebase",
+          "Add path traversal protection (sanitize ../ from filenames)",
+          "Consider moving to cloud storage (S3/GCS) with pre-signed URLs for production",
+          "Add Content-Disposition header to force download for non-image files"
+        ]
+      },
+      "effort": "1.5 hours",
+      "risk": "MEDIUM — existing file URLs will break, need migration plan"
+    },
+
+    {
+      "id": 9,
+      "priority": "P2_MEDIUM",
+      "title": "Daily Reset Worker Bikin PrismaClient Sendiri (Connection Leak)",
+      "category": "BUG",
+      "impact": "Extra database connection pool (10 connections) wasted. Bypasses shared Prisma singleton and any middleware/hooks.",
+      "file": "backend/src/workers/daily-reset.worker.ts",
+      "lines": "10",
+      "current_code": "const prisma = new PrismaClient();",
+      "solution": {
+        "approach": "Import the shared Prisma singleton from config/database.ts instead of creating a new instance.",
+        "fixed_code": "// Replace:\n// const prisma = new PrismaClient();\n\n// With:\nimport { prisma } from '../config/database';\n\n// Or if the worker runs in a separate process:\nimport { PrismaClient } from '@prisma/client';\nconst prisma = new PrismaClient();\n\n// Add cleanup on shutdown:\nprocess.on('SIGTERM', async () => {\n  await prisma.$disconnect();\n});",
+        "additional_steps": [
+          "Verify if daily-reset.worker.ts runs in the same process as the main app",
+          "If same process: use shared singleton",
+          "If separate process: keep own PrismaClient but add $disconnect on shutdown",
+          "Add connection pool monitoring"
+        ]
+      },
+      "effort": "10 minutes",
+      "risk": "LOW — simple import change"
+    },
+
+    {
+      "id": 10,
+      "priority": "P2_MEDIUM",
+      "title": "max_attempts Mismatch: Database Default=3, BullMQ Hardcoded=5",
+      "category": "BUG",
+      "impact": "Webhook ditandai FAILED setelah attempt 3 (dari DB max_attempts=3), tapi BullMQ masih retry sampai attempt 5. Menghasilkan 'ghost deliveries' — pesan terkirim tapi statusnya FAILED.",
+      "files": [
+        "backend/src/modules/webhooks/webhooks.service.ts (line 42)",
+        "backend/prisma/schema.prisma (line 271)",
+        "backend/src/workers/webhook.worker.ts (line 72)"
+      ],
+      "current_code": "// webhooks.service.ts\nattempts: 5,\n\n// schema.prisma\nmax_attempts Int @default(3)\n\n// webhook.worker.ts\nconst maxAttempts = job.opts.attempts || 5;",
+      "solution": {
+        "approach": "Unify the max_attempts value. Use a single source of truth constant. Update schema default to match BullMQ config.",
+        "fixed_code": "// Step 1: Create constant file\n// backend/src/config/constants.ts\nexport const WEBHOOK_CONFIG = {\n  MAX_ATTEMPTS: 5,\n  BACKOFF_TYPE: 'exponential' as const,\n  INITIAL_DELAY_MS: 1000,\n} as const;\n\n// Step 2: Use in webhooks.service.ts\nimport { WEBHOOK_CONFIG } from '../../config/constants';\n\ndefaultJobOptions: {\n  attempts: WEBHOOK_CONFIG.MAX_ATTEMPTS,\n  backoff: {\n    type: WEBHOOK_CONFIG.BACKOFF_TYPE,\n    delay: WEBHOOK_CONFIG.INITIAL_DELAY_MS,\n  },\n},\n\n// Step 3: Use in webhook.worker.ts\nimport { WEBHOOK_CONFIG } from '../config/constants';\n\nconst maxAttempts = WEBHOOK_CONFIG.MAX_ATTEMPTS;\n\n// Step 4: Update Prisma schema default\n// max_attempts Int @default(5)",
+        "migration": "-- Prisma migration:\nALTER TABLE `Webhook` ALTER COLUMN `max_attempts` SET DEFAULT 5;\nUPDATE `Webhook` SET `max_attempts` = 5 WHERE `max_attempts` = 3;",
+        "additional_steps": [
+          "Create and run Prisma migration to change default from 3 to 5",
+          "Update existing webhook records from max_attempts=3 to max_attempts=5",
+          "Ensure webhook status update logic uses the constant, not the DB value"
+        ]
+      },
+      "effort": "30 minutes",
+      "risk": "LOW — synchronization fix, no behavior change for new webhooks"
+    },
+
+    {
+      "id": 11,
+      "priority": "P2_MEDIUM",
+      "title": "setInterval untuk Daily Reset — Timer Drift",
+      "category": "BUG",
+      "impact": "Setelah berminggu-minggu, reset bisa bergeser menit-menit dari midnight. Tidak resilient terhadap restart. Tidak deduplicate jika multiple instances berjalan.",
+      "file": "backend/src/workers/daily-reset.worker.ts",
+      "lines": "102-113",
+      "current_code": "setTimeout(() => {\n  resetDailyCounts();\n  resetInterval = setInterval(() => {\n    resetDailyCounts();\n  }, 24 * 60 * 60 * 1000);\n}, msToMidnight);",
+      "solution": {
+        "approach": "Replace setTimeout/setInterval with BullMQ repeatable job (already have Redis + BullMQ). This is restart-resilient, drift-free, and automatically deduplicated across multiple worker instances.",
+        "fixed_code": "import { Queue, Worker } from 'bullmq';\nimport { config } from '../config';\nimport { prisma } from '../config/database';\n\nconst QUEUE_NAME = 'daily-reset';\n\nconst redisConnection = {\n  host: config.redis.host,\n  port: config.redis.port,\n  password: config.redis.password || undefined,\n};\n\nlet dailyResetQueue: Queue | null = null;\nlet dailyResetWorker: Worker | null = null;\n\nasync function resetDailyCounts(): Promise<void> {\n  const result = await prisma.whatsAppInstance.updateMany({\n    where: { is_active: true },\n    data: { daily_message_count: 0 },\n  });\n  console.log(`[DAILY-RESET] Reset daily counts for ${result.count} instances at ${new Date().toISOString()}`);\n}\n\nexport async function startDailyResetWorker(): Promise<void> {\n  dailyResetQueue = new Queue(QUEUE_NAME, { connection: redisConnection });\n\n  // Remove existing repeatable jobs to prevent duplicates\n  const existingJobs = await dailyResetQueue.getRepeatableJobs();\n  for (const job of existingJobs) {\n    await dailyResetQueue.removeRepeatableByKey(job.key);\n  }\n\n  // Add repeatable job — runs at midnight every day\n  await dailyResetQueue.add('reset-counts', {}, {\n    repeat: { pattern: '0 0 * * *' }, // Cron: midnight every day\n    removeOnComplete: { count: 7 },    // Keep last 7 results\n    removeOnFail: { count: 30 },       // Keep last 30 failures\n  });\n\n  dailyResetWorker = new Worker(QUEUE_NAME, async (job) => {\n    console.log(`[DAILY-RESET] Job started: ${job.id}`);\n    await resetDailyCounts();\n    return { success: true, timestamp: new Date().toISOString() };\n  }, { connection: redisConnection, concurrency: 1 });\n\n  dailyResetWorker.on('completed', (job) => {\n    console.log(`[DAILY-RESET] Job completed: ${job?.id}`);\n  });\n\n  dailyResetWorker.on('failed', (job, err) => {\n    console.error(`[DAILY-RESET] Job failed: ${job?.id}`, err);\n  });\n\n  console.log('[DAILY-RESET] Worker started with cron schedule: 0 0 * * *');\n}\n\nexport async function stopDailyResetWorker(): Promise<void> {\n  await dailyResetWorker?.close();\n  await dailyResetQueue?.close();\n  console.log('[DAILY-RESET] Worker stopped');\n}",
+        "additional_steps": [
+          "Update workers/index.ts to call startDailyResetWorker() and stopDailyResetWorker()",
+          "Remove old setTimeout/setInterval logic",
+          "Add BullMQ dashboard (bull-board) for monitoring repeatable jobs"
+        ]
+      },
+      "effort": "45 minutes",
+      "risk": "LOW — replaces timer with proven BullMQ pattern already used in the project"
+    },
+
+    {
+      "id": 12,
+      "priority": "P2_MEDIUM",
+      "title": "sendLocationMessage Skip Daily Limit Check (Anti-Ban Bypass)",
+      "category": "BUG",
+      "impact": "Attacker bisa bypass daily message limit dengan mengirim location messages. Bisa trigger WhatsApp anti-spam dan ban nomor.",
+      "file": "backend/src/modules/whatsapp/baileys.service.ts",
+      "lines": "874-910",
+      "current_code": "export async function sendLocationMessage(\n  instanceId: string, to: string,\n  latitude: number, longitude: number,\n  name?: string, address?: string\n): Promise<...> {\n  const socket = activeSockets.get(instanceId);\n  if (!socket?.user) {\n    return { success: false, error: 'Instance not connected' };\n  }\n  // NO canSendMessage() call\n  // NO daily_message_count increment",
+      "solution": {
+        "approach": "Add canSendMessage() check and daily_message_count increment, matching sendTextMessage and sendMediaMessage patterns exactly.",
+        "fixed_code": "export async function sendLocationMessage(\n  instanceId: string, to: string,\n  latitude: number, longitude: number,\n  name?: string, address?: string\n): Promise<{ success: boolean; messageId?: string; error?: string }> {\n  const socket = activeSockets.get(instanceId);\n  if (!socket?.user) {\n    return { success: false, error: 'Instance not connected' };\n  }\n\n  // Check daily sending limit (same as sendTextMessage)\n  const canSend = await canSendMessage(instanceId);\n  if (!canSend.allowed) {\n    return { success: false, error: canSend.reason };\n  }\n\n  try {\n    const jid = formatPhoneToJid(to);\n    const result = await socket.sendMessage(jid, {\n      location: {\n        degreesLatitude: latitude,\n        degreesLongitude: longitude,\n        name,\n        address,\n      },\n    });\n\n    // Increment daily message count (same as sendTextMessage)\n    await prisma.whatsAppInstance.update({\n      where: { id: instanceId },\n      data: { daily_message_count: { increment: 1 } },\n    });\n\n    return { success: true, messageId: result?.key?.id || undefined };\n  } catch (error: any) {\n    return { success: false, error: error.message };\n  }\n}",
+        "additional_steps": [
+          "Audit ALL send* functions for consistent canSendMessage() usage",
+          "Consider creating a wrapper function sendWithLimitCheck() to DRY this pattern",
+          "Add unit test to verify all send functions check daily limits"
+        ]
+      },
+      "effort": "15 minutes",
+      "risk": "LOW — adds missing check, same pattern as other send functions"
+    },
+
+    {
+      "id": 13,
+      "priority": "P2_MEDIUM",
+      "title": "Tidak Ada Validasi page/limit Query Parameters",
+      "category": "BUG",
+      "impact": "limit=999999 bisa dump seluruh tabel. page=0 atau page=-1 menyebabkan negative skip. limit=abc menyebabkan NaN.",
+      "file": "backend/src/modules/external-api/external-api.routes.ts",
+      "lines": "492-494, 778-780",
+      "current_code": "const page = query.page ? parseInt(query.page) : 1;\nconst limit = query.limit ? parseInt(query.limit) : 20;\nconst skip = (page - 1) * limit;",
+      "solution": {
+        "approach": "Create a reusable pagination parser utility with min/max bounds and NaN protection.",
+        "new_file": "backend/src/utils/pagination.ts",
+        "fixed_code": "export interface PaginationParams {\n  page: number;\n  limit: number;\n  skip: number;\n}\n\nexport function parsePagination(\n  query: { page?: string; limit?: string },\n  options: { maxLimit?: number; defaultLimit?: number } = {}\n): PaginationParams {\n  const { maxLimit = 100, defaultLimit = 20 } = options;\n\n  let page = parseInt(query.page || '1', 10);\n  let limit = parseInt(query.limit || String(defaultLimit), 10);\n\n  // NaN protection\n  if (isNaN(page) || page < 1) page = 1;\n  if (isNaN(limit) || limit < 1) limit = defaultLimit;\n\n  // Cap maximum limit to prevent data dumps\n  limit = Math.min(limit, maxLimit);\n\n  const skip = (page - 1) * limit;\n\n  return { page, limit, skip };\n}",
+        "integration": "// Replace in all routes:\n// OLD:\n// const page = query.page ? parseInt(query.page) : 1;\n// const limit = query.limit ? parseInt(query.limit) : 20;\n// const skip = (page - 1) * limit;\n\n// NEW:\nimport { parsePagination } from '../../utils/pagination';\nconst { page, limit, skip } = parsePagination(query, { maxLimit: 100 });",
+        "additional_steps": [
+          "Replace pagination parsing in ALL endpoints (messages, conversations, contacts, webhooks)",
+          "Add maxLimit to API documentation",
+          "Return 400 error instead of silently clamping (optional, stricter approach)"
+        ]
+      },
+      "effort": "20 minutes",
+      "risk": "LOW — backwards compatible, only adds bounds"
+    }
+  ],
+
+  "implementation_order": {
+    "description": "Recommended implementation sequence based on priority, dependency, and risk",
+    "phases": [
+      {
+        "phase": 1,
+        "name": "Critical Security (P0)",
+        "estimated_time": "2-3 hours",
+        "issues": [1, 3, 13],
+        "rationale": "Quick wins that eliminate critical vulnerabilities with minimal risk"
+      },
+      {
+        "phase": 2,
+        "name": "Performance Critical (P0)",
+        "estimated_time": "1-2 hours",
+        "issues": [2],
+        "rationale": "OOM fix requires careful SQL query design and testing"
+      },
+      {
+        "phase": 3,
+        "name": "Rate Limiting & SSRF (P1)",
+        "estimated_time": "2 hours",
+        "issues": [4, 5],
+        "rationale": "New middleware and utility — no breaking changes"
+      },
+      {
+        "phase": 4,
+        "name": "Business Logic & Auth (P1)",
+        "estimated_time": "2 hours",
+        "issues": [6, 7, 8],
+        "rationale": "Requires schema migration for auto-reply opt-in. Static files need URL migration plan."
+      },
+      {
+        "phase": 5,
+        "name": "Bug Fixes & Cleanup (P2)",
+        "estimated_time": "1.5 hours",
+        "issues": [9, 10, 11, 12],
+        "rationale": "Lower priority, can be done after critical fixes are deployed"
+      }
+    ],
+    "total_estimated_time": "8-10 hours"
+  },
+
+  "testing_checklist": [
+    {
+      "issue_id": 1,
+      "test": "Start app without JWT_SECRET in production mode — should throw error. Start in development — should generate random secret and log warning."
+    },
+    {
+      "issue_id": 2,
+      "test": "Seed 100K+ messages for a tenant, then call GET /conversations — should respond in <2s without OOM."
+    },
+    {
+      "issue_id": 3,
+      "test": "Generate 1000 tokens, verify no collisions and statistical randomness (chi-squared test)."
+    },
+    {
+      "issue_id": 4,
+      "test": "Send 101 requests with rate_limit=100 API key — 101st should return 429. Verify X-RateLimit-Remaining decrements."
+    },
+    {
+      "issue_id": 5,
+      "test": "Send media with url=http://169.254.169.254/ — should return 400 'URLs pointing to private/internal IP addresses are not allowed'."
+    },
+    {
+      "issue_id": 6,
+      "test": "Set auto_reply_enabled=false, send webhook with response body — should NOT auto-reply. Set true — should auto-reply."
+    },
+    {
+      "issue_id": 7,
+      "test": "Set org subscription_status='EXPIRED', make API call — should return 403."
+    },
+    {
+      "issue_id": 8,
+      "test": "Access /uploads/org-id/file.jpg without token — should return 401."
+    },
+    {
+      "issue_id": 9,
+      "test": "Monitor DB connections — should not see extra connection pool from daily-reset worker."
+    },
+    {
+      "issue_id": 10,
+      "test": "Create webhook, let it fail 5 times — status should be FAILED after attempt 5, not attempt 3."
+    },
+    {
+      "issue_id": 11,
+      "test": "Restart app, verify daily reset BullMQ job is scheduled. Check bull-board dashboard."
+    },
+    {
+      "issue_id": 12,
+      "test": "Set daily_message_count to max, call sendLocationMessage — should return error 'Daily limit reached'."
+    },
+    {
+      "issue_id": 13,
+      "test": "Call GET /messages?limit=999999 — should cap at 100. Call with page=-1 — should default to 1."
+    }
+  ],
+
+  "what_is_already_good": [
+    "Prisma schema design — solid indexes, UUIDs, enums, proper relations",
+    "Webhook delivery via BullMQ with exponential backoff",
+    "Anti-ban warming phases (DAY_1_3 → DAY_4_7 → DAY_8_14 → NORMAL)",
+    "API key permission system — granular 9-permission model",
+    "Graceful shutdown handlers for SIGINT/SIGTERM",
+    "Multi-tenant isolation via organization_id in most queries",
+    "Session management with multi-file auth state for Baileys",
+    "Consistent error handler covering Fastify, Zod, JWT, and custom errors",
+    "WebSocket real-time updates for QR code and status",
+    "Message type handling covers 20+ WhatsApp message types"
+  ]
+}

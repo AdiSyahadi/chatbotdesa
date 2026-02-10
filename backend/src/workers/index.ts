@@ -19,7 +19,7 @@ let webhookWorker: ReturnType<typeof createWebhookWorker> | null = null;
 /**
  * Initialize all workers
  */
-export function initializeWorkers(): void {
+export async function initializeWorkers(): Promise<void> {
   logger.info('Initializing workers...');
 
   try {
@@ -33,7 +33,7 @@ export function initializeWorkers(): void {
     startMediaCleanupWorker();
 
     // Start daily reset worker (resets message counts & updates warming phases at midnight)
-    startDailyResetWorker();
+    await startDailyResetWorker();
     
     logger.info('All workers initialized');
   } catch (error) {
@@ -56,7 +56,7 @@ export async function shutdownWorkers(): Promise<void> {
   }
 
   stopMediaCleanupWorker();
-  stopDailyResetWorker();
+  await stopDailyResetWorker();
 
   logger.info('All workers stopped');
 }
@@ -65,7 +65,7 @@ export async function shutdownWorkers(): Promise<void> {
 if (require.main === module) {
   console.log('Starting workers in standalone mode...');
   
-  initializeWorkers();
+  initializeWorkers().catch(err => console.error('Worker init failed:', err));
 
   // Graceful shutdown
   process.on('SIGINT', async () => {

@@ -10,24 +10,15 @@
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import { authenticateApiKey, requireApiKeyPermission, ApiKeyAuthenticatedRequest } from '../../middleware/api-key-auth';
+import { apiRateLimitHook } from '../../middleware/api-rate-limiter';
 import { WhatsAppService } from '../whatsapp/whatsapp.service';
 import { contactService } from '../contacts/contacts.service';
 import { listContactsQuerySchema, createContactSchema, updateContactSchema, contactIdParamSchema } from '../contacts/contacts.schema';
 import { createWebhookService } from '../webhooks/webhooks.service';
 import { getStorageStats } from '../../workers/media-cleanup.worker';
+import { parsePagination } from '../../utils/pagination';
 import prisma from '../../config/database';
 import logger from '../../config/logger';
-
-// ============================================
-// RATE LIMIT HEADER HELPER
-// ============================================
-
-function addRateLimitHeaders(reply: FastifyReply, req: ApiKeyAuthenticatedRequest) {
-  const rateLimit = req.apiKey.rate_limit || 1000;
-  reply.header('X-RateLimit-Limit', rateLimit);
-  reply.header('X-RateLimit-Remaining', Math.max(0, rateLimit - 1)); // Approximate
-  reply.header('X-RateLimit-Reset', new Date(Date.now() + 60000).toISOString());
-}
 
 // ============================================
 // EXTERNAL API ROUTES (API Key Auth)
@@ -39,6 +30,9 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
 
   // All routes require API Key authentication
   fastify.addHook('preHandler', authenticateApiKey);
+
+  // Real Redis-backed rate limiting per API key
+  fastify.addHook('preHandler', apiRateLimitHook);
 
   // ============================================
   // INSTANCE ENDPOINTS
@@ -341,7 +335,6 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     );
 
     logger.info({ instanceId: body.instance_id, to: body.to, apiKeyId: req.apiKey.id }, 'External API: text message sent');
-    addRateLimitHeaders(reply, req);
     return reply.send({ success: true, data: result });
   });
 
@@ -393,7 +386,6 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     );
 
     logger.info({ instanceId: body.instance_id, to: body.to, type: body.media_type, apiKeyId: req.apiKey.id }, 'External API: media message sent');
-    addRateLimitHeaders(reply, req);
     return reply.send({ success: true, data: result });
   });
 
@@ -445,7 +437,6 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     );
 
     logger.info({ instanceId: body.instance_id, to: body.to, apiKeyId: req.apiKey.id }, 'External API: location message sent');
-    addRateLimitHeaders(reply, req);
     return reply.send({ success: true, data: result });
   });
 
@@ -489,9 +480,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       limit?: string;
     };
 
-    const page = query.page ? parseInt(query.page) : 1;
-    const limit = query.limit ? parseInt(query.limit) : 20;
-    const skip = (page - 1) * limit;
+    const { page, limit, skip } = parsePagination(query);
 
     // Build where clause with new filters
     const where: any = {
@@ -556,9 +545,6 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       prisma.message.count({ where }),
     ]);
 
-    // Add rate limit headers
-    addRateLimitHeaders(reply, req);
-
     return reply.send({
       success: true,
       data: messages,
@@ -601,7 +587,6 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     const query = listContactsQuerySchema.parse(request.query);
 
     const result = await contactService.listContacts(req.apiKey.organization_id, query);
-    addRateLimitHeaders(reply, req);
     return reply.send({ success: true, ...result });
   });
 
@@ -773,9 +758,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const req = request as ApiKeyAuthenticatedRequest;
     const query = request.query as { instance_id?: string; since?: string; include_lid?: string; include_self?: string; page?: string; limit?: string };
-    const page = query.page ? parseInt(query.page) : 1;
-    const limit = query.limit ? parseInt(query.limit) : 20;
-    const offset = (page - 1) * limit;
+    const { page, limit, skip: offset } = parsePagination(query);
     const includeLid = query.include_lid === 'true';
     const includeSelf = query.include_self === 'true';
 
@@ -810,52 +793,48 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       }
     }
 
-    // Get distinct conversations using raw query for reliability
-    const allMessages = await prisma.message.findMany({
+    // Use Prisma groupBy to get conversations efficiently (no OOM risk)
+    const conversationGroups = await prisma.message.groupBy({
+      by: ['chat_jid', 'instance_id'],
       where,
-      select: {
-        chat_jid: true,
-        instance_id: true,
-        created_at: true,
-      },
-      orderBy: { created_at: 'desc' },
+      _count: { id: true },
+      _max: { created_at: true },
     });
 
-    // Group by chat_jid + instance_id
-    const conversationMap = new Map<string, { chat_jid: string; instance_id: string; count: number; last_at: Date; is_lid: boolean; is_group: boolean; is_self: boolean }>();
-    for (const msg of allMessages) {
-      if (!msg.chat_jid) continue;
-
-      const isLid = msg.chat_jid.endsWith('@lid');
-      const isGroup = msg.chat_jid.endsWith('@g.us');
-      const isSelf = instancePhones.has(msg.chat_jid);
-
-      // Filter out @lid conversations unless include_lid=true
-      if (isLid && !includeLid) continue;
-      // Filter out self-chat unless include_self=true
-      if (isSelf && !includeSelf) continue;
-
-      const key = `${msg.chat_jid}__${msg.instance_id}`;
-      if (!conversationMap.has(key)) {
-        conversationMap.set(key, {
-          chat_jid: msg.chat_jid,
-          instance_id: msg.instance_id,
-          count: 0,
-          last_at: msg.created_at,
-          is_lid: isLid,
-          is_group: isGroup,
-          is_self: isSelf,
-        });
-      }
-      conversationMap.get(key)!.count++;
-    }
-
-    // Sort by last message time desc
-    const conversations = Array.from(conversationMap.values())
+    // Filter and enrich with metadata in memory (only group keys, not full messages)
+    const conversations = conversationGroups
+      .filter(g => {
+        if (!g.chat_jid) return false;
+        const isLid = g.chat_jid.endsWith('@lid');
+        const isSelf = instancePhones.has(g.chat_jid);
+        if (isLid && !includeLid) return false;
+        if (isSelf && !includeSelf) return false;
+        return true;
+      })
+      .map(g => ({
+        chat_jid: g.chat_jid,
+        instance_id: g.instance_id,
+        count: g._count.id,
+        last_at: g._max.created_at!,
+        is_lid: g.chat_jid.endsWith('@lid'),
+        is_group: g.chat_jid.endsWith('@g.us'),
+        is_self: instancePhones.has(g.chat_jid),
+      }))
       .sort((a, b) => b.last_at.getTime() - a.last_at.getTime());
 
     const total = conversations.length;
     const paginatedConversations = conversations.slice(offset, offset + limit);
+
+    // Batch-fetch contacts for paginated conversations (avoid N+1)
+    const chatJids = paginatedConversations.map(c => c.chat_jid).filter(Boolean);
+    const contacts = await prisma.contact.findMany({
+      where: {
+        organization_id: req.apiKey.organization_id,
+        jid: { in: chatJids },
+      },
+      select: { id: true, name: true, phone_number: true, tags: true, jid: true, instance_id: true },
+    });
+    const contactMap = new Map(contacts.map(c => [`${c.jid}__${c.instance_id}`, c]));
 
     // Enrich with last message and contact info
     const enrichedConversations = await Promise.all(
@@ -898,15 +877,8 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
         }
         // @lid has no phone number — leave it empty
 
-        // Try to find contact
-        const contact = await prisma.contact.findFirst({
-          where: {
-            organization_id: req.apiKey.organization_id,
-            instance_id: conv.instance_id,
-            jid: conv.chat_jid || undefined,
-          },
-          select: { id: true, name: true, phone_number: true, tags: true },
-        });
+        // Look up contact from batch-fetched map
+        const contact = contactMap.get(`${conv.chat_jid}__${conv.instance_id}`) || null;
 
         return {
           chat_jid: conv.chat_jid,
@@ -925,9 +897,6 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
         };
       })
     );
-
-    // Add rate limit headers
-    addRateLimitHeaders(reply, req);
 
     return reply.send({
       success: true,

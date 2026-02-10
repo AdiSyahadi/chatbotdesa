@@ -19,6 +19,7 @@ import {
   WEBHOOK_EVENTS,
   WebhookEventType,
 } from './webhooks.schema';
+import { WEBHOOK_CONFIG } from '../../config/constants';
 
 // ============================================
 // REDIS CONNECTION FOR BULLMQ
@@ -41,10 +42,10 @@ function getWebhookQueue(): Queue {
     webhookQueue = new Queue('webhooks', {
       connection: redisConnectionOptions,
       defaultJobOptions: {
-        attempts: 5,
+        attempts: WEBHOOK_CONFIG.MAX_ATTEMPTS,
         backoff: {
-          type: 'exponential',
-          delay: 1000, // 1s -> 2s -> 4s -> 8s -> 16s (max ~16s between retries)
+          type: WEBHOOK_CONFIG.BACKOFF_TYPE,
+          delay: WEBHOOK_CONFIG.INITIAL_DELAY_MS,
         },
         removeOnComplete: {
           count: 1000,

@@ -1,13 +1,13 @@
 /**
  * Daily Reset Worker
  * Resets daily message counts and updates warming phases
- * Runs every day at midnight (00:00)
+ * Uses BullMQ repeatable job (cron) for drift-free scheduling
  */
 
-import { PrismaClient } from '@prisma/client';
+import { Queue, Worker } from 'bullmq';
+import prisma from '../config/database';
 import logger from '../config/logger';
-
-const prisma = new PrismaClient();
+import config from '../config';
 
 const WARMING_PHASE_LIMITS = {
   DAY_1_3: { daily_limit: 20, min_delay_ms: 5000, max_messages_per_hour: 5 },
@@ -18,17 +18,16 @@ const WARMING_PHASE_LIMITS = {
 
 type WarmingPhase = keyof typeof WARMING_PHASE_LIMITS;
 
-let resetInterval: ReturnType<typeof setInterval> | null = null;
+const QUEUE_NAME = 'daily-reset';
 
-/**
- * Calculate milliseconds until next midnight
- */
-function msUntilMidnight(): number {
-  const now = new Date();
-  const midnight = new Date(now);
-  midnight.setHours(24, 0, 0, 0);
-  return midnight.getTime() - now.getTime();
-}
+const redisConnectionOptions = {
+  host: process.env.REDIS_HOST || 'localhost',
+  port: parseInt(process.env.REDIS_PORT || '6379', 10),
+  maxRetriesPerRequest: null,
+};
+
+let dailyResetQueue: Queue | null = null;
+let dailyResetWorker: Worker | null = null;
 
 /**
  * Determine the correct warming phase based on account age
@@ -96,35 +95,63 @@ export async function resetDailyCounts(): Promise<void> {
 }
 
 /**
- * Start the daily reset worker
- * Runs at midnight, then every 24 hours
+ * Start the daily reset worker using BullMQ repeatable job
+ * Drift-free, restart-resilient, automatically deduplicated
  */
-export function startDailyResetWorker(): void {
-  const msToMidnight = msUntilMidnight();
-  const hoursToMidnight = (msToMidnight / 1000 / 60 / 60).toFixed(1);
+export async function startDailyResetWorker(): Promise<void> {
+  try {
+    dailyResetQueue = new Queue(QUEUE_NAME, {
+      connection: redisConnectionOptions,
+    });
 
-  logger.info({
-    nextResetIn: `${hoursToMidnight} hours`,
-  }, '🔄 Daily reset worker started');
+    // Remove existing repeatable jobs to prevent duplicates on restart
+    const existingJobs = await dailyResetQueue.getRepeatableJobs();
+    for (const job of existingJobs) {
+      await dailyResetQueue.removeRepeatableByKey(job.key);
+    }
 
-  // Schedule first run at midnight
-  setTimeout(() => {
-    resetDailyCounts();
+    // Add repeatable job — runs at midnight every day
+    await dailyResetQueue.add('reset-counts', {}, {
+      repeat: { pattern: '0 0 * * *' }, // Cron: midnight every day
+      removeOnComplete: { count: 7 },    // Keep last 7 results
+      removeOnFail: { count: 30 },       // Keep last 30 failures
+    });
 
-    // Then run every 24 hours
-    resetInterval = setInterval(() => {
-      resetDailyCounts();
-    }, 24 * 60 * 60 * 1000);
-  }, msToMidnight);
+    dailyResetWorker = new Worker(
+      QUEUE_NAME,
+      async (job) => {
+        logger.info(`[DAILY-RESET] Job started: ${job.id}`);
+        await resetDailyCounts();
+        return { success: true, timestamp: new Date().toISOString() };
+      },
+      { connection: redisConnectionOptions, concurrency: 1 }
+    );
+
+    dailyResetWorker.on('completed', (job) => {
+      logger.info(`[DAILY-RESET] Job completed: ${job?.id}`);
+    });
+
+    dailyResetWorker.on('failed', (job, err) => {
+      logger.error({ jobId: job?.id, error: err.message }, '[DAILY-RESET] Job failed');
+    });
+
+    logger.info('🔄 Daily reset worker started (BullMQ cron: 0 0 * * *)');
+  } catch (error) {
+    logger.warn({ error }, 'Failed to start daily reset worker — Redis may not be available');
+  }
 }
 
 /**
  * Stop the daily reset worker
  */
-export function stopDailyResetWorker(): void {
-  if (resetInterval) {
-    clearInterval(resetInterval);
-    resetInterval = null;
+export async function stopDailyResetWorker(): Promise<void> {
+  try {
+    await dailyResetWorker?.close();
+    await dailyResetQueue?.close();
+    dailyResetWorker = null;
+    dailyResetQueue = null;
     logger.info('🔄 Daily reset worker stopped');
+  } catch (error) {
+    logger.error({ error }, 'Error stopping daily reset worker');
   }
 }

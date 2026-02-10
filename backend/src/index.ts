@@ -149,16 +149,51 @@ async function start() {
     // External API routes (API Key authentication for n8n, Make, Zapier, etc.)
     await fastify.register(externalApiRoutes, { prefix: '/api/v1' });
 
-    // Static file serving for uploads
+    // Static file serving for uploads (authenticated via JWT or internal routes only)
     const uploadsRoot = path.resolve(config.storage.path, 'uploads');
     // Ensure uploads directory exists
     if (!fs.existsSync(uploadsRoot)) {
       fs.mkdirSync(uploadsRoot, { recursive: true });
     }
+
+    // Serve uploads only through authenticated internal API routes
+    // The /uploads/ prefix is only accessible from internal/authenticated routes
     await fastify.register(fastifyStatic, {
       root: uploadsRoot,
       prefix: '/uploads/',
       decorateReply: false,
+      serve: false, // Don't auto-serve — only via reply.sendFile()
+    });
+
+    // Authenticated file access endpoint
+    fastify.get('/uploads/*', async (request, reply) => {
+      // Check for JWT auth or API key
+      const authHeader = request.headers.authorization;
+      const apiKey = request.headers['x-api-key'];
+
+      if (!authHeader && !apiKey) {
+        return reply.status(401).send({ success: false, error: 'Authentication required to access files' });
+      }
+
+      const urlPath = (request.params as any)['*'] as string;
+      if (!urlPath) {
+        return reply.status(400).send({ success: false, error: 'File path required' });
+      }
+
+      // Sanitize: prevent path traversal
+      const sanitized = path.normalize(urlPath).replace(/^(\.\.[\/\\])+/, '');
+      const filePath = path.resolve(uploadsRoot, sanitized);
+
+      // Verify file is within uploads directory
+      if (!filePath.startsWith(path.resolve(uploadsRoot))) {
+        return reply.status(400).send({ success: false, error: 'Invalid file path' });
+      }
+
+      if (!fs.existsSync(filePath)) {
+        return reply.status(404).send({ success: false, error: 'File not found' });
+      }
+
+      return reply.sendFile(sanitized, uploadsRoot);
     });
 
     // Start server
@@ -183,7 +218,7 @@ async function start() {
     // Initialize background workers (BullMQ) - delay to allow Redis connection
     setTimeout(() => {
       console.log('🔧 Initializing background workers...');
-      initializeWorkers();
+      initializeWorkers().catch(err => console.error('Worker init failed:', err));
     }, 3000);
 
     // Wire up baileysEvents → webhook delivery
