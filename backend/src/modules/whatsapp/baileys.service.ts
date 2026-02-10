@@ -105,10 +105,18 @@ export function formatPhoneToJid(phone: string): string {
 }
 
 /**
- * Extract phone number from JID
+ * Extract phone number from JID.
+ * Returns the numeric part for standard JIDs (628xxx@s.whatsapp.net → 628xxx).
+ * Returns null for LID JIDs (LID:xxx@lid) since phone number cannot be extracted.
  */
-export function extractPhoneFromJid(jid: string): string {
-  return jid.replace('@s.whatsapp.net', '').replace('@g.us', '');
+export function extractPhoneFromJid(jid: string): string | null {
+  if (!jid) return null;
+  // LID JIDs don't contain phone numbers
+  if (jid.includes('@lid') || jid.startsWith('LID:')) return null;
+  // Group JIDs — return group id
+  if (jid.endsWith('@g.us')) return jid.replace('@g.us', '');
+  // Standard JID
+  return jid.replace('@s.whatsapp.net', '');
 }
 
 /**
@@ -195,6 +203,48 @@ export function extractMessageContent(msg: WAMessage): ExtractedMessageContent |
     } else {
       text = '[View Once Message]';
     }
+  } else if (messageContent.templateMessage) {
+    // Template message (businesses)
+    const tmpl = messageContent.templateMessage;
+    const hydratedMsg = tmpl.hydratedTemplate || tmpl.fourRowTemplate;
+    if (hydratedMsg) {
+      text = (hydratedMsg as any).hydratedContentText || (hydratedMsg as any).hydratedTitleText || '[Template Message]';
+    } else {
+      text = '[Template Message]';
+    }
+  } else if (messageContent.highlyStructuredMessage) {
+    // Highly structured message (i18n template)
+    const hsm = messageContent.highlyStructuredMessage;
+    text = hsm.hydratedHsm?.hydratedTemplate?.hydratedContentText || '[Structured Message]';
+  } else if (messageContent.buttonsMessage) {
+    // Buttons message
+    const btns = messageContent.buttonsMessage;
+    text = btns.contentText || btns.headerType?.toString() || '[Buttons Message]';
+  } else if (messageContent.listMessage) {
+    // List message
+    const list = messageContent.listMessage;
+    text = list.description || list.title || '[List Message]';
+  } else if (messageContent.interactiveMessage) {
+    // Interactive message (WhatsApp Business)
+    const interactive = messageContent.interactiveMessage;
+    const body = interactive.body?.text || interactive.header?.title || '';
+    text = body || '[Interactive Message]';
+  } else if ((messageContent as any).placeholderMessage) {
+    // Placeholder message (e.g., "waiting for this message")
+    text = '[Placeholder Message]';
+  } else if ((messageContent as any).orderMessage) {
+    // Order/commerce message
+    text = '[Order Message]';
+  } else if ((messageContent as any).groupInviteMessage) {
+    // Group invite
+    const invite = (messageContent as any).groupInviteMessage;
+    text = invite.caption || invite.groupName || '[Group Invite]';
+  } else if ((messageContent as any).invoiceMessage) {
+    // Invoice message
+    text = '[Invoice Message]';
+  } else if ((messageContent as any).productMessage) {
+    // Product catalog message
+    text = '[Product Message]';
   } else if (messageContent.protocolMessage) {
     // Protocol messages (delete, ephemeral settings, etc.) — skip silently
     return null;
@@ -603,13 +653,13 @@ export async function initializeConnection(
         );
       }
 
-      // Process incoming messages DIRECTLY at emit level (before buffering)
+      // Process real-time messages DIRECTLY at emit level (before buffering)
       if (eventName === 'messages.upsert' && data?.type === 'notify' && data?.messages) {
         console.log(`\n🔔🔔🔔 [BAILEYS] Processing ${data.messages.length} notify message(s) at emit level`);
         for (const msg of data.messages) {
           if (msg.key?.remoteJid === 'status@broadcast') continue;
           console.log(`🔔 [BAILEYS] Message from=${msg.key?.remoteJid}, fromMe=${msg.key?.fromMe}, id=${msg.key?.id}`);
-          handleIncomingMessage(instanceId, organizationId, msg).catch((err: any) => {
+          handleRealtimeMessage(instanceId, organizationId, msg).catch((err: any) => {
             console.error(`❌ [BAILEYS] Error handling message:`, err);
           });
         }
@@ -1598,10 +1648,15 @@ async function handleAppendHistoryMessages(
 }
 
 /**
- * Handle incoming real-time message.
- * Uses extracted extractMessageContent() and convertMessageTimestamp() for reusability.
+ * Handle real-time message (both incoming AND outgoing).
+ * Uses upsert to gracefully handle the race condition where:
+ *   - sendText() saves the outgoing message first (via API call)
+ *   - Then Baileys fires messages.upsert for the same message
+ * By using upsert, the second insert just updates instead of throwing a duplicate error.
+ *
+ * Also properly sets direction based on msg.key.fromMe.
  */
-async function handleIncomingMessage(
+async function handleRealtimeMessage(
   instanceId: string,
   organizationId: string,
   msg: WAMessage
@@ -1612,41 +1667,95 @@ async function handleIncomingMessage(
     if (!extracted) return; // protocolMessage or empty content — skip
 
     const { text, messageType } = extracted;
+    const fromMe = msg.key.fromMe ?? false;
+    const direction = fromMe ? 'OUTGOING' : 'INCOMING';
+    const chatJid = msg.key.remoteJid || '';
+    const senderJid = fromMe
+      ? '' // Will be filled by the instance's own phone number context
+      : (msg.key.participant || msg.key.remoteJid || '');
+    const waMessageId = msg.key.id || undefined;
+    const now = new Date();
 
-    // Save to database
-    await prisma.message.create({
-      data: {
-        organization_id: organizationId,
-        instance_id: instanceId,
-        wa_message_id: msg.key.id || undefined,
-        chat_jid: msg.key.remoteJid || '',
-        sender_jid: msg.key.participant || msg.key.remoteJid || '',
-        message_type: messageType,
-        content: text,
-        direction: 'INCOMING',
-        status: 'DELIVERED',
-        source: 'REALTIME',
-        delivered_at: new Date(),
-      },
-    });
+    // Use upsert to avoid duplicate constraint violation.
+    // If the message was already saved by sendText/sendMedia (outgoing via API),
+    // the upsert will update it (e.g., we could update source or other metadata).
+    // If it's a new message, it inserts.
+    if (waMessageId) {
+      await prisma.message.upsert({
+        where: {
+          unique_wa_message_per_instance: {
+            wa_message_id: waMessageId,
+            instance_id: instanceId,
+          },
+        },
+        create: {
+          organization_id: organizationId,
+          instance_id: instanceId,
+          wa_message_id: waMessageId,
+          chat_jid: chatJid,
+          sender_jid: senderJid,
+          message_type: messageType,
+          content: text,
+          direction,
+          status: fromMe ? 'SENT' : 'DELIVERED',
+          source: 'REALTIME',
+          sent_at: fromMe ? now : null,
+          delivered_at: fromMe ? null : now,
+        },
+        update: {
+          // If already exists (e.g., outgoing saved by sendText), don't overwrite — just mark it was seen by Baileys
+          // Only update fields that Baileys might have better data for
+          ...(fromMe ? {} : {
+            // For incoming: update if somehow the API saved it first (shouldn't happen, but safe)
+            direction,
+            status: 'DELIVERED',
+            delivered_at: now,
+          }),
+        },
+      });
+    } else {
+      // No wa_message_id — rare edge case, use plain create
+      await prisma.message.create({
+        data: {
+          organization_id: organizationId,
+          instance_id: instanceId,
+          chat_jid: chatJid,
+          sender_jid: senderJid,
+          message_type: messageType,
+          content: text,
+          direction,
+          status: fromMe ? 'SENT' : 'DELIVERED',
+          source: 'REALTIME',
+          sent_at: fromMe ? now : null,
+          delivered_at: fromMe ? null : now,
+        },
+      });
+    }
 
     // Convert timestamp for webhook (handles protobuf Long objects)
     const timestamp = convertMessageTimestamp(msg.messageTimestamp);
+    const phoneNumber = extractPhoneFromJid(chatJid);
 
-    logger.info({ instanceId, from: msg.key.remoteJid, type: messageType, fromMe: msg.key.fromMe }, '📨 Emitting message event to baileysEvents');
+    // Emit webhook event with proper direction
+    const eventType = fromMe ? 'outgoing' : 'incoming';
+    logger.info({ instanceId, from: chatJid, type: messageType, fromMe, direction }, `📨 Emitting ${eventType} message event to baileysEvents`);
     baileysEvents.emit('message', {
       instanceId,
-      type: 'incoming',
+      type: eventType,
       message: {
-        id: msg.key.id,
-        from: msg.key.remoteJid,
+        id: waMessageId,
+        from: chatJid,
+        chat_jid: chatJid,
+        sender_jid: senderJid,
+        phone_number: phoneNumber,
+        direction,
         type: messageType.toLowerCase(),
         content: text,
         timestamp,
       },
     });
   } catch (error) {
-    logger.error({ error, instanceId }, 'Error handling incoming message');
+    logger.error({ error, instanceId }, 'Error handling real-time message');
   }
 }
 

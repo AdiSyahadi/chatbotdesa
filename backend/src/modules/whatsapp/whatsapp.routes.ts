@@ -741,4 +741,76 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       });
     },
   });
+
+  // POST /api/whatsapp/instances/:id/re-pair
+  fastify.post<{ Params: { id: string } }>('/instances/:id/re-pair', {
+    onRequest: [fastify.authenticate],
+    handler: async (request, reply) => {
+      const user = (request as any).user;
+      const { id } = request.params;
+
+      const instance = await prisma.whatsAppInstance.findFirst({
+        where: { id, organization_id: user.organizationId, deleted_at: null },
+        select: {
+          id: true,
+          status: true,
+          history_sync_status: true,
+          organization: {
+            select: {
+              subscription_plan: {
+                select: { allow_history_sync: true },
+              },
+            },
+          },
+        },
+      });
+
+      if (!instance) {
+        return reply.status(404).send({ success: false, error: 'Instance not found' });
+      }
+
+      // Check plan
+      const plan = instance.organization?.subscription_plan;
+      if (plan && !plan.allow_history_sync) {
+        return reply.status(403).send({
+          success: false,
+          error: 'Your subscription plan does not allow history sync. Upgrade to enable this feature.',
+        });
+      }
+
+      // Block if currently syncing
+      if (instance.history_sync_status === 'SYNCING') {
+        return reply.status(409).send({
+          success: false,
+          error: 'History sync is currently in progress. Wait for it to complete before re-pairing.',
+        });
+      }
+
+      // Enable sync and disconnect (logout + delete session)
+      await prisma.whatsAppInstance.update({
+        where: { id },
+        data: {
+          sync_history_on_connect: true,
+          history_sync_status: 'IDLE',
+          history_sync_progress: { set: null },
+        },
+      });
+
+      // Invalidate cache
+      const { invalidateSyncConfigCache, disconnectInstance } = await import('./baileys.service');
+      invalidateSyncConfigCache(id);
+
+      // Disconnect (this calls socket.logout() which deletes the session)
+      await disconnectInstance(id);
+
+      return reply.send({
+        success: true,
+        message: 'Instance logged out. Scan QR to reconnect — history sync will start automatically.',
+        data: {
+          status: 'DISCONNECTED',
+          note: 'Connect ulang lalu scan QR baru',
+        },
+      });
+    },
+  });
 }

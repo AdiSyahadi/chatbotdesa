@@ -577,9 +577,9 @@ export const syncApi = {
     return response.data;
   },
 
-  /** Re-pair instance for full history sync (external API) */
+  /** Re-pair instance for full history sync (dashboard JWT auth) */
   rePairForSync: async (instanceId: string) => {
-    const response = await api.post(`/whatsapp/instances/${instanceId}/sync-history/re-pair` as any);
+    const response = await api.post(`/whatsapp/instances/${instanceId}/re-pair`);
     return response.data;
   },
 };

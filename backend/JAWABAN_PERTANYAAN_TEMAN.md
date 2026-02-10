@@ -1,26 +1,21 @@
-# Jawaban: API Key Berubah?
+Ada beberapa hal yang perlu saya sampaikan:
 
-## Pertanyaan
-> API Key berubah? Di jawaban tadi ada API key baru: `wa_f847eb80...`. Apakah API key lama (`wa_b1d7f752...`) masih valid, atau harus pakai yang baru?
+Bug/Info dari WA API Teman Kamu
+1. Field send-text masih pakai message, bukan text
+Dokumentasi baru bilang field-nya text, tapi API masih validasi message. Ini inkonsistensi di docs vs implementasi. Bukan masalah besar, CRM kita sudah handle pakai message.
 
-## Jawaban
+2. Duplicate constraint error saat kirim pesan
+Tadi saya coba kirim pesan via API dan dapat error:
 
-**Dua-duanya masih AKTIF.** Itu bukan key yang berubah, tapi memang ada **2 API key berbeda** untuk organisasi "joni nih bos".
+Unique constraint failed on: messages_wa_message_id_instance_id_key
+Ini bug di WA API side — dia gagal simpan pesan outgoing karena duplicate. Mungkin pesan sudah ada di DB tapi dia coba insert lagi. Tanyakan ke teman kamu apakah ini known issue.
 
-### Daftar API Key Organisasi "joni nih bos"
+3. Message type templateMessage dan placeholderMessage tidak di-handle
+WA API mengirim pesan dengan type seperti templateMessage, placeholderMessage yang tidak ada di mapping. Ini bukan bug kritis — saya sudah handle di CRM dengan fallback ke OTHER.
 
-| # | Nama | Prefix | Status | Terakhir Dipakai |
-|---|------|--------|--------|-----------------|
-| 1 | **n8n** | `wa_f847eb806...` | ✅ Aktif | 10 Feb 2026, 19:48 WIB |
-| 2 | **testcrm** | `wa_b1d7f7529...` | ✅ Aktif | 10 Feb 2026, 19:28 WIB |
-| 3 | test | `wa_52d72a721...` | ✅ Aktif | Belum pernah dipakai |
-| 4 | test2 | `wa_2d90f3171...` | ✅ Aktif | Belum pernah dipakai |
+Pertanyaan untuk Teman Kamu
+Tolong tanyakan ini:
 
-### Kesimpulan
-- **Tidak ada key yang berubah.** Kedua key (`wa_f847eb80...` dan `wa_b1d7f752...`) adalah key yang **berbeda** dan keduanya **masih aktif**.
-- Key `wa_f847eb80...` dibuat dengan nama "n8n" (untuk integrasi n8n).
-- Key `wa_b1d7f752...` dibuat dengan nama "testcrm" (untuk testing CRM).
-- **Pakai key mana saja yang sesuai kebutuhan.** Keduanya punya akses yang sama ke organisasi "joni nih bos".
-- Total ada 4 API key untuk organisasi ini, 2 di antaranya (`test` dan `test2`) belum pernah dipakai.
-
-> ⚠️ **Catatan keamanan:** API key disimpan sebagai hash di database (tidak plaintext). Full key hanya muncul sekali saat pertama kali dibuat. Kalau lupa full key-nya, buat key baru saja.
+Apakah WA API mengirim webhook message.sent untuk pesan outgoing yang dikirim via API? — Karena tadi webhook yang masuk cuma message.received, saya perlu tahu apakah pesan yang kita kirim via CRM juga akan di-webhook balik supaya bisa update status di CRM.
+Duplicate constraint error di messages_wa_message_id_instance_id_key — apakah ini known bug? Terjadi saat kirim pesan via /api/v1/messages/send-text.
+Apakah webhook payload menyertakan phone_number? — Karena beberapa kontak pakai format @lid (JID baru WhatsApp), saya perlu phone_number di webhook payload untuk bisa identifikasi kontak. Kalau tidak ada, pesan dari kontak @lid akan di-skip.

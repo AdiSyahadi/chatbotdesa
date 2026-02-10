@@ -316,22 +316,32 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       security: [{ apiKeyAuth: [] }],
       body: {
         type: 'object',
-        required: ['instance_id', 'to', 'message'],
+        required: ['instance_id', 'to'],
         properties: {
           instance_id: { type: 'string', format: 'uuid', description: 'WhatsApp instance ID' },
           to: { type: 'string', description: 'Phone number (e.g., 628123456789)' },
           message: { type: 'string', maxLength: 4096, description: 'Text message content' },
+          text: { type: 'string', maxLength: 4096, description: 'Text message content (alias for message)' },
         },
       },
     },
   }, async (request: FastifyRequest, reply: FastifyReply) => {
     const req = request as ApiKeyAuthenticatedRequest;
-    const body = request.body as { instance_id: string; to: string; message: string };
+    const body = request.body as { instance_id: string; to: string; message?: string; text?: string };
+
+    // Accept both 'message' and 'text' field names for backwards compatibility
+    const messageContent = body.message || body.text;
+    if (!messageContent) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: 'VALIDATION', message: 'Either "message" or "text" field is required' },
+      });
+    }
 
     const result = await whatsappService.sendText(
       body.instance_id,
       req.apiKey.organization_id,
-      { to: body.to, message: body.message, delay: 0 }
+      { to: body.to, message: messageContent, delay: 0 }
     );
 
     logger.info({ instanceId: body.instance_id, to: body.to, apiKeyId: req.apiKey.id }, 'External API: text message sent');

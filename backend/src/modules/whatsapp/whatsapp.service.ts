@@ -24,6 +24,8 @@ import {
   sendLocationMessage,
   isConnected,
   QRCodeData,
+  baileysEvents,
+  extractPhoneFromJid,
 } from './baileys.service';
 import { deleteSession, sessionExists, getSessionInfo } from './session.service';
 import { v4 as uuidv4 } from 'uuid';
@@ -536,18 +538,68 @@ export class WhatsAppService {
       throw new AppError(result.error || 'Failed to send message', 400, 'MSG_001');
     }
 
-    // Save outgoing message to database
-    await prisma.message.create({
-      data: {
-        organization_id: organizationId,
-        instance_id: instanceId,
-        wa_message_id: result.message_id,
-        chat_jid: data.to.includes('@') ? data.to : `${data.to}@s.whatsapp.net`,
-        message_type: 'TEXT',
-        content: data.message,
+    const chatJid = data.to.includes('@') ? data.to : `${data.to}@s.whatsapp.net`;
+    const now = new Date();
+
+    // Save outgoing message to database using upsert to handle race condition
+    // with Baileys messages.upsert event (which may fire for the same outgoing message)
+    if (result.message_id) {
+      await prisma.message.upsert({
+        where: {
+          unique_wa_message_per_instance: {
+            wa_message_id: result.message_id,
+            instance_id: instanceId,
+          },
+        },
+        create: {
+          organization_id: organizationId,
+          instance_id: instanceId,
+          wa_message_id: result.message_id,
+          chat_jid: chatJid,
+          message_type: 'TEXT',
+          content: data.message,
+          direction: 'OUTGOING',
+          status: 'SENT',
+          source: 'REALTIME',
+          sent_at: now,
+        },
+        update: {
+          // Already exists (rare race: Baileys event arrived first) — ensure it's marked OUTGOING
+          direction: 'OUTGOING',
+          status: 'SENT',
+          sent_at: now,
+        },
+      });
+    } else {
+      await prisma.message.create({
+        data: {
+          organization_id: organizationId,
+          instance_id: instanceId,
+          chat_jid: chatJid,
+          message_type: 'TEXT',
+          content: data.message,
+          direction: 'OUTGOING',
+          status: 'SENT',
+          source: 'REALTIME',
+          sent_at: now,
+        },
+      });
+    }
+
+    // Emit webhook event for message.sent
+    const phoneNumber = extractPhoneFromJid(chatJid);
+    baileysEvents.emit('message', {
+      instanceId,
+      type: 'outgoing',
+      message: {
+        id: result.message_id,
+        from: chatJid,
+        chat_jid: chatJid,
+        phone_number: phoneNumber,
         direction: 'OUTGOING',
-        status: 'SENT',
-        sent_at: new Date(),
+        type: 'text',
+        content: data.message,
+        timestamp: Math.floor(now.getTime() / 1000),
       },
     });
 
@@ -583,20 +635,74 @@ export class WhatsAppService {
       throw new AppError(result.error || 'Failed to send media', 400, 'MSG_002');
     }
 
-    // Save to database
-    await prisma.message.create({
-      data: {
-        organization_id: organizationId,
-        instance_id: instanceId,
-        wa_message_id: result.message_id,
-        chat_jid: data.to.includes('@') ? data.to : `${data.to}@s.whatsapp.net`,
-        message_type: data.media_type.toUpperCase() as any,
+    const chatJid = data.to.includes('@') ? data.to : `${data.to}@s.whatsapp.net`;
+    const mediaType = data.media_type.toUpperCase() as any;
+    const now = new Date();
+
+    // Save to database using upsert to handle race condition with Baileys event
+    if (result.message_id) {
+      await prisma.message.upsert({
+        where: {
+          unique_wa_message_per_instance: {
+            wa_message_id: result.message_id,
+            instance_id: instanceId,
+          },
+        },
+        create: {
+          organization_id: organizationId,
+          instance_id: instanceId,
+          wa_message_id: result.message_id,
+          chat_jid: chatJid,
+          message_type: mediaType,
+          content: data.caption || null,
+          media_url: data.media_url,
+          media_type: data.media_type,
+          direction: 'OUTGOING',
+          status: 'SENT',
+          source: 'REALTIME',
+          sent_at: now,
+        },
+        update: {
+          direction: 'OUTGOING',
+          status: 'SENT',
+          media_url: data.media_url,
+          media_type: data.media_type,
+          sent_at: now,
+        },
+      });
+    } else {
+      await prisma.message.create({
+        data: {
+          organization_id: organizationId,
+          instance_id: instanceId,
+          chat_jid: chatJid,
+          message_type: mediaType,
+          content: data.caption || null,
+          media_url: data.media_url,
+          media_type: data.media_type,
+          direction: 'OUTGOING',
+          status: 'SENT',
+          source: 'REALTIME',
+          sent_at: now,
+        },
+      });
+    }
+
+    // Emit webhook event for message.sent
+    const phoneNumber = extractPhoneFromJid(chatJid);
+    baileysEvents.emit('message', {
+      instanceId,
+      type: 'outgoing',
+      message: {
+        id: result.message_id,
+        from: chatJid,
+        chat_jid: chatJid,
+        phone_number: phoneNumber,
+        direction: 'OUTGOING',
+        type: data.media_type.toLowerCase(),
         content: data.caption || null,
         media_url: data.media_url,
-        media_type: data.media_type,
-        direction: 'OUTGOING',
-        status: 'SENT',
-        sent_at: new Date(),
+        timestamp: Math.floor(now.getTime() / 1000),
       },
     });
 
@@ -631,6 +737,70 @@ export class WhatsAppService {
     if (!result.success) {
       throw new AppError(result.error || 'Failed to send location', 400, 'MSG_003');
     }
+
+    const chatJid = data.to.includes('@') ? data.to : `${data.to}@s.whatsapp.net`;
+    const locationText = data.name || data.address || `[Location: ${data.latitude}, ${data.longitude}]`;
+    const now = new Date();
+
+    // Save to database using upsert
+    if (result.message_id) {
+      await prisma.message.upsert({
+        where: {
+          unique_wa_message_per_instance: {
+            wa_message_id: result.message_id,
+            instance_id: instanceId,
+          },
+        },
+        create: {
+          organization_id: organizationId,
+          instance_id: instanceId,
+          wa_message_id: result.message_id,
+          chat_jid: chatJid,
+          message_type: 'LOCATION',
+          content: locationText,
+          direction: 'OUTGOING',
+          status: 'SENT',
+          source: 'REALTIME',
+          sent_at: now,
+        },
+        update: {
+          direction: 'OUTGOING',
+          status: 'SENT',
+          sent_at: now,
+        },
+      });
+    } else {
+      await prisma.message.create({
+        data: {
+          organization_id: organizationId,
+          instance_id: instanceId,
+          chat_jid: chatJid,
+          message_type: 'LOCATION',
+          content: locationText,
+          direction: 'OUTGOING',
+          status: 'SENT',
+          source: 'REALTIME',
+          sent_at: now,
+        },
+      });
+    }
+
+    // Emit webhook event for message.sent
+    const phoneNumber = extractPhoneFromJid(chatJid);
+    baileysEvents.emit('message', {
+      instanceId,
+      type: 'outgoing',
+      message: {
+        id: result.message_id,
+        from: chatJid,
+        chat_jid: chatJid,
+        phone_number: phoneNumber,
+        direction: 'OUTGOING',
+        type: 'location',
+        content: locationText,
+        timestamp: Math.floor(now.getTime() / 1000),
+      },
+    });
 
     return {
       success: true,
