@@ -957,9 +957,85 @@ async function handleIncomingMessage(
       text = messageContent.videoMessage.caption || '';
     } else if (messageContent.audioMessage) {
       messageType = 'AUDIO';
+      text = messageContent.audioMessage.ptt ? '[Voice Note]' : '[Audio]';
     } else if (messageContent.documentMessage) {
       messageType = 'DOCUMENT';
-      text = messageContent.documentMessage.fileName || '';
+      text = messageContent.documentMessage.fileName || '[Document]';
+    } else if (messageContent.stickerMessage) {
+      messageType = 'STICKER';
+      text = '[Sticker]';
+    } else if (messageContent.contactMessage) {
+      messageType = 'CONTACT';
+      text = messageContent.contactMessage.displayName || '[Contact]';
+    } else if (messageContent.contactsArrayMessage) {
+      messageType = 'CONTACT';
+      const names = messageContent.contactsArrayMessage.contacts?.map(c => c.displayName).filter(Boolean);
+      text = names?.length ? names.join(', ') : '[Contacts]';
+    } else if (messageContent.locationMessage) {
+      messageType = 'LOCATION';
+      const loc = messageContent.locationMessage;
+      text = loc.name || loc.address || `[Location: ${loc.degreesLatitude}, ${loc.degreesLongitude}]`;
+    } else if (messageContent.liveLocationMessage) {
+      messageType = 'LOCATION';
+      text = '[Live Location]';
+    } else if (messageContent.reactionMessage) {
+      messageType = 'REACTION';
+      text = messageContent.reactionMessage.text || '';
+    } else if (messageContent.pollCreationMessage || messageContent.pollCreationMessageV3) {
+      messageType = 'POLL';
+      const poll = messageContent.pollCreationMessage || messageContent.pollCreationMessageV3;
+      text = poll?.name || '[Poll]';
+    } else if (messageContent.buttonsResponseMessage) {
+      text = messageContent.buttonsResponseMessage.selectedDisplayText || '[Button Response]';
+    } else if (messageContent.listResponseMessage) {
+      text = messageContent.listResponseMessage.title || messageContent.listResponseMessage.singleSelectReply?.selectedRowId || '[List Response]';
+    } else if (messageContent.templateButtonReplyMessage) {
+      text = messageContent.templateButtonReplyMessage.selectedDisplayText || '[Template Reply]';
+    } else if (messageContent.viewOnceMessage || messageContent.viewOnceMessageV2) {
+      const inner = messageContent.viewOnceMessage?.message || messageContent.viewOnceMessageV2?.message;
+      if (inner?.imageMessage) {
+        messageType = 'IMAGE';
+        text = inner.imageMessage.caption || '[View Once Photo]';
+      } else if (inner?.videoMessage) {
+        messageType = 'VIDEO';
+        text = inner.videoMessage.caption || '[View Once Video]';
+      } else if (inner?.audioMessage) {
+        messageType = 'AUDIO';
+        text = '[View Once Audio]';
+      } else {
+        text = '[View Once Message]';
+      }
+    } else if (messageContent.protocolMessage) {
+      // Protocol messages (delete, ephemeral settings, etc.) — skip silently
+      return;
+    } else if (messageContent.ephemeralMessage?.message) {
+      // Disappearing message wrapper — extract inner content
+      const inner = messageContent.ephemeralMessage.message;
+      if (inner.conversation) {
+        text = inner.conversation;
+      } else if (inner.extendedTextMessage?.text) {
+        text = inner.extendedTextMessage.text;
+      } else if (inner.imageMessage) {
+        messageType = 'IMAGE';
+        text = inner.imageMessage.caption || '';
+      } else if (inner.videoMessage) {
+        messageType = 'VIDEO';
+        text = inner.videoMessage.caption || '';
+      } else if (inner.documentMessage) {
+        messageType = 'DOCUMENT';
+        text = inner.documentMessage.fileName || '[Document]';
+      } else if (inner.audioMessage) {
+        messageType = 'AUDIO';
+        text = inner.audioMessage.ptt ? '[Voice Note]' : '[Audio]';
+      } else {
+        text = '[Disappearing Message]';
+      }
+    } else {
+      // Unknown message type — log it and store what we can
+      const keys = Object.keys(messageContent).filter(k => k !== 'messageContextInfo');
+      messageType = 'UNKNOWN';
+      text = `[${keys.join(', ')}]`;
+      logger.warn({ instanceId, messageKeys: keys }, '⚠️ Unhandled message type');
     }
 
     // Save to database

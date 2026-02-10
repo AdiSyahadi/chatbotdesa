@@ -9,6 +9,7 @@
 import { createBroadcastWorker } from './broadcast.worker';
 import { createWebhookWorker, stopWebhookWorker } from './webhook.worker';
 import { startMediaCleanupWorker, stopMediaCleanupWorker } from './media-cleanup.worker';
+import { startDailyResetWorker, stopDailyResetWorker } from './daily-reset.worker';
 import logger from '../config/logger';
 
 // Track active workers
@@ -30,6 +31,9 @@ export function initializeWorkers(): void {
 
     // Start media cleanup worker
     startMediaCleanupWorker();
+
+    // Start daily reset worker (resets message counts & updates warming phases at midnight)
+    startDailyResetWorker();
     
     logger.info('All workers initialized');
   } catch (error) {
@@ -52,6 +56,7 @@ export async function shutdownWorkers(): Promise<void> {
   }
 
   stopMediaCleanupWorker();
+  stopDailyResetWorker();
 
   logger.info('All workers stopped');
 }

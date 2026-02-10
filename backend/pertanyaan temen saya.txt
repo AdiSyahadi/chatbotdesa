@@ -1,16 +1,2 @@
- ✅ SUDAH DIJAWAB SEMUA!
-
-Cek file: JAWABAN_PERTANYAAN_TEMAN.md
-
-Ringkasan:
-1. ✅ Base URL production → Configurable via APP_URL di .env
-2. ✅ Media URL → PUBLIC (no auth), permanent storage, no retention policy
-3. ✅ Max instances → Default 1 per org, bisa diubah di database, max 50 per server
-4. ✅ Webhook setup → Hanya via JWT (dashboard), TIDAK bisa via API key
-
-Semua detail lengkap ada di JAWABAN_PERTANYAAN_TEMAN.md dengan:
-- Technical details
-- Code examples  
-- Recommended improvements
-- Workarounds
-- Action plan phase 1-3
+"Bisa naikkan daily limit? Sekarang 20 pesan/hari, error MSG_001"
+"Kenapa banyak pesan di API yang content-nya kosong padahal di HP ada isinya?"
