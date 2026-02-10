@@ -41,10 +41,10 @@ function getWebhookQueue(): Queue {
     webhookQueue = new Queue('webhooks', {
       connection: redisConnectionOptions,
       defaultJobOptions: {
-        attempts: 3,
+        attempts: 5,
         backoff: {
           type: 'exponential',
-          delay: 5000, // 5 seconds initial delay
+          delay: 1000, // 1s -> 2s -> 4s -> 8s -> 16s (max ~16s between retries)
         },
         removeOnComplete: {
           count: 1000,

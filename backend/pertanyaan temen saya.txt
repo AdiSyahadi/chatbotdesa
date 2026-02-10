@@ -1,2 +1,0 @@
-"Bisa naikkan daily limit? Sekarang 20 pesan/hari, error MSG_001"
-"Kenapa banyak pesan di API yang content-nya kosong padahal di HP ada isinya?"

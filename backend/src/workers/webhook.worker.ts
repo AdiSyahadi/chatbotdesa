@@ -68,18 +68,23 @@ async function processWebhook(job: Job<WebhookJobData>): Promise<void> {
         await handleAutoReply(payload, result.responseBody, webhookId);
       }
     } else {
+      const maxAttempts = job.opts.attempts || 5;
+      const isLastAttempt = job.attemptsMade >= maxAttempts - 1;
+
       logger.warn(
         {
           webhookId,
           responseStatus: result.responseStatus,
           error: result.error,
           attemptNumber,
+          maxAttempts,
+          isLastAttempt,
         },
-        'Webhook delivery failed'
+        `Webhook delivery failed (attempt ${attemptNumber}/${maxAttempts})`
       );
 
-      // Throw error to trigger retry if not successful
-      if (job.attemptsMade < (job.opts.attempts || 3) - 1) {
+      // Throw error to trigger retry if not last attempt
+      if (!isLastAttempt) {
         throw new Error(result.error || `HTTP ${result.responseStatus}`);
       }
     }

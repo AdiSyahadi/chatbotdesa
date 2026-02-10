@@ -386,6 +386,13 @@ export async function initializeConnection(
         console.log(`🔍 [RAW-EVENT] ${eventName} type=${data?.type} count=${data?.messages?.length}`);
       }
 
+      // IMPORTANT: Only process 'notify' type messages (new real-time messages)
+      // 'append' type = historical sync from WhatsApp server on connect — IGNORE THESE
+      // This prevents old chat history from flooding the database on first connect
+      if (eventName === 'messages.upsert' && data?.type === 'append') {
+        console.log(`📜 [HISTORY] Ignoring ${data.messages?.length || 0} historical message(s) (type=append)`);
+      }
+
       // Process incoming messages DIRECTLY at emit level (before buffering)
       if (eventName === 'messages.upsert' && data?.type === 'notify' && data?.messages) {
         console.log(`\n🔔🔔🔔 [BAILEYS] Processing ${data.messages.length} notify message(s) at emit level`);

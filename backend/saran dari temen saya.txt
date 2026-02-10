@@ -1,0 +1,116 @@
+SARAN IMPROVEMENT UNTUK WA API
+================================
+
+Halo, berikut beberapa saran agar WA API-nya lebih proper dan mature untuk digunakan oleh consumer seperti CRM:
+
+
+1. FILTER BERDASARKAN WAKTU KONEKSI INSTANCE
+---------------------------------------------
+Simpan timestamp "connected_at" saat instance pertama kali connect.
+Endpoint GET /conversations dan GET /messages sebaiknya punya parameter "since" atau "after"
+agar consumer bisa hanya ambil data setelah instance aktif.
+
+Contoh:
+  GET /conversations?instance_id=xxx&since=2026-02-10T00:00:00Z
+
+Kenapa penting:
+  Saat Baileys connect, dia download semua chat history dari WhatsApp server,
+  termasuk chat lama sebelum instance aktif. Consumer tidak butuh data lama ini.
+
+
+2. JANGAN SYNC CHAT HISTORY LAMA KE DATABASE
+---------------------------------------------
+Saat Baileys pertama kali connect dan download chat history dari WhatsApp,
+jangan simpan semua ke database. Hanya simpan pesan yang masuk SETELAH instance aktif.
+
+Opsi:
+  - Ignore chat history lama sepenuhnya
+  - Atau simpan dengan flag "is_historical: true" agar bisa difilter
+
+
+3. PISAHKAN DATA PER-INSTANCE DENGAN KETAT
+--------------------------------------------
+Pastikan setiap conversation dan message benar-benar terikat ke instance yang membuatnya.
+Kalau instance di-reset atau ganti nomor, data lama harus di-cleanup atau di-archive.
+Jangan sampai data dari nomor lama tercampur dengan nomor baru di instance yang sama.
+
+
+4. ENDPOINT UNTUK RESET/CLEANUP DATA INSTANCE
+-----------------------------------------------
+Tambahkan endpoint untuk reset data per instance:
+
+  DELETE /instances/:id/data    -> hapus semua conversations & messages untuk instance
+  POST   /instances/:id/reset   -> disconnect + cleanup data + siap reconnect
+
+Ini penting agar consumer bisa mulai dari data bersih tanpa harus minta manual.
+
+
+5. HANDLE @LID DENGAN LEBIH BAIK
+----------------------------------
+WhatsApp LID (Linked ID) adalah identifier internal yang tidak bisa digunakan untuk
+mengirim pesan. Saat ini WA API mengembalikan @lid conversations di GET /conversations
+yang membingungkan consumer.
+
+Saran:
+  - Tambahkan field "is_lid: true" di response agar consumer bisa filter
+  - Atau lebih baik: jangan return @lid conversations di GET /conversations secara default
+  - Buat parameter "include_lid=true" kalau memang dibutuhkan
+
+
+6. FILTER SELF-CHAT
+---------------------
+Jangan return conversation yang chat_jid-nya sama dengan nomor instance sendiri
+di GET /conversations. Self-chat tidak berguna untuk CRM/bot use case.
+
+Atau tambahkan field "is_self_chat: true" agar consumer bisa filter.
+
+
+7. WEBHOOK RETRY YANG LEBIH BAIK
+----------------------------------
+Saat ini kalau webhook gagal berkali-kali, retry berhenti selamanya.
+
+Saran:
+  - Implement exponential backoff (1s -> 2s -> 4s -> ... max 5 menit)
+  - Auto-reset retry counter setelah 1 jam
+  - Tambahkan endpoint POST /webhook/retry-reset untuk manual reset
+  - Tambahkan GET /webhook/status untuk cek status delivery (berapa yang gagal, dll)
+
+
+8. RATE LIMIT YANG LEBIH JELAS
+--------------------------------
+Daily message limit 20 terlalu rendah untuk production CRM.
+
+Saran:
+  - Per-instance rate limit, bukan global
+  - Configurable limit per API key
+  - Return header X-RateLimit-Remaining dan X-RateLimit-Reset di setiap response
+  - Bedakan rate limit untuk read (GET) dan write (POST) operations
+
+
+9. RESPONSE YANG KONSISTEN
+----------------------------
+Pastikan semua endpoint return format yang konsisten:
+  {
+    "success": true/false,
+    "data": { ... },
+    "meta": { "page": 1, "limit": 20, "total": 100 },
+    "error": { "code": "ERR_001", "message": "..." }
+  }
+
+Dan pastikan field "content" di messages selalu terisi kalau memang ada teks,
+jangan return empty string untuk pesan yang sebenarnya ada isinya.
+
+
+10. DOKUMENTASI ENDPOINT YANG LENGKAP
+---------------------------------------
+Swagger/OpenAPI docs sudah ada, tapi pastikan semua parameter terdokumentasi
+dengan jelas, termasuk:
+  - Format "to" field (nomor saja atau dengan @s.whatsapp.net)
+  - Kapan pakai "phone_number" vs "chat_jid" untuk query messages
+  - List semua event webhook yang tersedia
+  - Contoh payload webhook untuk setiap event type
+
+
+================================
+Semua saran di atas bertujuan agar WA API lebih mudah diintegrasikan
+dan consumer tidak perlu handle edge case yang seharusnya ditangani di level API.
