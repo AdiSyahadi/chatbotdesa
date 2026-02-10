@@ -1091,4 +1091,132 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       },
     });
   });
+
+  // ============================================
+  // AUTO-REPLY TOGGLE
+  // ============================================
+
+  /**
+   * Get auto-reply settings for an instance
+   * GET /api/v1/instances/:instanceId/auto-reply
+   */
+  fastify.get('/instances/:instanceId/auto-reply', {
+    schema: {
+      description: 'Get auto-reply settings for a WhatsApp instance',
+      tags: ['Instances'],
+      params: {
+        type: 'object',
+        properties: { instanceId: { type: 'string' } },
+        required: ['instanceId'],
+      },
+    },
+    handler: async (request, reply) => {
+      const req = request as ApiKeyAuthenticatedRequest;
+      const { instanceId } = req.params as { instanceId: string };
+
+      const instance = await prisma.whatsAppInstance.findFirst({
+        where: {
+          id: instanceId,
+          organization_id: req.apiKey.organization_id,
+          deleted_at: null,
+        },
+        select: {
+          id: true,
+          name: true,
+          auto_reply_enabled: true,
+          auto_reply_max_per_hour: true,
+        },
+      });
+
+      if (!instance) {
+        return reply.status(404).send({
+          success: false,
+          error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' },
+        });
+      }
+
+      return reply.send({
+        success: true,
+        data: {
+          instance_id: instance.id,
+          instance_name: instance.name,
+          auto_reply_enabled: instance.auto_reply_enabled,
+          auto_reply_max_per_hour: instance.auto_reply_max_per_hour,
+        },
+      });
+    },
+  });
+
+  /**
+   * Update auto-reply settings for an instance
+   * PATCH /api/v1/instances/:instanceId/auto-reply
+   */
+  fastify.patch('/instances/:instanceId/auto-reply', {
+    schema: {
+      description: 'Enable/disable auto-reply and configure rate limits for a WhatsApp instance',
+      tags: ['Instances'],
+      params: {
+        type: 'object',
+        properties: { instanceId: { type: 'string' } },
+        required: ['instanceId'],
+      },
+      body: {
+        type: 'object',
+        properties: {
+          enabled: { type: 'boolean', description: 'Enable or disable auto-reply' },
+          max_per_hour: { type: 'integer', minimum: 1, maximum: 200, description: 'Maximum auto-replies per hour (1-200)' },
+        },
+        anyOf: [
+          { required: ['enabled'] },
+          { required: ['max_per_hour'] },
+        ],
+      },
+    },
+    handler: async (request, reply) => {
+      const req = request as ApiKeyAuthenticatedRequest;
+      const { instanceId } = req.params as { instanceId: string };
+      const body = req.body as { enabled?: boolean; max_per_hour?: number };
+
+      const instance = await prisma.whatsAppInstance.findFirst({
+        where: {
+          id: instanceId,
+          organization_id: req.apiKey.organization_id,
+          deleted_at: null,
+        },
+      });
+
+      if (!instance) {
+        return reply.status(404).send({
+          success: false,
+          error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' },
+        });
+      }
+
+      const updateData: any = {};
+      if (body.enabled !== undefined) updateData.auto_reply_enabled = body.enabled;
+      if (body.max_per_hour !== undefined) updateData.auto_reply_max_per_hour = body.max_per_hour;
+
+      const updated = await prisma.whatsAppInstance.update({
+        where: { id: instanceId },
+        data: updateData,
+        select: {
+          id: true,
+          name: true,
+          auto_reply_enabled: true,
+          auto_reply_max_per_hour: true,
+        },
+      });
+
+      return reply.send({
+        success: true,
+        data: {
+          instance_id: updated.id,
+          instance_name: updated.name,
+          auto_reply_enabled: updated.auto_reply_enabled,
+          auto_reply_max_per_hour: updated.auto_reply_max_per_hour,
+        },
+        message: `Auto-reply ${updated.auto_reply_enabled ? 'enabled' : 'disabled'} for instance ${updated.name}`,
+      });
+    },
+  });
 }
