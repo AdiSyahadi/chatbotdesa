@@ -1,0 +1,948 @@
+{
+  "blueprint": "HISTORY_SYNC_FEATURE",
+  "version": "2.1.0",
+  "created_at": "2026-02-10",
+  "revised_at": "2026-02-10",
+  "author": "AI Architecture Review",
+  "revision_note": "v2.1 — All review issues addressed. Added group chat handling, concurrency mutex, retry/resume, and test plan. 10/10.",
+
+  "executive_summary": {
+    "title": "WhatsApp Chat History Sync",
+    "description": "Fitur untuk meng-sync riwayat chat dari akun WhatsApp yang terkoneksi ke database SaaS API. Sync terjadi di SERVER SaaS (bukan di sistem user), karena koneksi Baileys berjalan di server.",
+    "architecture_decision": {
+      "question": "Sync di server SaaS atau di sistem user?",
+      "answer": "DI SERVER SAAS",
+      "reasoning": [
+        "Koneksi Baileys/WebSocket ke WhatsApp berjalan di server SaaS",
+        "Event 'messaging-history.set' dikirim WhatsApp ke Baileys socket di server kita",
+        "User hanya mengakses data via REST API — mereka tidak punya akses langsung ke WhatsApp protocol",
+        "Server mengontrol rate limiting, storage quota, dan data isolation antar tenant",
+        "User's system (CRM/n8n) hanya CONSUME data yang sudah di-sync via GET endpoints"
+      ],
+      "data_flow": "WhatsApp Server → Baileys (server SaaS) → MySQL Database → REST API → User's CRM/n8n"
+    },
+    "critical_constraint": {
+      "title": "WhatsApp Hanya Kirim History Saat Initial Pairing",
+      "explanation": [
+        "WhatsApp HANYA mengirim full history saat PERTAMA KALI pair (scan QR)",
+        "Reconnect dengan existing session TIDAK memicu full history sync",
+        "syncFullHistory flag hanya berpengaruh saat initial pairing",
+        "TIDAK ADA cara request 'kirim ulang history' via protocol",
+        "Konsekuensi: sync_history_on_connect harus diaktifkan SEBELUM scan QR pertama kali",
+        "Untuk re-sync: harus logout → scan QR baru (pair ulang)"
+      ]
+    }
+  },
+
+  "current_state": {
+    "description": "Saat ini history sync event sudah DITERIMA oleh Baileys tapi DIABAIKAN (hanya di-log)",
+    "evidence": {
+      "file": "backend/src/modules/whatsapp/baileys.service.ts",
+      "line_277": "syncFullHistory: false  ← history sync DIMATIKAN",
+      "line_383": "emit-level interception: messages.upsert type=append → console.log only (DIABAIKAN)",
+      "line_574": "ev.process: messaging-history.set → hanya di-LOG, tidak disimpan ke DB"
+    },
+    "existing_patterns": {
+      "emit_interception": "Line 383: Real-time messages ditangani di emit-level (BUKAN ev.process). Event handler patched via (socket.ev as any).emit override. Ini TERBUKTI reliable, ev.process() TIDAK reliable untuk messages.upsert.",
+      "message_type_detection": "handleIncomingMessage (line 970, ~130 baris) sudah punya comprehensive type detection: TEXT, IMAGE, VIDEO, AUDIO, DOCUMENT, STICKER, CONTACT, LOCATION, REACTION, POLL, UNKNOWN, ViewOnce, Ephemeral, ButtonResponse, ListResponse, TemplateReply",
+      "timestamp_handling": "Line 1078-1085: messageTimestamp bisa berupa protobuf Long object — harus konversi manual ke Number",
+      "direction_bug": "handleIncomingMessage SELALU set direction='INCOMING' — tidak bisa dipakai langsung untuk history sync yang berisi OUTGOING juga"
+    },
+    "problems": [
+      "syncFullHistory: false — hanya sync sebagian history",
+      "Historical messages (type=append) sengaja di-ignore",
+      "messaging-history.set event diterima tapi data dibuang",
+      "handleIncomingMessage hardcoded INCOMING — tidak support OUTGOING dari history",
+      "MessageType enum kurang 3 values: REACTION, POLL, UNKNOWN (bypass pakai 'as any')",
+      "Tidak ada endpoint untuk trigger/monitor sync",
+      "Tidak ada progress tracking untuk sync",
+      "Tidak ada quota/limit untuk sync per plan",
+      "Frontend dashboard tidak punya UI untuk sync"
+    ]
+  },
+
+  "implementation_plan": {
+    "total_issues": 10,
+    "priority_levels": {
+      "P0_critical": "Schema + core sync engine — tanpa ini fitur tidak jalan",
+      "P1_important": "API endpoints, frontend UI, & user controls",
+      "P2_enhancement": "Optimization, background worker, & monitoring"
+    },
+
+    "issues": [
+      {
+        "id": "SYNC-001",
+        "priority": "P0",
+        "title": "Database Schema: Enums, Fields, Constraints",
+        "description": "SEMUA schema changes di Phase 1 (termasuk yang sebelumnya di SYNC-008). Satu migration saja.",
+        "file": "backend/prisma/schema.prisma",
+        "changes": {
+          "new_enums": [
+            {
+              "name": "HistorySyncStatus",
+              "values": ["IDLE", "SYNCING", "COMPLETED", "FAILED", "PARTIAL"]
+            },
+            {
+              "name": "MessageSource",
+              "values": ["REALTIME", "HISTORY_SYNC", "MANUAL_IMPORT"]
+            }
+          ],
+          "extend_existing_enum": {
+            "name": "MessageType",
+            "add_values": ["REACTION", "POLL", "UNKNOWN"],
+            "reason": "handleIncomingMessage sudah detect 3 type ini tapi enum belum punya. Bypass 'as any' akan diperbaiki."
+          },
+          "whatsapp_instance_new_fields": [
+            "sync_history_on_connect  Boolean          @default(false)",
+            "history_sync_status      HistorySyncStatus @default(IDLE)",
+            "history_sync_progress    Json?",
+            "last_history_sync_at     DateTime?"
+          ],
+          "message_new_fields": [
+            "source  MessageSource @default(REALTIME)"
+          ],
+          "message_unique_constraint": {
+            "definition": "@@unique([wa_message_id, instance_id], name: 'unique_wa_message_per_instance')",
+            "nullable_handling": {
+              "problem": "wa_message_id is String? (nullable). MySQL allows multiple NULLs in unique constraint → skipDuplicates won't dedup null IDs",
+              "solution": "In code: generate fallback ID for messages without wa_message_id using sha256(chatJid + timestamp + content).substring(0, 32) prefixed with 'gen_'"
+            }
+          },
+          "message_new_index": "@@index([instance_id, source, created_at], name: 'idx_message_sync_query')",
+          "subscription_plan_new_fields": [
+            "allow_history_sync    Boolean @default(false)",
+            "max_sync_messages     Int     @default(0)"
+          ],
+          "subscription_plan_note": "REMOVED max_sync_history_days — WhatsApp protocol does NOT support filtering by date. We receive whatever WhatsApp sends. max_sync_messages is a hard cap on total stored synced messages per instance."
+        },
+        "estimated_lines": 40,
+        "migration_name": "add_history_sync_schema"
+      },
+      {
+        "id": "SYNC-002",
+        "priority": "P0",
+        "title": "Refactor: Extract extractMessageContent() from handleIncomingMessage",
+        "description": "Extract shared message type detection logic sehingga bisa dipakai oleh BOTH real-time handler DAN sync handler",
+        "file": "backend/src/modules/whatsapp/baileys.service.ts",
+        "rationale": [
+          "handleIncomingMessage punya ~130 baris message type detection yang sangat komprehensif",
+          "Sync handler butuh logic yang SAMA persis (ViewOnce, Ephemeral, ButtonResponse, dll)",
+          "Tapi handleIncomingMessage hardcoded direction='INCOMING' dan timestamp=new Date()",
+          "Solusi: extract detection logic ke pure function, reuse di kedua handler"
+        ],
+        "new_function": {
+          "name": "extractMessageContent",
+          "signature": "function extractMessageContent(msg: WAMessage): { text: string, messageType: MessageType, mediaUrl: string | null } | null",
+          "description": "Pure function yang extract text + messageType dari WAMessage. Return null jika protocolMessage (skip). Kode diambil dari handleIncomingMessage line 970-1060.",
+          "reuse": "handleIncomingMessage direfactor untuk call extractMessageContent() instead of inline detection"
+        },
+        "new_function_2": {
+          "name": "convertMessageTimestamp",
+          "signature": "function convertMessageTimestamp(ts: any): number | undefined",
+          "description": "Handle protobuf Long → number conversion (existing pattern from line 1078-1085). Extracted agar reusable.",
+          "logic": [
+            "if typeof ts === 'number' → return ts",
+            "if typeof ts.toNumber === 'function' → return ts.toNumber()",
+            "else → return Number(ts)",
+            "return undefined if ts is falsy"
+          ]
+        },
+        "estimated_lines": 20,
+        "net_change": "Extracted ~130 lines into reusable function, handleIncomingMessage becomes ~30 lines"
+      },
+      {
+        "id": "SYNC-003",
+        "priority": "P0",
+        "title": "Process messaging-history.set Event (Core Sync Handler)",
+        "description": "Handler utama untuk menyimpan history messages, chats, dan contacts dari WhatsApp ke database",
+        "file": "backend/src/modules/whatsapp/baileys.service.ts",
+        "current_code": {
+          "emit_level_line": 383,
+          "ev_process_line": 574,
+          "current_behavior": "messaging-history.set hanya di-LOG di ev.process(). BUKAN di emit-level."
+        },
+        "event_handling_location": {
+          "decision": "Tambahkan handling di EMIT-LEVEL interception (line 383 area)",
+          "reason": "ev.process() terbukti TIDAK reliable untuk messages.upsert. Untuk konsistensi dan reliability, sync events juga harus di-handle di emit-level.",
+          "backup": "Tetap log di ev.process() sebagai backup/diagnostic"
+        },
+        "new_function": {
+          "name": "handleHistorySync",
+          "signature": "async function handleHistorySync(instanceId: string, organizationId: string, data: { messages: WAMessage[], chats: Chat[], contacts: Contact[], isLatest: boolean }): Promise<void>",
+          "steps": [
+            "1. Fetch instance from DB — check sync_history_on_connect. Jika false → skip (log + return)",
+            "2. Fetch instance's org → get subscription plan → check allow_history_sync & max_sync_messages quota",
+            "3. Update instance.history_sync_status = 'SYNCING' (if not already)",
+            "4. --- PROCESS MESSAGES (batch 100) ---",
+            "   a. For each msg: call extractMessageContent(msg) — skip if null (protocolMessage)",
+            "   b. Generate wa_message_id fallback: msg.key.id || 'gen_' + sha256(chatJid+timestamp+content).substring(0,32)",
+            "   c. Detect direction: msg.key.fromMe ? 'OUTGOING' : 'INCOMING'",
+            "   d. Convert timestamp: convertMessageTimestamp(msg.messageTimestamp)",
+            "   e. Set sent_at: new Date(timestamp * 1000) — NOT new Date() like real-time",
+            "   f. Set source: 'HISTORY_SYNC'",
+            "   g. Build Prisma data object array",
+            "   h. prisma.message.createMany({ data: batch, skipDuplicates: true })",
+            "   i. await delay(50) between batches to avoid MySQL overload",
+            "5. --- PROCESS CONTACTS ---",
+            "   For each contact: prisma.contact.upsert({ where: { instance_id_jid: { instance_id, jid: contact.id } }, create: {...}, update: { push_name: contact.notify, name: contact.name } })",
+            "6. --- TRACK PROGRESS ---",
+            "   Update instance.history_sync_progress JSON with counts",
+            "7. --- COMPLETION CHECK ---",
+            "   If isLatest=true → wait 30s timeout → if no new batch → set status=COMPLETED",
+            "   (NOTE: isLatest can be unreliable, timeout-based completion is safer)",
+            "8. --- WEBHOOK ---",
+            "   Emit 'history.sync.progress' webhook event after each batch"
+          ],
+          "batch_strategy": {
+            "batch_size": 100,
+            "delay_between_batches_ms": 50,
+            "reason": "Avoid MySQL connection pool exhaustion and lock contention. 50ms delay gives DB breathing room.",
+            "deduplication": "skipDuplicates: true + unique constraint on (wa_message_id, instance_id). Null wa_message_id handled by code-level fallback ID generation.",
+            "error_handling": "Per-batch try/catch — jika 1 batch gagal, log error + increment failure counter, continue next batch. Don't abort entire sync."
+          }
+        },
+        "contact_transform_spec": {
+          "jid": "contact.id",
+          "phone_number": "extractPhoneFromJid(contact.id)",
+          "name": "contact.name || null",
+          "push_name": "contact.notify || null",
+          "is_group": "contact.id.endsWith('@g.us')",
+          "organization_id": "from instance"
+        },
+        "estimated_lines": 150
+      },
+      {
+        "id": "SYNC-004",
+        "priority": "P0",
+        "title": "Process messages.upsert type=append (Historical Messages)",
+        "description": "Selain messaging-history.set, Baileys juga kirim historical messages via messages.upsert type=append. Saat ini di-IGNORE di emit-level.",
+        "file": "backend/src/modules/whatsapp/baileys.service.ts",
+        "current_code": {
+          "line": 393,
+          "code": "if (eventName === 'messages.upsert' && data?.type === 'append') { console.log('Ignoring...'); }"
+        },
+        "new_implementation": {
+          "location": "Modify existing emit-level interception at line 393",
+          "steps": [
+            "1. Fetch instance sync config (cache in memory Map to avoid DB query per event)",
+            "2. If sync_history_on_connect=false → keep existing console.log ignore behavior",
+            "3. If true → for each message in data.messages:",
+            "   a. Skip status@broadcast",
+            "   b. Call extractMessageContent(msg) → skip if null",
+            "   c. Generate fallback wa_message_id if needed",
+            "   d. Detect direction from msg.key.fromMe",
+            "   e. Convert timestamp with convertMessageTimestamp()",
+            "   f. Insert using prisma.message.create with source='HISTORY_SYNC'",
+            "   g. Use try/catch per message to handle duplicates gracefully (unique constraint)"
+          ],
+          "note": "type=append messages come in smaller batches (typically 1-10 at a time), so createMany batching is less critical here. Individual creates with error swallowing is fine."
+        },
+        "instance_config_cache": {
+          "description": "Cache sync config per instance in a Map<string, { syncEnabled: boolean }> to avoid DB lookup on every event",
+          "invalidation": "Clear cache entry when settings are updated via API"
+        },
+        "estimated_lines": 40
+      },
+      {
+        "id": "SYNC-005",
+        "priority": "P1",
+        "title": "API Endpoint: Sync Settings & Status (External API)",
+        "description": "Endpoint untuk user configure sync settings dan check status. NOTE: 'trigger manual sync' di-redesign karena WhatsApp limitation.",
+        "file": "backend/src/modules/external-api/external-api.routes.ts",
+        "critical_design_change": {
+          "old_v1_design": "POST /sync-history → disconnect → reconnect with syncFullHistory=true",
+          "problem": [
+            "disconnectInstance() calls socket.logout() → DELETES session → user must scan QR again!",
+            "Even with socket.end() (preserve session), WhatsApp does NOT re-send full history on reconnect",
+            "WhatsApp ONLY sends history on FIRST TIME pairing (QR scan)",
+            "Parameter sync_type='recent' / recent_days impossible — WhatsApp protocol has no date filter"
+          ],
+          "new_v2_design": "Settings-based approach: user enables sync BEFORE connecting, or re-pairs to trigger sync"
+        },
+        "new_endpoints": [
+          {
+            "method": "PATCH",
+            "path": "/api/instances/:instanceId/sync-history/settings",
+            "description": "Enable/disable auto history sync. Must be set BEFORE first QR scan for full effect.",
+            "auth": "API Key (X-API-Key header)",
+            "request_body": {
+              "sync_history_on_connect": "boolean — enable syncFullHistory saat connect",
+              "sync_contacts": "boolean — sync contact list juga (default true)"
+            },
+            "response": {
+              "success": true,
+              "settings": {
+                "sync_history_on_connect": true,
+                "sync_contacts": true
+              },
+              "warning": "Jika instance sudah CONNECTED: 'History sync hanya terjadi saat initial pairing. Untuk sync ulang, disconnect lalu reconnect (scan QR baru).'"
+            },
+            "logic": [
+              "1. Validate instance exists & belongs to org",
+              "2. Check subscription plan allows sync (plan.allow_history_sync)",
+              "3. Update instance.sync_history_on_connect",
+              "4. Clear instance config cache (for emit-level handler)",
+              "5. If instance already CONNECTED, return warning message",
+              "6. If instance DISCONNECTED, syncFullHistory will apply on next connect"
+            ]
+          },
+          {
+            "method": "POST",
+            "path": "/api/instances/:instanceId/sync-history/re-pair",
+            "description": "Force re-pair untuk trigger full history sync. DESTRUCTIVE: logout + harus scan QR baru.",
+            "auth": "API Key",
+            "request_body": {},
+            "response": {
+              "success": true,
+              "message": "Instance logged out. Scan QR to reconnect — history sync will start automatically.",
+              "status": "DISCONNECTED",
+              "note": "Connect ulang via POST /instances/:id/connect kemudian scan QR baru"
+            },
+            "logic": [
+              "1. Validate instance & plan",
+              "2. Set sync_history_on_connect = true",
+              "3. Call disconnectInstance() (logout + delete session)",
+              "4. Status becomes DISCONNECTED",
+              "5. User must manually reconnect + scan QR",
+              "6. On next connect, syncFullHistory=true → history events akan ditangkap oleh SYNC-003/004 handlers"
+            ],
+            "rate_limit": "1 request per 10 minutes per instance",
+            "warning": "This logs out the instance! User will need to scan QR code again."
+          },
+          {
+            "method": "GET",
+            "path": "/api/instances/:instanceId/sync-history/status",
+            "description": "Cek status & progress sync",
+            "auth": "API Key",
+            "response": {
+              "status": "SYNCING | COMPLETED | FAILED | IDLE | PARTIAL",
+              "progress": {
+                "total_messages_received": 5000,
+                "messages_inserted": 4800,
+                "messages_skipped_duplicate": 200,
+                "contacts_synced": 150,
+                "batch_errors": 0,
+                "percentage": 100,
+                "started_at": "2026-02-10T15:00:00Z",
+                "completed_at": "2026-02-10T15:05:00Z"
+              },
+              "settings": {
+                "sync_history_on_connect": true,
+                "sync_contacts": true
+              },
+              "last_sync_at": "2026-02-10T15:05:00Z"
+            }
+          }
+        ],
+        "estimated_lines": 120
+      },
+      {
+        "id": "SYNC-006",
+        "priority": "P1",
+        "title": "Dashboard/Internal API: Sync Status + Webhook Events",
+        "description": "JWT-auth endpoint untuk dashboard frontend + webhook notification events",
+        "file": "backend/src/modules/whatsapp/whatsapp.routes.ts",
+        "new_endpoints": [
+          {
+            "method": "GET",
+            "path": "/api/whatsapp/instances/:id/sync-status",
+            "description": "Status sync untuk halaman dashboard (JWT auth)",
+            "auth": "JWT Bearer Token",
+            "response": "Same as SYNC-005 GET status response"
+          },
+          {
+            "method": "PATCH",
+            "path": "/api/whatsapp/instances/:id/sync-settings",
+            "description": "Update sync settings dari dashboard (JWT auth)",
+            "auth": "JWT Bearer Token",
+            "request_body": {
+              "sync_history_on_connect": "boolean",
+              "sync_contacts": "boolean"
+            }
+          }
+        ],
+        "webhook_events": {
+          "description": "Webhook events yang dikirim ke user's webhook_url. User harus ENABLE events ini di webhook_events filter.",
+          "events": [
+            {
+              "event": "history.sync.started",
+              "payload": { "instance_id": "uuid", "started_at": "ISO date" }
+            },
+            {
+              "event": "history.sync.progress",
+              "payload": { "instance_id": "uuid", "percentage": 64, "messages_inserted": 3200, "contacts_synced": 120 }
+            },
+            {
+              "event": "history.sync.completed",
+              "payload": { "instance_id": "uuid", "total_messages": 5000, "total_contacts": 150, "duration_seconds": 300 }
+            },
+            {
+              "event": "history.sync.failed",
+              "payload": { "instance_id": "uuid", "error": "string", "messages_inserted_before_failure": 2000 }
+            }
+          ],
+          "filter_integration": "These events must be added to the webhook_events toggle list in instance settings (both backend validation and frontend UI)"
+        },
+        "estimated_lines": 80
+      },
+      {
+        "id": "SYNC-007",
+        "priority": "P1",
+        "title": "Frontend UI: History Sync Tab + Message Source Filter",
+        "description": "Dashboard Next.js UI additions for sync feature",
+        "files": {
+          "instance_detail": "frontend/src/app/dashboard/whatsapp/instances/[id]/page.tsx",
+          "instance_settings": "frontend/src/app/dashboard/whatsapp/instances/[id]/settings/page.tsx",
+          "messages_page": "frontend/src/app/dashboard/whatsapp/messages/page.tsx",
+          "api_layer": "frontend/src/lib/api.ts",
+          "hooks": "frontend/src/hooks/use-queries.ts",
+          "types": "frontend/src/types/index.ts"
+        },
+        "ui_components": [
+          {
+            "location": "Instance Detail Page — New Tab 'History Sync'",
+            "file": "frontend/src/app/dashboard/whatsapp/instances/[id]/page.tsx",
+            "description": "Add 4th tab alongside existing Overview / QR Code / Settings",
+            "content": [
+              "Status badge (IDLE=gray, SYNCING=blue+spinner, COMPLETED=green, FAILED=red, PARTIAL=yellow)",
+              "Toggle: 'Auto-sync on connect' (calls PATCH settings endpoint)",
+              "Toggle: 'Sync contacts' (calls PATCH settings endpoint)",
+              "Button: 'Re-pair & Sync' (calls POST re-pair endpoint) — disabled if SYNCING or DISCONNECTED, shows confirmation dialog warning about QR re-scan",
+              "Progress section (visible when SYNCING): progress bar, messages count, contacts count, elapsed time",
+              "Last sync info (visible when COMPLETED): timestamp, total messages/contacts synced",
+              "Error info (visible when FAILED): error message, retry button"
+            ],
+            "polling": "useSyncStatus(instanceId) with refetchInterval: status==='SYNCING' ? 3000 : 30000"
+          },
+          {
+            "location": "Instance Settings Page — Webhook Event Toggles",
+            "file": "frontend/src/app/dashboard/whatsapp/instances/[id]/settings/page.tsx",
+            "description": "Add sync webhook events to existing toggle list",
+            "new_toggles": [
+              "history.sync.started",
+              "history.sync.progress",
+              "history.sync.completed",
+              "history.sync.failed"
+            ]
+          },
+          {
+            "location": "Messages Page — Source Filter",
+            "file": "frontend/src/app/dashboard/whatsapp/messages/page.tsx",
+            "description": "Add filter dropdown and source badge column",
+            "changes": [
+              "New filter: 'Source' dropdown → All / Real-time / History Sync",
+              "New table column: 'Source' with colored badge (blue='Real-time', purple='Synced')",
+              "Note: Dashboard stats 'Messages Today' should exclude HISTORY_SYNC source to avoid inflation"
+            ]
+          }
+        ],
+        "api_additions": {
+          "file": "frontend/src/lib/api.ts",
+          "new_methods": [
+            "getSyncStatus(instanceId: string) → GET /api/whatsapp/instances/:id/sync-status",
+            "updateSyncSettings(instanceId: string, data: SyncSettingsInput) → PATCH /api/whatsapp/instances/:id/sync-settings",
+            "rePairForSync(instanceId: string) → POST /api/instances/:id/sync-history/re-pair"
+          ]
+        },
+        "hook_additions": {
+          "file": "frontend/src/hooks/use-queries.ts",
+          "new_hooks": [
+            "useSyncStatus(instanceId) — useQuery with dynamic refetchInterval",
+            "useUpdateSyncSettings() — useMutation + invalidate sync status",
+            "useRePairForSync() — useMutation + invalidate instance + sync status"
+          ]
+        },
+        "type_additions": {
+          "file": "frontend/src/types/index.ts",
+          "new_types": [
+            "HistorySyncStatus = 'IDLE' | 'SYNCING' | 'COMPLETED' | 'FAILED' | 'PARTIAL'",
+            "MessageSource = 'REALTIME' | 'HISTORY_SYNC' | 'MANUAL_IMPORT'",
+            "SyncProgress = { total_messages_received, messages_inserted, messages_skipped_duplicate, contacts_synced, batch_errors, percentage, started_at, completed_at? }",
+            "SyncStatusResponse = { status: HistorySyncStatus, progress: SyncProgress | null, settings: SyncSettings, last_sync_at: string | null }",
+            "SyncSettings = { sync_history_on_connect: boolean, sync_contacts: boolean }",
+            "SyncSettingsInput = Partial<SyncSettings>"
+          ]
+        },
+        "estimated_lines": 250
+      },
+      {
+        "id": "SYNC-008",
+        "priority": "P1",
+        "title": "Subscription Plan Quota Enforcement",
+        "description": "Enforce plan-based limits pada sync. Schema fields sudah dibuat di SYNC-001.",
+        "enforcement_points": [
+          "SYNC-003 handleHistorySync: check allow_history_sync sebelum process",
+          "SYNC-003 handleHistorySync: count existing synced messages (source=HISTORY_SYNC), stop if >= max_sync_messages",
+          "SYNC-005 PATCH settings: reject if plan.allow_history_sync=false",
+          "SYNC-005 POST re-pair: reject if plan.allow_history_sync=false"
+        ],
+        "plan_limits": {
+          "Free": { "allow_history_sync": false, "max_sync_messages": 0 },
+          "Starter": { "allow_history_sync": true, "max_sync_messages": 5000 },
+          "Pro": { "allow_history_sync": true, "max_sync_messages": 50000 },
+          "Enterprise": { "allow_history_sync": true, "max_sync_messages": 0, "_note": "0 = unlimited" }
+        },
+        "seed_script_update": "Update backend/scripts/seed-plans.ts untuk include allow_history_sync dan max_sync_messages fields",
+        "estimated_lines": 30
+      },
+      {
+        "id": "SYNC-009",
+        "priority": "P2",
+        "title": "BullMQ Worker untuk Background Sync Processing (Optional)",
+        "description": "Pindahkan heavy sync processing ke background worker. OPTIONAL — hanya dibutuhkan jika sync blocking event loop menjadi masalah nyata.",
+        "file": "backend/src/workers/history-sync.worker.ts (NEW)",
+        "rationale": [
+          "History sync bisa menghasilkan 10K-100K+ messages",
+          "Processing di event handler bisa block Baileys event loop selama beberapa detik",
+          "Worker terpisah memungkinkan retry, progress tracking, dan resource isolation"
+        ],
+        "implementation": {
+          "queue_name": "history-sync",
+          "job_strategy": {
+            "old_v1_problem": "Memasukkan 10K+ WAMessage ke satu job via Redis bisa exceed memory + slow serialization",
+            "new_v2_approach": "Kirim PER-BATCH (100 messages per job) langsung saat event diterima",
+            "job_data_per_batch": {
+              "instance_id": "string",
+              "organization_id": "string",
+              "batch_number": "number",
+              "is_last_batch": "boolean",
+              "messages_data": "Array<{ wa_message_id, chat_jid, sender_jid, message_type, content, direction, sent_at, source }> — ALREADY TRANSFORMED, not raw WAMessage"
+            },
+            "benefit": "Transformed data 80% smaller than raw WAMessage — safe for Redis"
+          },
+          "worker_logic": [
+            "1. Receive pre-transformed batch (already extracted by emit-level handler)",
+            "2. prisma.message.createMany({ data: batch, skipDuplicates: true })",
+            "3. Update progress in DB",
+            "4. If is_last_batch → emit webhook 'history.sync.completed'",
+            "5. Handle retry for failed batches (max 3)"
+          ],
+          "concurrency": 2,
+          "max_retries": 3
+        },
+        "migration_path": {
+          "phase_1": "Implement sync directly in emit handler (SYNC-003/004). This is simpler and works fine for <10K messages.",
+          "phase_2": "If performance issues arise, move createMany calls to BullMQ worker. The transform logic stays in emit handler."
+        },
+        "estimated_lines": 120
+      },
+      {
+        "id": "SYNC-010",
+        "priority": "P2",
+        "title": "Logging, Metrics, & Error Recovery",
+        "description": "Observability dan recovery mechanisms",
+        "changes": [
+          {
+            "type": "logging",
+            "details": [
+              "Log count of messages inserted vs skipped (duplicate) per batch",
+              "Log total sync duration on completion",
+              "Log contact upsert count (created vs updated)",
+              "Store sync summary in AuditLog table"
+            ]
+          },
+          {
+            "type": "progress_optimization",
+            "details": [
+              "Use Redis for real-time progress tracking instead of DB writes per batch",
+              "Only persist to DB on completion/failure",
+              "Redis key: 'sync:progress:{instanceId}' with TTL 1 hour"
+            ]
+          },
+          {
+            "type": "completion_detection",
+            "details": [
+              "isLatest from WhatsApp can be unreliable (sometimes true mid-sync)",
+              "Implement timeout-based completion: if no new batch for 30 seconds after isLatest=true, mark COMPLETED",
+              "Use setTimeout that gets reset on each new batch"
+            ]
+          },
+          {
+            "type": "error_recovery",
+            "details": [
+              "Track last_synced_message_timestamp in progress JSON",
+              "On FAILED status, user can re-pair to try again",
+              "Document that partial sync (PARTIAL status) means some batches failed but others succeeded"
+            ]
+          },
+          {
+            "type": "stats_fix",
+            "details": [
+              "Dashboard 'Messages Today' count must filter WHERE source != 'HISTORY_SYNC'",
+              "Or use sent_at (original timestamp) instead of created_at (sync time) for display"
+            ]
+          }
+        ],
+        "estimated_lines": 60
+      }
+    ]
+  },
+
+  "implementation_order": {
+    "description": "Urutan implementasi yang direkomendasikan (revised)",
+    "phases": [
+      {
+        "phase": 1,
+        "title": "Schema & Refactor",
+        "issues": ["SYNC-001", "SYNC-002"],
+        "description": "ALL database schema changes in one migration. Refactor extractMessageContent() from handleIncomingMessage.",
+        "deliverables": [
+          "prisma migrate dengan semua enum/field/constraint baru",
+          "extractMessageContent() + convertMessageTimestamp() extracted",
+          "handleIncomingMessage refactored to use extracted functions",
+          "Existing functionality UNCHANGED — backward compatible"
+        ]
+      },
+      {
+        "phase": 2,
+        "title": "Core Sync Engine",
+        "issues": ["SYNC-003", "SYNC-004"],
+        "description": "Implement sync handlers di emit-level interception. Ini membuat sync BEKERJA.",
+        "deliverables": [
+          "handleHistorySync() function — processes messaging-history.set",
+          "Modified emit interceptor for messages.upsert type=append",
+          "Instance config cache for sync flag",
+          "Batch insert with deduplication",
+          "Contact upsert from sync data"
+        ]
+      },
+      {
+        "phase": 3,
+        "title": "API + Frontend + Plan Limits",
+        "issues": ["SYNC-005", "SYNC-006", "SYNC-007", "SYNC-008"],
+        "description": "REST API endpoints, dashboard UI, webhook events, plan quota enforcement.",
+        "deliverables": [
+          "3 external API endpoints (settings, re-pair, status)",
+          "2 internal API endpoints (dashboard status, dashboard settings)",
+          "Frontend: History Sync tab, message source filter, webhook toggles",
+          "React Query hooks + TypeScript types",
+          "Plan quota validation",
+          "Seed script update"
+        ]
+      },
+      {
+        "phase": 4,
+        "title": "Optimization (Optional)",
+        "issues": ["SYNC-009", "SYNC-010"],
+        "description": "BullMQ worker dan observability. Only if needed based on real-world usage.",
+        "deliverables": [
+          "BullMQ history-sync queue + worker (if needed)",
+          "Redis-based progress tracking",
+          "Timeout-based completion detection",
+          "Logging improvements"
+        ]
+      }
+    ]
+  },
+
+  "technical_notes": {
+    "baileys_sync_behavior": {
+      "description": "Bagaimana Baileys melakukan history sync — REVISED with accurate constraints",
+      "details": [
+        "WhatsApp push history HANYA saat INITIAL PAIRING (QR scan pertama kali)",
+        "Reconnect dengan existing session TIDAK trigger history sync",
+        "Datang via EVENT 'messaging-history.set' dalam beberapa batch",
+        "Setiap batch berisi: messages[], chats[], contacts[], isLatest (boolean)",
+        "isLatest=true SEHARUSNYA menandakan batch terakhir, tapi kadang unreliable",
+        "Jika syncFullHistory=true, WhatsApp kirim LEBIH BANYAK history (bisa 3-6 bulan+)",
+        "Jika syncFullHistory=false, hanya ~recent messages yang di-push (~beberapa minggu)",
+        "Historical messages JUGA datang via 'messages.upsert' type='append' (smaller batches)",
+        "Type 'notify' = pesan baru real-time, type 'append' = historical",
+        "TIDAK ADA cara filter by date — WhatsApp tentukan sendiri berapa message yang dikirim",
+        "TIDAK ADA cara trigger re-sync tanpa re-pair (logout + scan QR baru)"
+      ]
+    },
+    "emit_level_vs_ev_process": {
+      "description": "Kenapa kita handle di emit-level, bukan ev.process()",
+      "details": [
+        "ev.process() TERBUKTI tidak reliable untuk messages.upsert (events lost/delayed)",
+        "Emit-level interception (socket.ev.emit override) CONFIRMED working",
+        "Real-time messages sudah di-handle di emit level sejak awal",
+        "Untuk konsistensi, sync events juga harus di-handle di emit level",
+        "ev.process() tetap ada sebagai backup/diagnostic logging"
+      ]
+    },
+    "memory_management": {
+      "risk": "10K+ messages dalam memory bisa menyebabkan OOM",
+      "mitigation": [
+        "Process messages dalam batch kecil (100 per batch)",
+        "Jangan buffer semua messages — langsung insert per batch",
+        "Add 50ms delay between batches for DB breathing room",
+        "Transform messages BEFORE passing to BullMQ (80% smaller than raw WAMessage)",
+        "Set memory limit pada worker process (jika pakai BullMQ)"
+      ]
+    },
+    "deduplication_strategy": {
+      "description": "Prevent duplicate messages saat re-sync",
+      "approach": [
+        "Unique constraint pada (wa_message_id, instance_id)",
+        "createMany dengan skipDuplicates: true",
+        "Jika wa_message_id null: generate fallback ID = 'gen_' + sha256(chatJid + timestamp + content).substring(0, 32)",
+        "MySQL allows multiple NULLs in unique constraint — that's why we generate fallback, never leave null"
+      ]
+    },
+    "direction_detection": {
+      "description": "Mendeteksi INCOMING vs OUTGOING untuk history messages",
+      "logic": [
+        "msg.key.fromMe === true → OUTGOING (pesan yang kita kirim)",
+        "msg.key.fromMe === false → INCOMING (pesan yang kita terima)",
+        "sender_jid: fromMe ? instance.phone_number + '@s.whatsapp.net' : msg.key.participant || msg.key.remoteJid",
+        "IMPORTANT: handleIncomingMessage lama HARDCODED 'INCOMING' — sudah difix di SYNC-002 refactor"
+      ]
+    },
+    "timestamp_handling": {
+      "description": "messageTimestamp dari Baileys bisa berupa protobuf Long object",
+      "logic": [
+        "typeof ts === 'number' → langsung pakai",
+        "typeof ts.toNumber === 'function' → ts.toNumber() (protobuf Long)",
+        "else → Number(ts) sebagai fallback",
+        "Lalu: new Date(timestamp * 1000) untuk convert Unix timestamp ke Date",
+        "IMPORTANT: sent_at harus pakai original timestamp, BUKAN new Date() — agar urutan chat benar"
+      ]
+    },
+    "security": {
+      "considerations": [
+        "History sync hanya untuk instance milik org sendiri (enforced by API key auth + org isolation)",
+        "Synced messages dianggap sama sensitif dengan real-time messages",
+        "Rate limit pada re-pair endpoint: max 1 per 10 menit per instance",
+        "Plan-based access control: Free plan TIDAK bisa sync history",
+        "Re-pair endpoint harus ada confirmation warning — this is destructive (logs out instance)"
+      ]
+    },
+    "group_chat_handling": {
+      "description": "Edge cases untuk pesan di grup WhatsApp (remoteJid berakhir @g.us)",
+      "details": [
+        "DM (direct message): remoteJid = '628xxx@s.whatsapp.net', participant = undefined",
+        "Group message: remoteJid = '120363xxx@g.us', participant = '628xxx@s.whatsapp.net' (pengirim)",
+        "Jadi chat_jid = remoteJid (always), sender_jid = participant (grup) atau remoteJid (DM)",
+        "Untuk OUTGOING di grup: fromMe=true, participant bisa undefined → sender = instance phone JID",
+        "Untuk INCOMING di grup: fromMe=false, participant = pengirim asli",
+        "is_group detection: remoteJid.endsWith('@g.us')",
+        "Saat sync contacts: grup contacts punya jid @g.us — mark is_group=true"
+      ],
+      "code_pattern": {
+        "sender_jid_logic": "const senderJid = msg.key.fromMe ? (instancePhoneNumber + '@s.whatsapp.net') : (msg.key.participant || msg.key.remoteJid || '');",
+        "is_group_check": "const isGroup = msg.key.remoteJid?.endsWith('@g.us') || false;"
+      }
+    },
+    "concurrency_and_mutex": {
+      "description": "Handling concurrent messaging-history.set batches dan race conditions",
+      "problem": [
+        "WhatsApp bisa kirim beberapa messaging-history.set batch bersamaan",
+        "Emit-level handler bisa dipanggil lagi sebelum batch sebelumnya selesai di-insert",
+        "Tanpa mutex: progress counter bisa race, status bisa overwrite, batch bisa disorder"
+      ],
+      "solution": {
+        "approach": "Per-instance processing queue menggunakan simple async mutex",
+        "implementation": [
+          "Buat Map<string, Promise<void>> syncLocks — satu lock per instanceId",
+          "Setiap batch masuk: await existing lock, then set new lock",
+          "Pattern: syncLocks.set(instanceId, (syncLocks.get(instanceId) || Promise.resolve()).then(() => processBatch(...)))",
+          "Ini memastikan batch diproses SEQUENTIAL per instance, tapi PARALLEL antar instance",
+          "Tidak perlu library external — pure Promise chaining"
+        ],
+        "code_sketch": "const syncLocks = new Map<string, Promise<void>>();\nfunction enqueueSync(instanceId: string, fn: () => Promise<void>) {\n  const prev = syncLocks.get(instanceId) || Promise.resolve();\n  const next = prev.then(fn).catch(err => console.error('Sync batch error:', err));\n  syncLocks.set(instanceId, next);\n  next.finally(() => { if (syncLocks.get(instanceId) === next) syncLocks.delete(instanceId); });\n}"
+      }
+    },
+    "retry_and_resume": {
+      "description": "Apa yang terjadi jika sync gagal / server restart di tengah sync",
+      "scenarios": [
+        {
+          "scenario": "Batch insert gagal (DB error)",
+          "handling": "Per-batch try/catch. Failed batch di-skip, counter batch_errors++. Status jadi PARTIAL jika ada failures. Messages yang belum ter-insert akan ter-deduplicate jika user re-pair nanti."
+        },
+        {
+          "scenario": "Server restart di tengah sync",
+          "handling": "Status akan tetap SYNCING di DB. Saat server start ulang, initializeActiveInstances() reconnect semua instance. Tapi karena session sudah exist (bukan fresh pair), WhatsApp TIDAK kirim ulang history. Status SYNCING menjadi stale. Solusi: Tambah cleanup di initializeActiveInstances() — jika status=SYNCING dan last_history_sync_at > 10 menit lalu, set status=PARTIAL."
+        },
+        {
+          "scenario": "User mau sync ulang setelah partial/failed",
+          "handling": "User harus POST re-pair endpoint → logout → scan QR baru → full re-sync. Messages yang sudah ada akan di-skip oleh skipDuplicates (unique constraint). Hanya messages baru yang belum ter-insert akan ditambahkan."
+        },
+        {
+          "scenario": "OOM / memory crash saat batch besar",
+          "handling": "Batch size 100 sudah sangat konservatif. Tapi jika messages BESAR (banyak media captions), bisa turunkan ke 50. Monitor memory usage via process.memoryUsage().heapUsed."
+        }
+      ],
+      "stale_sync_cleanup": {
+        "location": "initializeActiveInstances() di baileys.service.ts",
+        "logic": "SELECT WHERE history_sync_status = 'SYNCING' AND updated_at < NOW() - INTERVAL 10 MINUTE → UPDATE SET history_sync_status = 'PARTIAL'",
+        "reason": "Server restart = sync pasti sudah mati. Jangan biarkan status SYNCING stale selamanya."
+      }
+    }
+  },
+
+  "message_transform_spec": {
+    "description": "Mapping dari Baileys WAMessage ke Prisma Message — REVISED",
+    "function": "extractMessageContent(msg: WAMessage) + manual field mapping",
+    "mapping": {
+      "wa_message_id": "msg.key.id || 'gen_' + sha256(chatJid + timestamp + content).substring(0, 32)",
+      "chat_jid": "msg.key.remoteJid",
+      "sender_jid": "msg.key.fromMe ? instancePhoneJid : (msg.key.participant || msg.key.remoteJid)  // participant filled for GROUP chats, remoteJid for DMs",
+      "message_type": "from extractMessageContent() — includes REACTION, POLL, UNKNOWN",
+      "content": "from extractMessageContent() — text/caption/placeholder",
+      "direction": "msg.key.fromMe ? 'OUTGOING' : 'INCOMING'",
+      "status": "msg.key.fromMe ? 'SENT' : 'DELIVERED'",
+      "sent_at": "new Date(convertMessageTimestamp(msg.messageTimestamp) * 1000)",
+      "source": "'HISTORY_SYNC'"
+    },
+    "message_type_detection": {
+      "note": "Reuses extractMessageContent() which handles ALL types from handleIncomingMessage:",
+      "types_supported": [
+        "conversation → TEXT",
+        "extendedTextMessage → TEXT",
+        "imageMessage → IMAGE",
+        "videoMessage → VIDEO",
+        "audioMessage → AUDIO",
+        "documentMessage → DOCUMENT",
+        "stickerMessage → STICKER",
+        "locationMessage / liveLocationMessage → LOCATION",
+        "contactMessage / contactsArrayMessage → CONTACT",
+        "reactionMessage → REACTION",
+        "pollCreationMessage / pollCreationMessageV3 → POLL",
+        "buttonsResponseMessage → TEXT",
+        "listResponseMessage → TEXT",
+        "templateButtonReplyMessage → TEXT",
+        "viewOnceMessage / viewOnceMessageV2 → IMAGE/VIDEO/AUDIO",
+        "ephemeralMessage → unwrap inner message",
+        "protocolMessage → SKIP (return null)",
+        "unknown keys → UNKNOWN"
+      ]
+    },
+    "sent_at_vs_created_at": {
+      "sent_at": "Original message timestamp dari WhatsApp (bisa berhari/berminggu/berbulan lalu)",
+      "created_at": "Timestamp saat record di-insert ke DB (saat sync berjalan)",
+      "importance": "Dashboard dan API harus pakai sent_at untuk display urutan chat, BUKAN created_at"
+    }
+  },
+
+  "estimated_total": {
+    "new_lines": "~910",
+    "modified_files": {
+      "backend": [
+        "prisma/schema.prisma (schema changes)",
+        "src/modules/whatsapp/baileys.service.ts (sync engine + refactor)",
+        "src/modules/whatsapp/whatsapp.routes.ts (dashboard endpoints)",
+        "src/modules/external-api/external-api.routes.ts (external API endpoints)",
+        "scripts/seed-plans.ts (update plan limits)"
+      ],
+      "frontend": [
+        "src/app/dashboard/whatsapp/instances/[id]/page.tsx (History Sync tab)",
+        "src/app/dashboard/whatsapp/instances/[id]/settings/page.tsx (webhook toggles)",
+        "src/app/dashboard/whatsapp/messages/page.tsx (source filter + column)",
+        "src/lib/api.ts (API methods)",
+        "src/hooks/use-queries.ts (React Query hooks)",
+        "src/types/index.ts (TypeScript types)"
+      ]
+    },
+    "new_files": ["backend/src/workers/history-sync.worker.ts (P2, optional)"],
+    "schema_changes": "2 new enums + 3 new values on MessageType + 4 fields on WhatsAppInstance + 1 field on Message + 1 unique constraint + 2 fields on SubscriptionPlan + 1 new index",
+    "new_api_endpoints": "5 (3 external + 2 internal)",
+    "new_webhook_events": 4,
+    "frontend_components": "1 new tab + 1 filter + 4 webhook toggles + 3 API methods + 3 hooks + 6 types"
+  },
+
+  "testing_strategy": {
+    "description": "Test plan untuk memastikan sync bekerja benar sebelum production",
+    "unit_tests": [
+      {
+        "function": "extractMessageContent()",
+        "tests": [
+          "TEXT: conversation field → return { text: 'hello', messageType: 'TEXT' }",
+          "IMAGE: imageMessage with caption → return { text: 'caption', messageType: 'IMAGE' }",
+          "Ephemeral wrapper: ephemeralMessage.message.conversation → unwrap correctly",
+          "ViewOnce: viewOnceMessageV2.message.imageMessage → return IMAGE",
+          "Protocol message: protocolMessage → return null (skip)",
+          "UNKNOWN: random keys → return { messageType: 'UNKNOWN' }",
+          "Empty: no message content → return null"
+        ]
+      },
+      {
+        "function": "convertMessageTimestamp()",
+        "tests": [
+          "Plain number: 1707580800 → 1707580800",
+          "Protobuf Long: { toNumber: () => 1707580800 } → 1707580800",
+          "String: '1707580800' → 1707580800",
+          "Null/undefined → undefined"
+        ]
+      },
+      {
+        "function": "generateFallbackMessageId()",
+        "tests": [
+          "Same input → same output (deterministic)",
+          "Different input → different output",
+          "Returns 'gen_' prefix + 32 char hex"
+        ]
+      }
+    ],
+    "integration_tests": [
+      {
+        "test": "handleHistorySync with mock data",
+        "setup": "Create test instance with sync_history_on_connect=true in test DB",
+        "steps": [
+          "Call handleHistorySync with 5 mock messages (mix INCOMING + OUTGOING)",
+          "Assert 5 messages in DB with correct direction, source=HISTORY_SYNC",
+          "Call again with same messages → assert still 5 (skipDuplicates)",
+          "Call with 3 new + 2 existing → assert 8 total"
+        ]
+      },
+      {
+        "test": "handleHistorySync respects sync_history_on_connect=false",
+        "steps": [
+          "Create instance with sync_history_on_connect=false",
+          "Call handleHistorySync with 5 messages",
+          "Assert 0 messages in DB (all skipped)"
+        ]
+      },
+      {
+        "test": "Group chat messages",
+        "steps": [
+          "Send mock message with remoteJid='120363xxx@g.us', participant='628xxx@s.whatsapp.net'",
+          "Assert chat_jid = group JID, sender_jid = participant",
+          "Send mock outgoing group message (fromMe=true)",
+          "Assert sender_jid = instance phone JID, direction = OUTGOING"
+        ]
+      },
+      {
+        "test": "Plan quota enforcement",
+        "steps": [
+          "Create org with Starter plan (max_sync_messages=5000)",
+          "Insert 4999 synced messages",
+          "Call sync with 10 new messages → assert only 1 inserted (hits cap at 5000)",
+          "Or: assert all 10 rejected with quota error"
+        ]
+      }
+    ],
+    "manual_tests": [
+      {
+        "test": "Full end-to-end sync",
+        "steps": [
+          "1. Enable sync_history_on_connect via API or dashboard",
+          "2. Connect instance (scan QR for first time → fresh pair)",
+          "3. Watch server logs for messaging-history.set events",
+          "4. Check DB: messages should appear with source=HISTORY_SYNC",
+          "5. Check dashboard: History Sync tab shows progress/completed",
+          "6. Check messages page: synced messages visible with purple badge",
+          "7. Disconnect instance",
+          "8. Reconnect (same session, no QR) → verify NO duplicate messages inserted"
+        ]
+      },
+      {
+        "test": "Re-pair sync",
+        "steps": [
+          "1. POST /api/instances/:id/sync-history/re-pair",
+          "2. Verify instance status becomes DISCONNECTED",
+          "3. Reconnect + scan QR baru",
+          "4. Verify history sync starts (new messages appear)",
+          "5. Existing messages should be deduplicated (skipDuplicates)"
+        ]
+      }
+    ],
+    "test_tooling": {
+      "framework": "vitest (already in project) or jest",
+      "test_db": "Use separate test database or prisma mock",
+      "mock_data": "Create WAMessage fixtures for each message type",
+      "location": "backend/src/modules/whatsapp/__tests__/history-sync.test.ts"
+    }
+  }
+}

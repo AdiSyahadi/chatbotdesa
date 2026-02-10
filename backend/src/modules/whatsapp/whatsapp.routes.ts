@@ -1,5 +1,6 @@
 import { FastifyInstance } from 'fastify';
 import { WhatsAppService } from './whatsapp.service';
+import prisma from '../../config/database';
 import {
   createInstanceSchema,
   updateInstanceSchema,
@@ -625,5 +626,119 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
     }
 
     return reply.send({ success: true, data: result });
+  });
+
+  // ============================================
+  // HISTORY SYNC (Dashboard) ENDPOINTS
+  // ============================================
+
+  // GET /api/whatsapp/instances/:id/sync-status
+  fastify.get<{ Params: { id: string } }>('/instances/:id/sync-status', {
+    onRequest: [fastify.authenticate],
+    handler: async (request, reply) => {
+      const user = (request as any).user;
+      const { id } = request.params;
+
+      const instance = await prisma.whatsAppInstance.findFirst({
+        where: { id, organization_id: user.organizationId, deleted_at: null },
+        select: {
+          id: true,
+          sync_history_on_connect: true,
+          history_sync_status: true,
+          history_sync_progress: true,
+          last_history_sync_at: true,
+        },
+      });
+
+      if (!instance) {
+        return reply.status(404).send({ success: false, error: 'Instance not found' });
+      }
+
+      return reply.send({
+        success: true,
+        data: {
+          status: instance.history_sync_status,
+          progress: instance.history_sync_progress || null,
+          settings: {
+            sync_history_on_connect: instance.sync_history_on_connect,
+          },
+          last_sync_at: instance.last_history_sync_at,
+        },
+      });
+    },
+  });
+
+  // PATCH /api/whatsapp/instances/:id/sync-settings
+  fastify.patch<{
+    Params: { id: string };
+    Body: { sync_history_on_connect?: boolean };
+  }>('/instances/:id/sync-settings', {
+    onRequest: [fastify.authenticate],
+    handler: async (request, reply) => {
+      const user = (request as any).user;
+      const { id } = request.params;
+      const body = request.body || {};
+
+      const instance = await prisma.whatsAppInstance.findFirst({
+        where: { id, organization_id: user.organizationId, deleted_at: null },
+        select: {
+          id: true,
+          status: true,
+          organization: {
+            select: {
+              subscription_plan: {
+                select: { allow_history_sync: true },
+              },
+            },
+          },
+        },
+      });
+
+      if (!instance) {
+        return reply.status(404).send({ success: false, error: 'Instance not found' });
+      }
+
+      // Check plan allows sync
+      const plan = instance.organization?.subscription_plan;
+      if (plan && !plan.allow_history_sync && body.sync_history_on_connect === true) {
+        return reply.status(403).send({
+          success: false,
+          error: 'Your subscription plan does not allow history sync. Upgrade to enable this feature.',
+        });
+      }
+
+      const updateData: any = {};
+      if (body.sync_history_on_connect !== undefined) {
+        updateData.sync_history_on_connect = body.sync_history_on_connect;
+      }
+
+      const updated = await prisma.whatsAppInstance.update({
+        where: { id },
+        data: updateData,
+        select: {
+          id: true,
+          sync_history_on_connect: true,
+          status: true,
+        },
+      });
+
+      // Invalidate sync config cache
+      const { invalidateSyncConfigCache } = await import('./baileys.service');
+      invalidateSyncConfigCache(id);
+
+      const warning = updated.status === 'CONNECTED'
+        ? 'History sync hanya terjadi saat initial pairing (scan QR pertama). Untuk sync ulang, disconnect lalu reconnect (scan QR baru).'
+        : undefined;
+
+      return reply.send({
+        success: true,
+        data: {
+          settings: {
+            sync_history_on_connect: updated.sync_history_on_connect,
+          },
+          warning,
+        },
+      });
+    },
   });
 }

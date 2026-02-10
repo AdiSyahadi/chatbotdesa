@@ -1219,4 +1219,191 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       });
     },
   });
+
+  // ============================================
+  // HISTORY SYNC ENDPOINTS
+  // ============================================
+
+  // GET /api/instances/:instanceId/sync-history/status
+  fastify.get<{ Params: { instanceId: string } }>('/api/instances/:instanceId/sync-history/status', {
+    preHandler: [authenticateApiKey],
+    handler: async (request, reply) => {
+      const { instanceId } = request.params;
+      const organizationId = (request as any).organizationId;
+
+      const instance = await prisma.whatsAppInstance.findFirst({
+        where: { id: instanceId, organization_id: organizationId, deleted_at: null },
+        select: {
+          id: true,
+          sync_history_on_connect: true,
+          history_sync_status: true,
+          history_sync_progress: true,
+          last_history_sync_at: true,
+        },
+      });
+
+      if (!instance) {
+        return reply.status(404).send({ success: false, error: 'Instance not found' });
+      }
+
+      return reply.send({
+        success: true,
+        data: {
+          status: instance.history_sync_status,
+          progress: instance.history_sync_progress || null,
+          settings: {
+            sync_history_on_connect: instance.sync_history_on_connect,
+          },
+          last_sync_at: instance.last_history_sync_at,
+        },
+      });
+    },
+  });
+
+  // PATCH /api/instances/:instanceId/sync-history/settings
+  fastify.patch<{
+    Params: { instanceId: string };
+    Body: { sync_history_on_connect?: boolean };
+  }>('/api/instances/:instanceId/sync-history/settings', {
+    preHandler: [authenticateApiKey],
+    handler: async (request, reply) => {
+      const { instanceId } = request.params;
+      const organizationId = (request as any).organizationId;
+      const body = request.body || {};
+
+      // Validate instance belongs to org
+      const instance = await prisma.whatsAppInstance.findFirst({
+        where: { id: instanceId, organization_id: organizationId, deleted_at: null },
+        select: {
+          id: true,
+          status: true,
+          organization: {
+            select: {
+              subscription_plan: {
+                select: { allow_history_sync: true },
+              },
+            },
+          },
+        },
+      });
+
+      if (!instance) {
+        return reply.status(404).send({ success: false, error: 'Instance not found' });
+      }
+
+      // Check plan allows sync
+      const plan = instance.organization?.subscription_plan;
+      if (plan && !plan.allow_history_sync && body.sync_history_on_connect === true) {
+        return reply.status(403).send({
+          success: false,
+          error: 'Your subscription plan does not allow history sync. Upgrade to enable this feature.',
+        });
+      }
+
+      const updateData: any = {};
+      if (body.sync_history_on_connect !== undefined) {
+        updateData.sync_history_on_connect = body.sync_history_on_connect;
+      }
+
+      const updated = await prisma.whatsAppInstance.update({
+        where: { id: instanceId },
+        data: updateData,
+        select: {
+          id: true,
+          sync_history_on_connect: true,
+          status: true,
+        },
+      });
+
+      // Invalidate sync config cache
+      const { invalidateSyncConfigCache } = await import('../whatsapp/baileys.service');
+      invalidateSyncConfigCache(instanceId);
+
+      const warning = updated.status === 'CONNECTED'
+        ? 'History sync hanya terjadi saat initial pairing (scan QR pertama). Untuk sync ulang, gunakan endpoint re-pair.'
+        : undefined;
+
+      return reply.send({
+        success: true,
+        data: {
+          settings: {
+            sync_history_on_connect: updated.sync_history_on_connect,
+          },
+          warning,
+        },
+      });
+    },
+  });
+
+  // POST /api/instances/:instanceId/sync-history/re-pair
+  fastify.post<{ Params: { instanceId: string } }>('/api/instances/:instanceId/sync-history/re-pair', {
+    preHandler: [authenticateApiKey],
+    handler: async (request, reply) => {
+      const { instanceId } = request.params;
+      const organizationId = (request as any).organizationId;
+
+      const instance = await prisma.whatsAppInstance.findFirst({
+        where: { id: instanceId, organization_id: organizationId, deleted_at: null },
+        select: {
+          id: true,
+          status: true,
+          history_sync_status: true,
+          organization: {
+            select: {
+              subscription_plan: {
+                select: { allow_history_sync: true },
+              },
+            },
+          },
+        },
+      });
+
+      if (!instance) {
+        return reply.status(404).send({ success: false, error: 'Instance not found' });
+      }
+
+      // Check plan
+      const plan = instance.organization?.subscription_plan;
+      if (plan && !plan.allow_history_sync) {
+        return reply.status(403).send({
+          success: false,
+          error: 'Your subscription plan does not allow history sync.',
+        });
+      }
+
+      // Block if currently syncing
+      if (instance.history_sync_status === 'SYNCING') {
+        return reply.status(409).send({
+          success: false,
+          error: 'History sync is currently in progress. Wait for it to complete before re-pairing.',
+        });
+      }
+
+      // Enable sync and disconnect (logout + delete session)
+      await prisma.whatsAppInstance.update({
+        where: { id: instanceId },
+        data: {
+          sync_history_on_connect: true,
+          history_sync_status: 'IDLE',
+          history_sync_progress: { set: null },
+        },
+      });
+
+      // Invalidate cache
+      const { invalidateSyncConfigCache, disconnectInstance } = await import('../whatsapp/baileys.service');
+      invalidateSyncConfigCache(instanceId);
+
+      // Disconnect (this calls socket.logout() which deletes the session)
+      await disconnectInstance(instanceId);
+
+      return reply.send({
+        success: true,
+        message: 'Instance logged out. Scan QR to reconnect — history sync will start automatically.',
+        data: {
+          status: 'DISCONNECTED',
+          note: 'Connect ulang via POST /instances/:id/connect kemudian scan QR baru',
+        },
+      });
+    },
+  });
 }

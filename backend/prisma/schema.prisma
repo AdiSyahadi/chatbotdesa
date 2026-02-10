@@ -147,6 +147,12 @@ model WhatsAppInstance {
   auto_reply_enabled     Boolean  @default(false)
   auto_reply_max_per_hour Int     @default(30)
   
+  // History sync
+  sync_history_on_connect  Boolean          @default(false)
+  history_sync_status      HistorySyncStatus @default(IDLE)
+  history_sync_progress    Json?
+  last_history_sync_at     DateTime?
+  
   // Metadata
   created_at        DateTime @default(now())
   updated_at        DateTime @updatedAt
@@ -201,6 +207,9 @@ model Message {
   error_message     String?  @db.Text
   retry_count       Int      @default(0)
   
+  // Source tracking (real-time vs history sync)
+  source            MessageSource @default(REALTIME)
+  
   // Metadata
   created_at        DateTime @default(now())
   updated_at        DateTime @updatedAt
@@ -208,6 +217,7 @@ model Message {
   // Relations
   instance          WhatsAppInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
   
+  @@unique([wa_message_id, instance_id], name: "unique_wa_message_per_instance")
   @@index([organization_id])
   @@index([instance_id])
   @@index([wa_message_id])
@@ -217,6 +227,7 @@ model Message {
   @@index([created_at])
   @@index([organization_id, chat_jid, instance_id, created_at], name: "idx_message_conversations")
   @@index([instance_id, direction, created_at], name: "idx_message_autoreply_ratelimit")
+  @@index([instance_id, source, created_at], name: "idx_message_sync_query")
   @@map("messages")
 }
 
@@ -392,6 +403,10 @@ model SubscriptionPlan {
   max_contacts      Int      @default(1000)
   max_messages_per_day Int   @default(100)
   features          Json?    // Array of features
+  
+  // History sync limits
+  allow_history_sync    Boolean @default(false)
+  max_sync_messages     Int     @default(0)    // 0 = unlimited
   
   // Trial
   trial_days        Int      @default(7)
@@ -851,6 +866,23 @@ enum MessageType {
   LOCATION
   CONTACT
   STICKER
+  REACTION
+  POLL
+  UNKNOWN
+}
+
+enum HistorySyncStatus {
+  IDLE
+  SYNCING
+  COMPLETED
+  FAILED
+  PARTIAL
+}
+
+enum MessageSource {
+  REALTIME
+  HISTORY_SYNC
+  MANUAL_IMPORT
 }
 
 enum MessageDirection {

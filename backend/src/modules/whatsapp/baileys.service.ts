@@ -15,8 +15,9 @@ import { Boom } from '@hapi/boom';
 import * as QRCode from 'qrcode';
 import pino from 'pino';
 import { EventEmitter } from 'events';
+import { createHash } from 'crypto';
 import prisma from '../../config/database';
-import { InstanceStatus, WarmingPhase } from '@prisma/client';
+import { InstanceStatus, WarmingPhase, MessageType } from '@prisma/client';
 import {
   useMultiFileAuthState,
   deleteSession,
@@ -49,9 +50,25 @@ const healthIntervals: Map<string, NodeJS.Timeout> = new Map();
 // Reconnect guard: prevent duplicate reconnections
 const reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
 
+// Sync config cache: avoid DB lookups per event
+const syncConfigCache: Map<string, { syncEnabled: boolean }> = new Map();
+
+// Sync locks: serialize batch processing per instance (async mutex via promise chaining)
+const syncLocks: Map<string, Promise<void>> = new Map();
+
+// Completion timers: detect end of history sync via timeout
+const syncCompletionTimers: Map<string, NodeJS.Timeout> = new Map();
+
 // ============================================
 // TYPES
 // ============================================
+
+/** Result of extracting message content from a WAMessage */
+export interface ExtractedMessageContent {
+  text: string;
+  messageType: MessageType;
+  mediaUrl: string | null;
+}
 
 export interface ConnectionInfo {
   status: InstanceStatus;
@@ -103,6 +120,178 @@ function getMessageDelay(warmingPhase: WarmingPhaseType): number {
   // Add random variation 0-50% to seem more human
   const variation = Math.random() * 0.5;
   return Math.floor(baseDelay * (1 + variation));
+}
+
+/**
+ * Extract message content from a WAMessage.
+ * Pure function — reusable by both real-time handler and history sync handler.
+ * Returns null if the message should be skipped (e.g., protocolMessage).
+ */
+export function extractMessageContent(msg: WAMessage): ExtractedMessageContent | null {
+  const messageContent = msg.message;
+  if (!messageContent) return null;
+
+  let text = '';
+  let messageType: MessageType = 'TEXT';
+  let mediaUrl: string | null = null;
+
+  if (messageContent.conversation) {
+    text = messageContent.conversation;
+  } else if (messageContent.extendedTextMessage?.text) {
+    text = messageContent.extendedTextMessage.text;
+  } else if (messageContent.imageMessage) {
+    messageType = 'IMAGE';
+    text = messageContent.imageMessage.caption || '';
+  } else if (messageContent.videoMessage) {
+    messageType = 'VIDEO';
+    text = messageContent.videoMessage.caption || '';
+  } else if (messageContent.audioMessage) {
+    messageType = 'AUDIO';
+    text = messageContent.audioMessage.ptt ? '[Voice Note]' : '[Audio]';
+  } else if (messageContent.documentMessage) {
+    messageType = 'DOCUMENT';
+    text = messageContent.documentMessage.fileName || '[Document]';
+  } else if (messageContent.stickerMessage) {
+    messageType = 'STICKER';
+    text = '[Sticker]';
+  } else if (messageContent.contactMessage) {
+    messageType = 'CONTACT';
+    text = messageContent.contactMessage.displayName || '[Contact]';
+  } else if (messageContent.contactsArrayMessage) {
+    messageType = 'CONTACT';
+    const names = messageContent.contactsArrayMessage.contacts?.map(c => c.displayName).filter(Boolean);
+    text = names?.length ? names.join(', ') : '[Contacts]';
+  } else if (messageContent.locationMessage) {
+    messageType = 'LOCATION';
+    const loc = messageContent.locationMessage;
+    text = loc.name || loc.address || `[Location: ${loc.degreesLatitude}, ${loc.degreesLongitude}]`;
+  } else if (messageContent.liveLocationMessage) {
+    messageType = 'LOCATION';
+    text = '[Live Location]';
+  } else if (messageContent.reactionMessage) {
+    messageType = 'REACTION';
+    text = messageContent.reactionMessage.text || '';
+  } else if (messageContent.pollCreationMessage || messageContent.pollCreationMessageV3) {
+    messageType = 'POLL';
+    const poll = messageContent.pollCreationMessage || messageContent.pollCreationMessageV3;
+    text = poll?.name || '[Poll]';
+  } else if (messageContent.buttonsResponseMessage) {
+    text = messageContent.buttonsResponseMessage.selectedDisplayText || '[Button Response]';
+  } else if (messageContent.listResponseMessage) {
+    text = messageContent.listResponseMessage.title || messageContent.listResponseMessage.singleSelectReply?.selectedRowId || '[List Response]';
+  } else if (messageContent.templateButtonReplyMessage) {
+    text = messageContent.templateButtonReplyMessage.selectedDisplayText || '[Template Reply]';
+  } else if (messageContent.viewOnceMessage || messageContent.viewOnceMessageV2) {
+    const inner = messageContent.viewOnceMessage?.message || messageContent.viewOnceMessageV2?.message;
+    if (inner?.imageMessage) {
+      messageType = 'IMAGE';
+      text = inner.imageMessage.caption || '[View Once Photo]';
+    } else if (inner?.videoMessage) {
+      messageType = 'VIDEO';
+      text = inner.videoMessage.caption || '[View Once Video]';
+    } else if (inner?.audioMessage) {
+      messageType = 'AUDIO';
+      text = '[View Once Audio]';
+    } else {
+      text = '[View Once Message]';
+    }
+  } else if (messageContent.protocolMessage) {
+    // Protocol messages (delete, ephemeral settings, etc.) — skip silently
+    return null;
+  } else if (messageContent.ephemeralMessage?.message) {
+    // Disappearing message wrapper — extract inner content
+    const inner = messageContent.ephemeralMessage.message;
+    if (inner.conversation) {
+      text = inner.conversation;
+    } else if (inner.extendedTextMessage?.text) {
+      text = inner.extendedTextMessage.text;
+    } else if (inner.imageMessage) {
+      messageType = 'IMAGE';
+      text = inner.imageMessage.caption || '';
+    } else if (inner.videoMessage) {
+      messageType = 'VIDEO';
+      text = inner.videoMessage.caption || '';
+    } else if (inner.documentMessage) {
+      messageType = 'DOCUMENT';
+      text = inner.documentMessage.fileName || '[Document]';
+    } else if (inner.audioMessage) {
+      messageType = 'AUDIO';
+      text = inner.audioMessage.ptt ? '[Voice Note]' : '[Audio]';
+    } else {
+      text = '[Disappearing Message]';
+    }
+  } else {
+    // Unknown message type — log it and store what we can
+    const keys = Object.keys(messageContent).filter(k => k !== 'messageContextInfo');
+    messageType = 'UNKNOWN';
+    text = `[${keys.join(', ')}]`;
+    logger.warn({ messageKeys: keys }, '⚠️ Unhandled message type in extractMessageContent');
+  }
+
+  return { text, messageType, mediaUrl };
+}
+
+/**
+ * Convert Baileys messageTimestamp (which can be a protobuf Long object) to plain number.
+ * Returns undefined if the timestamp is falsy.
+ */
+export function convertMessageTimestamp(ts: any): number | undefined {
+  if (!ts) return undefined;
+  if (typeof ts === 'number') return ts;
+  if (typeof ts.toNumber === 'function') return ts.toNumber();
+  return Number(ts);
+}
+
+/**
+ * Generate a deterministic fallback wa_message_id for messages without one.
+ * Uses sha256(chatJid + timestamp + content) to ensure deduplication.
+ * Returns 'gen_' prefix + 32 char hex string.
+ */
+export function generateFallbackMessageId(chatJid: string, timestamp: number | undefined, content: string): string {
+  const raw = `${chatJid}|${timestamp || 0}|${content || ''}`;
+  const hash = createHash('sha256').update(raw).digest('hex').substring(0, 32);
+  return `gen_${hash}`;
+}
+
+/**
+ * Enqueue async work per instance with serialized execution.
+ * Ensures batches for the same instance are processed sequentially.
+ */
+function enqueueSyncBatch(instanceId: string, fn: () => Promise<void>): void {
+  const prev = syncLocks.get(instanceId) || Promise.resolve();
+  const next = prev.then(fn).catch(err => {
+    logger.error({ err, instanceId }, 'Sync batch error');
+  });
+  syncLocks.set(instanceId, next);
+  next.finally(() => {
+    if (syncLocks.get(instanceId) === next) {
+      syncLocks.delete(instanceId);
+    }
+  });
+}
+
+/**
+ * Get sync config for an instance. Uses in-memory cache to avoid DB lookups per event.
+ */
+async function getSyncConfig(instanceId: string): Promise<{ syncEnabled: boolean }> {
+  const cached = syncConfigCache.get(instanceId);
+  if (cached) return cached;
+
+  const instance = await prisma.whatsAppInstance.findUnique({
+    where: { id: instanceId },
+    select: { sync_history_on_connect: true },
+  });
+
+  const config = { syncEnabled: instance?.sync_history_on_connect ?? false };
+  syncConfigCache.set(instanceId, config);
+  return config;
+}
+
+/**
+ * Invalidate sync config cache for an instance (called when settings are updated via API).
+ */
+export function invalidateSyncConfigCache(instanceId: string): void {
+  syncConfigCache.delete(instanceId);
 }
 
 /**
@@ -257,6 +446,13 @@ export async function initializeConnection(
     const { version, isLatest } = await fetchLatestBaileysVersion();
     logger.info({ version, isLatest }, 'Using Baileys version');
 
+    // Fetch sync config to determine if full history sync should be enabled
+    const syncConfig = await getSyncConfig(instanceId);
+    const shouldSyncHistory = syncConfig.syncEnabled;
+    if (shouldSyncHistory) {
+      console.log(`📜 [INIT] History sync ENABLED for ${instanceId} — syncFullHistory=true`);
+    }
+
     // Create socket with proper configuration
     // Using Baileys default browser fingerprint to avoid detection
     const baileysLogger = pino({ level: 'warn' }); // Use warn to catch internal errors
@@ -274,7 +470,8 @@ export async function initializeConnection(
       keepAliveIntervalMs: 25000, // Slightly more aggressive keepalive
       // Anti-ban measures
       markOnlineOnConnect: false,
-      syncFullHistory: false,
+      // Conditionally enable full history sync based on instance setting
+      syncFullHistory: shouldSyncHistory,
       // Generate high-quality links
       generateHighQualityLinkPreview: true,
       // getMessage: required for retry mechanism when other side requests message resend
@@ -388,10 +585,22 @@ export async function initializeConnection(
       }
 
       // IMPORTANT: Only process 'notify' type messages (new real-time messages)
-      // 'append' type = historical sync from WhatsApp server on connect — IGNORE THESE
-      // This prevents old chat history from flooding the database on first connect
-      if (eventName === 'messages.upsert' && data?.type === 'append') {
-        console.log(`📜 [HISTORY] Ignoring ${data.messages?.length || 0} historical message(s) (type=append)`);
+      // 'append' type = historical sync from WhatsApp server on connect
+      // Route to sync handler if sync is enabled, otherwise ignore
+      if (eventName === 'messages.upsert' && data?.type === 'append' && data?.messages) {
+        // Enqueue serialized per instance to avoid race conditions
+        enqueueSyncBatch(instanceId, () =>
+          handleAppendHistoryMessages(instanceId, organizationId, data.messages)
+        );
+      }
+
+      // Handle messaging-history.set — main history sync event from WhatsApp
+      if (eventName === 'messaging-history.set' && data) {
+        console.log(`📜 [SYNC-EVENT] messaging-history.set: ${data.messages?.length || 0} msgs, ${data.chats?.length || 0} chats, ${data.contacts?.length || 0} contacts, isLatest=${data.isLatest}`);
+        // Enqueue serialized per instance to avoid race conditions
+        enqueueSyncBatch(instanceId, () =>
+          handleHistorySync(instanceId, organizationId, data)
+        );
       }
 
       // Process incoming messages DIRECTLY at emit level (before buffering)
@@ -570,10 +779,11 @@ export async function initializeConnection(
         console.log(`📋 [PROCESS-BACKUP] messages.update via ev.process(): ${events['messages.update'].length} updates`);
       }
 
-      // ---- Messaging History Set ----
+      // ---- Messaging History Set (backup — primary handling is at emit level) ----
       if (events['messaging-history.set']) {
         const { messages, chats, contacts, isLatest } = events['messaging-history.set'];
-        console.log(`📜 [BAILEYS] History sync: ${messages.length} msgs, ${chats.length} chats, ${contacts.length} contacts, isLatest=${isLatest}`);
+        console.log(`📋 [PROCESS-BACKUP] messaging-history.set via ev.process(): ${messages.length} msgs, ${chats.length} chats, ${contacts.length} contacts, isLatest=${isLatest}`);
+        // NOTE: Primary handling is done at emit interception level above
       }
     });
 
@@ -957,8 +1167,439 @@ async function updateInstanceStatus(
   }
 }
 
+// ============================================
+// HISTORY SYNC ENGINE
+// ============================================
+
 /**
- * Handle incoming message
+ * Handle WhatsApp messaging-history.set event.
+ * Processes history messages and contacts in batches with deduplication.
+ * Called from emit-level interception — serialized per instance via enqueueSyncBatch.
+ */
+async function handleHistorySync(
+  instanceId: string,
+  organizationId: string,
+  data: { messages: WAMessage[]; chats: any[]; contacts: any[]; isLatest: boolean }
+): Promise<void> {
+  const { messages, chats, contacts, isLatest } = data;
+
+  try {
+    // 1. Check if sync is enabled for this instance
+    const instance = await prisma.whatsAppInstance.findUnique({
+      where: { id: instanceId },
+      select: {
+        sync_history_on_connect: true,
+        history_sync_status: true,
+        history_sync_progress: true,
+        phone_number: true,
+        organization: {
+          select: {
+            subscription_plan: {
+              select: {
+                allow_history_sync: true,
+                max_sync_messages: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!instance) {
+      logger.warn({ instanceId }, '⚠️ [SYNC] Instance not found, skipping history sync');
+      return;
+    }
+
+    if (!instance.sync_history_on_connect) {
+      console.log(`📜 [SYNC] sync_history_on_connect=false for ${instanceId}, skipping ${messages.length} messages`);
+      return;
+    }
+
+    // 2. Check plan quota
+    const plan = instance.organization?.subscription_plan;
+    if (plan && !plan.allow_history_sync) {
+      console.log(`📜 [SYNC] Plan does not allow history sync for ${instanceId}`);
+      return;
+    }
+
+    // Check current synced message count vs quota
+    let currentSyncedCount = 0;
+    const maxSyncMessages = (plan as any)?.max_sync_messages ?? 0; // 0 = unlimited
+    if (maxSyncMessages > 0) {
+      currentSyncedCount = await prisma.message.count({
+        where: { instance_id: instanceId, source: 'HISTORY_SYNC' },
+      });
+      if (currentSyncedCount >= maxSyncMessages) {
+        console.log(`📜 [SYNC] Quota reached for ${instanceId}: ${currentSyncedCount}/${maxSyncMessages} messages`);
+        await prisma.whatsAppInstance.update({
+          where: { id: instanceId },
+          data: {
+            history_sync_status: 'PARTIAL',
+            history_sync_progress: {
+              ...((instance.history_sync_progress as any) || {}),
+              quota_reached: true,
+              quota_limit: maxSyncMessages,
+              quota_used: currentSyncedCount,
+            },
+          },
+        });
+        return;
+      }
+    }
+
+    // 3. Update status to SYNCING if not already
+    if (instance.history_sync_status !== 'SYNCING') {
+      await prisma.whatsAppInstance.update({
+        where: { id: instanceId },
+        data: {
+          history_sync_status: 'SYNCING',
+          history_sync_progress: {
+            total_messages_received: messages.length,
+            messages_inserted: 0,
+            messages_skipped_duplicate: 0,
+            contacts_synced: 0,
+            batch_errors: 0,
+            percentage: 0,
+            started_at: new Date().toISOString(),
+          },
+        },
+      });
+
+      // Emit webhook: sync started
+      baileysEvents.emit('history.sync', {
+        instanceId,
+        event: 'history.sync.started',
+        data: { instance_id: instanceId, started_at: new Date().toISOString() },
+      });
+    }
+
+    // Load current progress
+    const progress = (instance.history_sync_progress as any) || {
+      total_messages_received: 0,
+      messages_inserted: 0,
+      messages_skipped_duplicate: 0,
+      contacts_synced: 0,
+      batch_errors: 0,
+      percentage: 0,
+      started_at: new Date().toISOString(),
+    };
+
+    progress.total_messages_received = (progress.total_messages_received || 0) + messages.length;
+
+    // 4. Process messages in batches of 100
+    const BATCH_SIZE = 100;
+    const instancePhoneJid = instance.phone_number ? `${instance.phone_number}@s.whatsapp.net` : '';
+    let batchInserted = 0;
+    let batchSkipped = 0;
+    let batchErrors = 0;
+    let remainingQuota = maxSyncMessages > 0 ? maxSyncMessages - currentSyncedCount : Infinity;
+
+    for (let i = 0; i < messages.length && remainingQuota > 0; i += BATCH_SIZE) {
+      const batch = messages.slice(i, Math.min(i + BATCH_SIZE, i + remainingQuota));
+
+      try {
+        const dbRecords: any[] = [];
+
+        for (const msg of batch) {
+          // Skip status@broadcast
+          if (msg.key?.remoteJid === 'status@broadcast') continue;
+
+          const extracted = extractMessageContent(msg);
+          if (!extracted) continue; // protocolMessage or empty
+
+          const { text, messageType } = extracted;
+          const chatJid = msg.key.remoteJid || '';
+          const timestamp = convertMessageTimestamp(msg.messageTimestamp);
+
+          // Generate wa_message_id — fallback for missing IDs
+          const waMessageId = msg.key.id || generateFallbackMessageId(chatJid, timestamp, text);
+
+          // Detect direction
+          const direction = msg.key.fromMe ? 'OUTGOING' : 'INCOMING';
+
+          // Detect sender (handles group chats)
+          const senderJid = msg.key.fromMe
+            ? instancePhoneJid
+            : (msg.key.participant || msg.key.remoteJid || '');
+
+          // Determine status
+          const status = msg.key.fromMe ? 'SENT' : 'DELIVERED';
+
+          // Convert timestamp to Date — use original timestamp, NOT new Date()
+          const sentAt = timestamp ? new Date(timestamp * 1000) : null;
+
+          dbRecords.push({
+            organization_id: organizationId,
+            instance_id: instanceId,
+            wa_message_id: waMessageId,
+            chat_jid: chatJid,
+            sender_jid: senderJid,
+            message_type: messageType,
+            content: text,
+            direction,
+            status,
+            source: 'HISTORY_SYNC',
+            sent_at: sentAt,
+            delivered_at: direction === 'INCOMING' ? sentAt : null,
+          });
+        }
+
+        if (dbRecords.length > 0) {
+          const result = await prisma.message.createMany({
+            data: dbRecords,
+            skipDuplicates: true,
+          });
+          batchInserted += result.count;
+          batchSkipped += dbRecords.length - result.count;
+          remainingQuota -= result.count;
+        }
+      } catch (err) {
+        batchErrors++;
+        logger.error({ err, instanceId, batchIndex: Math.floor(i / BATCH_SIZE) }, '❌ [SYNC] Batch insert error');
+      }
+
+      // Breathing room for DB between batches
+      if (i + BATCH_SIZE < messages.length) {
+        await delay(50);
+      }
+    }
+
+    // 5. Process contacts
+    let contactsSynced = 0;
+    for (const contact of contacts) {
+      try {
+        if (!contact.id) continue;
+        const contactJid = contact.id;
+        const phoneNumber = extractPhoneFromJid(contactJid);
+        const isGroup = contactJid.endsWith('@g.us');
+
+        await prisma.contact.upsert({
+          where: {
+            instance_id_jid: {
+              instance_id: instanceId,
+              jid: contactJid,
+            },
+          },
+          create: {
+            organization_id: organizationId,
+            instance_id: instanceId,
+            jid: contactJid,
+            phone_number: isGroup ? null : phoneNumber,
+            name: contact.name || null,
+            push_name: contact.notify || null,
+            is_group: isGroup,
+          },
+          update: {
+            push_name: contact.notify || undefined,
+            name: contact.name || undefined,
+          },
+        });
+        contactsSynced++;
+      } catch (err) {
+        logger.error({ err, contactId: contact.id, instanceId }, '⚠️ [SYNC] Contact upsert error');
+      }
+    }
+
+    // 6. Update progress
+    progress.messages_inserted = (progress.messages_inserted || 0) + batchInserted;
+    progress.messages_skipped_duplicate = (progress.messages_skipped_duplicate || 0) + batchSkipped;
+    progress.contacts_synced = (progress.contacts_synced || 0) + contactsSynced;
+    progress.batch_errors = (progress.batch_errors || 0) + batchErrors;
+
+    await prisma.whatsAppInstance.update({
+      where: { id: instanceId },
+      data: {
+        history_sync_progress: progress,
+        updated_at: new Date(),
+      },
+    });
+
+    console.log(`📜 [SYNC] Batch done for ${instanceId}: +${batchInserted} inserted, +${batchSkipped} skipped, +${contactsSynced} contacts, errors=${batchErrors}`);
+
+    // Emit webhook: progress
+    baileysEvents.emit('history.sync', {
+      instanceId,
+      event: 'history.sync.progress',
+      data: {
+        instance_id: instanceId,
+        percentage: progress.percentage || 0,
+        messages_inserted: progress.messages_inserted,
+        contacts_synced: progress.contacts_synced,
+      },
+    });
+
+    // 7. Completion detection via timeout
+    // Reset timer — if no new batch arrives within 30s after isLatest=true, mark COMPLETED
+    const existingTimer = syncCompletionTimers.get(instanceId);
+    if (existingTimer) clearTimeout(existingTimer);
+
+    if (isLatest) {
+      const timer = setTimeout(async () => {
+        try {
+          syncCompletionTimers.delete(instanceId);
+
+          // Re-fetch latest progress from DB
+          const latest = await prisma.whatsAppInstance.findUnique({
+            where: { id: instanceId },
+            select: { history_sync_status: true, history_sync_progress: true },
+          });
+
+          if (latest?.history_sync_status === 'SYNCING') {
+            const finalProgress = (latest.history_sync_progress as any) || {};
+            finalProgress.percentage = 100;
+            finalProgress.completed_at = new Date().toISOString();
+
+            const finalStatus = (finalProgress.batch_errors || 0) > 0 ? 'PARTIAL' : 'COMPLETED';
+
+            await prisma.whatsAppInstance.update({
+              where: { id: instanceId },
+              data: {
+                history_sync_status: finalStatus as any,
+                history_sync_progress: finalProgress,
+                last_history_sync_at: new Date(),
+              },
+            });
+
+            console.log(`✅ [SYNC] History sync ${finalStatus} for ${instanceId}: ${finalProgress.messages_inserted} messages, ${finalProgress.contacts_synced} contacts`);
+
+            // Emit webhook: completed
+            baileysEvents.emit('history.sync', {
+              instanceId,
+              event: `history.sync.${finalStatus.toLowerCase()}`,
+              data: {
+                instance_id: instanceId,
+                total_messages: finalProgress.messages_inserted,
+                total_contacts: finalProgress.contacts_synced,
+                duration_seconds: finalProgress.started_at
+                  ? Math.round((Date.now() - new Date(finalProgress.started_at).getTime()) / 1000)
+                  : 0,
+              },
+            });
+          }
+        } catch (err) {
+          logger.error({ err, instanceId }, '❌ [SYNC] Error in completion handler');
+        }
+      }, 30000); // 30 seconds timeout
+
+      syncCompletionTimers.set(instanceId, timer);
+    }
+  } catch (error) {
+    logger.error({ error, instanceId }, '❌ [SYNC] Error in handleHistorySync');
+
+    // Mark as FAILED
+    try {
+      const currentProgress = await prisma.whatsAppInstance.findUnique({
+        where: { id: instanceId },
+        select: { history_sync_progress: true },
+      });
+      const failProgress = (currentProgress?.history_sync_progress as any) || {};
+      failProgress.error = String(error);
+      failProgress.failed_at = new Date().toISOString();
+
+      await prisma.whatsAppInstance.update({
+        where: { id: instanceId },
+        data: {
+          history_sync_status: 'FAILED',
+          history_sync_progress: failProgress,
+        },
+      });
+
+      baileysEvents.emit('history.sync', {
+        instanceId,
+        event: 'history.sync.failed',
+        data: {
+          instance_id: instanceId,
+          error: String(error),
+          messages_inserted_before_failure: failProgress.messages_inserted || 0,
+        },
+      });
+    } catch (updateErr) {
+      logger.error({ updateErr, instanceId }, '❌ [SYNC] Failed to update error status');
+    }
+  }
+}
+
+/**
+ * Handle historical messages arriving via messages.upsert type=append.
+ * These come in smaller batches compared to messaging-history.set.
+ */
+async function handleAppendHistoryMessages(
+  instanceId: string,
+  organizationId: string,
+  messages: WAMessage[]
+): Promise<void> {
+  try {
+    const config = await getSyncConfig(instanceId);
+    if (!config.syncEnabled) {
+      console.log(`📜 [HISTORY] Ignoring ${messages.length} historical message(s) (type=append, sync disabled)`);
+      return;
+    }
+
+    // Get instance phone for direction detection
+    const instance = await prisma.whatsAppInstance.findUnique({
+      where: { id: instanceId },
+      select: { phone_number: true },
+    });
+    const instancePhoneJid = instance?.phone_number ? `${instance.phone_number}@s.whatsapp.net` : '';
+
+    let inserted = 0;
+    let skipped = 0;
+
+    for (const msg of messages) {
+      if (msg.key?.remoteJid === 'status@broadcast') continue;
+
+      const extracted = extractMessageContent(msg);
+      if (!extracted) continue;
+
+      const { text, messageType } = extracted;
+      const chatJid = msg.key.remoteJid || '';
+      const timestamp = convertMessageTimestamp(msg.messageTimestamp);
+      const waMessageId = msg.key.id || generateFallbackMessageId(chatJid, timestamp, text);
+      const direction = msg.key.fromMe ? 'OUTGOING' : 'INCOMING';
+      const senderJid = msg.key.fromMe
+        ? instancePhoneJid
+        : (msg.key.participant || msg.key.remoteJid || '');
+      const sentAt = timestamp ? new Date(timestamp * 1000) : null;
+
+      try {
+        await prisma.message.create({
+          data: {
+            organization_id: organizationId,
+            instance_id: instanceId,
+            wa_message_id: waMessageId,
+            chat_jid: chatJid,
+            sender_jid: senderJid,
+            message_type: messageType,
+            content: text,
+            direction,
+            status: msg.key.fromMe ? 'SENT' : 'DELIVERED',
+            source: 'HISTORY_SYNC',
+            sent_at: sentAt,
+            delivered_at: direction === 'INCOMING' ? sentAt : null,
+          },
+        });
+        inserted++;
+      } catch (err: any) {
+        // Handle duplicate — unique constraint violation (P2002)
+        if (err?.code === 'P2002') {
+          skipped++;
+        } else {
+          logger.error({ err, instanceId, msgId: waMessageId }, '⚠️ [HISTORY] Error inserting append message');
+        }
+      }
+    }
+
+    if (inserted > 0 || skipped > 0) {
+      console.log(`📜 [HISTORY] Append for ${instanceId}: +${inserted} inserted, ${skipped} duplicates skipped`);
+    }
+  } catch (error) {
+    logger.error({ error, instanceId }, '❌ [HISTORY] Error handling append messages');
+  }
+}
+
+/**
+ * Handle incoming real-time message.
+ * Uses extracted extractMessageContent() and convertMessageTimestamp() for reusability.
  */
 async function handleIncomingMessage(
   instanceId: string,
@@ -966,106 +1607,11 @@ async function handleIncomingMessage(
   msg: WAMessage
 ): Promise<void> {
   try {
-    const messageContent = msg.message;
-    if (!messageContent) return;
+    // Use shared extraction logic
+    const extracted = extractMessageContent(msg);
+    if (!extracted) return; // protocolMessage or empty content — skip
 
-    // Extract message text
-    let text = '';
-    let messageType: string = 'TEXT';
-    let mediaUrl: string | null = null;
-
-    if (messageContent.conversation) {
-      text = messageContent.conversation;
-    } else if (messageContent.extendedTextMessage?.text) {
-      text = messageContent.extendedTextMessage.text;
-    } else if (messageContent.imageMessage) {
-      messageType = 'IMAGE';
-      text = messageContent.imageMessage.caption || '';
-    } else if (messageContent.videoMessage) {
-      messageType = 'VIDEO';
-      text = messageContent.videoMessage.caption || '';
-    } else if (messageContent.audioMessage) {
-      messageType = 'AUDIO';
-      text = messageContent.audioMessage.ptt ? '[Voice Note]' : '[Audio]';
-    } else if (messageContent.documentMessage) {
-      messageType = 'DOCUMENT';
-      text = messageContent.documentMessage.fileName || '[Document]';
-    } else if (messageContent.stickerMessage) {
-      messageType = 'STICKER';
-      text = '[Sticker]';
-    } else if (messageContent.contactMessage) {
-      messageType = 'CONTACT';
-      text = messageContent.contactMessage.displayName || '[Contact]';
-    } else if (messageContent.contactsArrayMessage) {
-      messageType = 'CONTACT';
-      const names = messageContent.contactsArrayMessage.contacts?.map(c => c.displayName).filter(Boolean);
-      text = names?.length ? names.join(', ') : '[Contacts]';
-    } else if (messageContent.locationMessage) {
-      messageType = 'LOCATION';
-      const loc = messageContent.locationMessage;
-      text = loc.name || loc.address || `[Location: ${loc.degreesLatitude}, ${loc.degreesLongitude}]`;
-    } else if (messageContent.liveLocationMessage) {
-      messageType = 'LOCATION';
-      text = '[Live Location]';
-    } else if (messageContent.reactionMessage) {
-      messageType = 'REACTION';
-      text = messageContent.reactionMessage.text || '';
-    } else if (messageContent.pollCreationMessage || messageContent.pollCreationMessageV3) {
-      messageType = 'POLL';
-      const poll = messageContent.pollCreationMessage || messageContent.pollCreationMessageV3;
-      text = poll?.name || '[Poll]';
-    } else if (messageContent.buttonsResponseMessage) {
-      text = messageContent.buttonsResponseMessage.selectedDisplayText || '[Button Response]';
-    } else if (messageContent.listResponseMessage) {
-      text = messageContent.listResponseMessage.title || messageContent.listResponseMessage.singleSelectReply?.selectedRowId || '[List Response]';
-    } else if (messageContent.templateButtonReplyMessage) {
-      text = messageContent.templateButtonReplyMessage.selectedDisplayText || '[Template Reply]';
-    } else if (messageContent.viewOnceMessage || messageContent.viewOnceMessageV2) {
-      const inner = messageContent.viewOnceMessage?.message || messageContent.viewOnceMessageV2?.message;
-      if (inner?.imageMessage) {
-        messageType = 'IMAGE';
-        text = inner.imageMessage.caption || '[View Once Photo]';
-      } else if (inner?.videoMessage) {
-        messageType = 'VIDEO';
-        text = inner.videoMessage.caption || '[View Once Video]';
-      } else if (inner?.audioMessage) {
-        messageType = 'AUDIO';
-        text = '[View Once Audio]';
-      } else {
-        text = '[View Once Message]';
-      }
-    } else if (messageContent.protocolMessage) {
-      // Protocol messages (delete, ephemeral settings, etc.) — skip silently
-      return;
-    } else if (messageContent.ephemeralMessage?.message) {
-      // Disappearing message wrapper — extract inner content
-      const inner = messageContent.ephemeralMessage.message;
-      if (inner.conversation) {
-        text = inner.conversation;
-      } else if (inner.extendedTextMessage?.text) {
-        text = inner.extendedTextMessage.text;
-      } else if (inner.imageMessage) {
-        messageType = 'IMAGE';
-        text = inner.imageMessage.caption || '';
-      } else if (inner.videoMessage) {
-        messageType = 'VIDEO';
-        text = inner.videoMessage.caption || '';
-      } else if (inner.documentMessage) {
-        messageType = 'DOCUMENT';
-        text = inner.documentMessage.fileName || '[Document]';
-      } else if (inner.audioMessage) {
-        messageType = 'AUDIO';
-        text = inner.audioMessage.ptt ? '[Voice Note]' : '[Audio]';
-      } else {
-        text = '[Disappearing Message]';
-      }
-    } else {
-      // Unknown message type — log it and store what we can
-      const keys = Object.keys(messageContent).filter(k => k !== 'messageContextInfo');
-      messageType = 'UNKNOWN';
-      text = `[${keys.join(', ')}]`;
-      logger.warn({ instanceId, messageKeys: keys }, '⚠️ Unhandled message type');
-    }
+    const { text, messageType } = extracted;
 
     // Save to database
     await prisma.message.create({
@@ -1075,28 +1621,17 @@ async function handleIncomingMessage(
         wa_message_id: msg.key.id || undefined,
         chat_jid: msg.key.remoteJid || '',
         sender_jid: msg.key.participant || msg.key.remoteJid || '',
-        message_type: messageType as any,
+        message_type: messageType,
         content: text,
         direction: 'INCOMING',
         status: 'DELIVERED',
+        source: 'REALTIME',
         delivered_at: new Date(),
       },
     });
 
-    // Emit event for webhook
-    // IMPORTANT: Convert messageTimestamp to plain number to avoid
-    // protobuf Long objects causing PrismaClientValidationError
-    // ("Invalid value for argument toInt: We could not serialize [object Function]")
-    let timestamp: number | undefined;
-    if (msg.messageTimestamp) {
-      if (typeof msg.messageTimestamp === 'number') {
-        timestamp = msg.messageTimestamp;
-      } else if (typeof (msg.messageTimestamp as any).toNumber === 'function') {
-        timestamp = (msg.messageTimestamp as any).toNumber();
-      } else {
-        timestamp = Number(msg.messageTimestamp);
-      }
-    }
+    // Convert timestamp for webhook (handles protobuf Long objects)
+    const timestamp = convertMessageTimestamp(msg.messageTimestamp);
 
     logger.info({ instanceId, from: msg.key.remoteJid, type: messageType, fromMe: msg.key.fromMe }, '📨 Emitting message event to baileysEvents');
     baileysEvents.emit('message', {
@@ -1180,6 +1715,21 @@ export async function getConnectionInfo(instanceId: string): Promise<ConnectionI
  */
 export async function initializeActiveInstances(): Promise<void> {
   try {
+    // --- Stale sync cleanup ---
+    // If server restarted mid-sync, those syncs are dead. Mark them PARTIAL.
+    const staleSyncCount = await prisma.whatsAppInstance.updateMany({
+      where: {
+        history_sync_status: 'SYNCING',
+        updated_at: { lt: new Date(Date.now() - 10 * 60 * 1000) }, // > 10 minutes ago
+      },
+      data: {
+        history_sync_status: 'PARTIAL',
+      },
+    });
+    if (staleSyncCount.count > 0) {
+      console.log(`📜 [STARTUP] Marked ${staleSyncCount.count} stale SYNCING instance(s) as PARTIAL`);
+    }
+
     const instances = await prisma.whatsAppInstance.findMany({
       where: {
         is_active: true,

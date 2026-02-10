@@ -9,7 +9,8 @@ import {
   invoicesApi,
   teamApi,
   adminApi,
-  broadcastsApi
+  broadcastsApi,
+  syncApi
 } from "@/lib/api";
 import { toast } from "sonner";
 
@@ -55,6 +56,9 @@ export const queryKeys = {
   
   // Team
   teamMembers: ["teamMembers"] as const,
+  
+  // Sync
+  syncStatus: (instanceId: string) => ["sync", instanceId, "status"] as const,
   
   // Admin
   adminStats: ["admin", "stats"] as const,
@@ -734,5 +738,50 @@ export function useSystemHealth() {
     queryKey: queryKeys.systemHealth,
     queryFn: () => adminApi.getSystemHealth(),
     refetchInterval: 30000, // Refetch every 30 seconds
+  });
+}
+
+// ============ HISTORY SYNC HOOKS ============
+
+export function useSyncStatus(instanceId: string) {
+  return useQuery({
+    queryKey: queryKeys.syncStatus(instanceId),
+    queryFn: () => syncApi.getSyncStatus(instanceId),
+    enabled: !!instanceId,
+    refetchInterval: (query) => {
+      // Poll more frequently when syncing
+      const status = query.state.data?.data?.status;
+      return status === 'SYNCING' ? 3000 : 30000;
+    },
+  });
+}
+
+export function useUpdateSyncSettings() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ instanceId, data }: { instanceId: string; data: { sync_history_on_connect?: boolean } }) =>
+      syncApi.updateSyncSettings(instanceId, data),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus(variables.instanceId) });
+      toast.success('Sync settings updated');
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || 'Failed to update sync settings');
+    },
+  });
+}
+
+export function useRePairForSync() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (instanceId: string) => syncApi.rePairForSync(instanceId),
+    onSuccess: (_data, instanceId) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.instance(instanceId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus(instanceId) });
+      toast.success('Instance disconnected. Scan QR code to reconnect with history sync.');
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || 'Failed to re-pair instance');
+    },
   });
 }

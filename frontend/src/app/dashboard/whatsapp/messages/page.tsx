@@ -75,6 +75,7 @@ interface Message {
   content: string | { text?: string; caption?: string };
   media_url?: string;
   status: string;
+  source?: string;
   created_at: string;
 }
 
@@ -100,6 +101,7 @@ export default function MessagesPage() {
   const [filterInstanceId, setFilterInstanceId] = useState(defaultInstanceId || "__all__");
   const [filterStatus, setFilterStatus] = useState("__all__");
   const [filterDirection, setFilterDirection] = useState("__all__");
+  const [filterSource, setFilterSource] = useState("__all__");
   const [page, setPage] = useState(1);
 
   // Form state
@@ -398,6 +400,19 @@ export default function MessagesPage() {
                 </SelectContent>
               </Select>
             </div>
+            <div className="w-40">
+              <Label className="text-xs text-muted-foreground">Source</Label>
+              <Select value={filterSource} onValueChange={setFilterSource}>
+                <SelectTrigger className="mt-1">
+                  <SelectValue placeholder="All sources" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="__all__">All sources</SelectItem>
+                  <SelectItem value="REALTIME">Real-time</SelectItem>
+                  <SelectItem value="HISTORY_SYNC">History Sync</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -450,6 +465,7 @@ export default function MessagesPage() {
                   <TableHead>Message</TableHead>
                   <TableHead>Instance</TableHead>
                   <TableHead>Status</TableHead>
+                  <TableHead>Source</TableHead>
                   <TableHead>Time</TableHead>
                 </TableRow>
               </TableHeader>
@@ -485,6 +501,19 @@ export default function MessagesPage() {
                         >
                           {status.icon}
                           {status.label}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge
+                          variant="outline"
+                          className={cn(
+                            "text-xs",
+                            message.source === "HISTORY_SYNC"
+                              ? "border-purple-200 text-purple-700 bg-purple-50"
+                              : "border-blue-200 text-blue-700 bg-blue-50"
+                          )}
+                        >
+                          {message.source === "HISTORY_SYNC" ? "Synced" : "Real-time"}
                         </Badge>
                       </TableCell>
                       <TableCell className="text-sm text-muted-foreground">

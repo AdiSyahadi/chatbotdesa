@@ -561,4 +561,27 @@ export const uploadsApi = {
   },
 };
 
+// ============================================
+// HISTORY SYNC API
+// ============================================
+export const syncApi = {
+  /** Get sync status for an instance (dashboard JWT auth) */
+  getSyncStatus: async (instanceId: string) => {
+    const response = await api.get(`/whatsapp/instances/${instanceId}/sync-status`);
+    return response.data;
+  },
+
+  /** Update sync settings for an instance (dashboard JWT auth) */
+  updateSyncSettings: async (instanceId: string, data: { sync_history_on_connect?: boolean }) => {
+    const response = await api.patch(`/whatsapp/instances/${instanceId}/sync-settings`, data);
+    return response.data;
+  },
+
+  /** Re-pair instance for full history sync (external API) */
+  rePairForSync: async (instanceId: string) => {
+    const response = await api.post(`/whatsapp/instances/${instanceId}/sync-history/re-pair` as any);
+    return response.data;
+  },
+};
+
 export default api;

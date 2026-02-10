@@ -9,6 +9,9 @@ import {
   useConnectInstance,
   useDisconnectInstance,
   useDeleteInstance,
+  useSyncStatus,
+  useUpdateSyncSettings,
+  useRePairForSync,
 } from "@/hooks/use-queries";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,6 +27,8 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
+import { Progress } from "@/components/ui/progress";
 import {
   ArrowLeft,
   QrCode,
@@ -40,9 +45,12 @@ import {
   Phone,
   Calendar,
   Activity,
+  History,
+  AlertTriangle,
 } from "lucide-react";
 import { cn, formatDate } from "@/lib/utils";
 import { toast } from "sonner";
+import type { HistorySyncStatus } from "@/types";
 
 const statusConfig: Record<string, { label: string; color: string; bgColor: string }> = {
   CONNECTED: { label: "Connected", color: "text-green-700", bgColor: "bg-green-100" },
@@ -58,13 +66,17 @@ export default function InstanceDetailPage() {
   const instanceId = params.id as string;
 
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [rePairDialogOpen, setRePairDialogOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const { data: instanceData, isLoading: instanceLoading, refetch: refetchInstance } = useInstance(instanceId);
   const { data: qrData, isLoading: qrLoading, refetch: refetchQR } = useInstanceQr(instanceId);
+  const { data: syncData } = useSyncStatus(instanceId);
   const connectMutation = useConnectInstance();
   const disconnectMutation = useDisconnectInstance();
   const deleteMutation = useDeleteInstance();
+  const updateSyncSettingsMutation = useUpdateSyncSettings();
+  const rePairMutation = useRePairForSync();
 
   const instance = instanceData?.data;
   const qr = qrData?.data;
@@ -239,6 +251,7 @@ export default function InstanceDetailPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="qr">QR Code</TabsTrigger>
+          <TabsTrigger value="sync">History Sync</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
 
@@ -451,6 +464,185 @@ export default function InstanceDetailPage() {
           </Card>
         </TabsContent>
 
+        {/* History Sync Tab */}
+        <TabsContent value="sync" className="space-y-6">
+          {(() => {
+            const sync = syncData?.data;
+            const syncStatus: HistorySyncStatus = sync?.status || 'IDLE';
+            const progress = sync?.progress;
+            const settings = sync?.settings;
+
+            const syncStatusConfig: Record<HistorySyncStatus, { label: string; color: string; bgColor: string }> = {
+              IDLE: { label: 'Idle', color: 'text-gray-700', bgColor: 'bg-gray-100' },
+              SYNCING: { label: 'Syncing...', color: 'text-blue-700', bgColor: 'bg-blue-100' },
+              COMPLETED: { label: 'Completed', color: 'text-green-700', bgColor: 'bg-green-100' },
+              FAILED: { label: 'Failed', color: 'text-red-700', bgColor: 'bg-red-100' },
+              PARTIAL: { label: 'Partial', color: 'text-yellow-700', bgColor: 'bg-yellow-100' },
+            };
+
+            const sConfig = syncStatusConfig[syncStatus];
+
+            return (
+              <>
+                {/* Sync Status */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <History className="h-5 w-5" />
+                      History Sync Status
+                    </CardTitle>
+                    <CardDescription>
+                      Sync chat history from WhatsApp to your database
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-6">
+                    {/* Status Badge */}
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-medium text-muted-foreground">Status:</span>
+                      <Badge className={cn(sConfig.bgColor, sConfig.color, "border-0")}>
+                        {syncStatus === 'SYNCING' && <Spinner size="sm" className="mr-1" />}
+                        {sConfig.label}
+                      </Badge>
+                    </div>
+
+                    {/* Progress (visible when SYNCING) */}
+                    {syncStatus === 'SYNCING' && progress && (
+                      <div className="space-y-3">
+                        <Progress value={progress.percentage || 0} className="h-2" />
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                          <div>
+                            <p className="text-muted-foreground">Messages Received</p>
+                            <p className="font-semibold">{progress.total_messages_received?.toLocaleString() || 0}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Inserted</p>
+                            <p className="font-semibold text-green-600">{progress.messages_inserted?.toLocaleString() || 0}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Duplicates Skipped</p>
+                            <p className="font-semibold text-gray-500">{progress.messages_skipped_duplicate?.toLocaleString() || 0}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Contacts Synced</p>
+                            <p className="font-semibold">{progress.contacts_synced?.toLocaleString() || 0}</p>
+                          </div>
+                        </div>
+                        {progress.started_at && (
+                          <p className="text-xs text-muted-foreground">
+                            Started: {formatDate(progress.started_at)}
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Completed info */}
+                    {(syncStatus === 'COMPLETED' || syncStatus === 'PARTIAL') && progress && (
+                      <div className="rounded-lg bg-muted/50 p-4 space-y-2">
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                          <div>
+                            <p className="text-muted-foreground">Messages Synced</p>
+                            <p className="font-semibold">{progress.messages_inserted?.toLocaleString() || 0}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Contacts Synced</p>
+                            <p className="font-semibold">{progress.contacts_synced?.toLocaleString() || 0}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Duplicates Skipped</p>
+                            <p className="font-semibold">{progress.messages_skipped_duplicate?.toLocaleString() || 0}</p>
+                          </div>
+                          <div>
+                            <p className="text-muted-foreground">Errors</p>
+                            <p className="font-semibold">{progress.batch_errors?.toLocaleString() || 0}</p>
+                          </div>
+                        </div>
+                        {sync?.last_sync_at && (
+                          <p className="text-xs text-muted-foreground">
+                            Completed: {formatDate(sync.last_sync_at)}
+                          </p>
+                        )}
+                        {progress.quota_reached && (
+                          <p className="text-xs text-yellow-600 flex items-center gap-1">
+                            <AlertTriangle className="h-3 w-3" />
+                            Quota reached ({progress.quota_used?.toLocaleString()}/{progress.quota_limit?.toLocaleString()} messages)
+                          </p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Failed info */}
+                    {syncStatus === 'FAILED' && progress?.error && (
+                      <div className="rounded-lg bg-red-50 border border-red-200 p-4">
+                        <p className="text-sm text-red-700">{progress.error}</p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Sync Settings */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Sync Settings</CardTitle>
+                    <CardDescription>
+                      Configure history sync behavior. Settings must be enabled before connecting (scanning QR) for the first time.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent className="space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="font-medium text-sm">Auto-sync on connect</p>
+                        <p className="text-xs text-muted-foreground">Automatically sync chat history when connecting via QR code</p>
+                      </div>
+                      <Switch
+                        checked={settings?.sync_history_on_connect || false}
+                        onCheckedChange={(checked) => {
+                          updateSyncSettingsMutation.mutate({
+                            instanceId,
+                            data: { sync_history_on_connect: checked },
+                          });
+                        }}
+                        disabled={updateSyncSettingsMutation.isPending}
+                      />
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* Re-pair Action */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="flex items-center gap-2">
+                      <AlertTriangle className="h-5 w-5 text-yellow-500" />
+                      Re-pair for Full Sync
+                    </CardTitle>
+                    <CardDescription>
+                      Disconnect and re-scan QR code to trigger a full history sync. This is a destructive action — your current session will be logged out.
+                    </CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <Button
+                      variant="outline"
+                      className="border-yellow-300 text-yellow-700 hover:bg-yellow-50"
+                      disabled={
+                        syncStatus === 'SYNCING' ||
+                        instance.status === 'DISCONNECTED' ||
+                        rePairMutation.isPending
+                      }
+                      onClick={() => setRePairDialogOpen(true)}
+                    >
+                      {rePairMutation.isPending ? (
+                        <Spinner size="sm" className="mr-2" />
+                      ) : (
+                        <RefreshCw className="mr-2 h-4 w-4" />
+                      )}
+                      Re-pair &amp; Sync
+                    </Button>
+                  </CardContent>
+                </Card>
+              </>
+            );
+          })()}
+        </TabsContent>
+
         <TabsContent value="settings" className="space-y-6">
           <Card>
             <CardHeader>
@@ -499,6 +691,40 @@ export default function InstanceDetailPage() {
                 <Spinner size="sm" className="mr-2" />
               )}
               Delete Instance
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Re-pair confirmation dialog */}
+      <Dialog open={rePairDialogOpen} onOpenChange={setRePairDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Re-pair for History Sync</DialogTitle>
+            <DialogDescription>
+              This will <strong>log out</strong> your current WhatsApp session. You will need to scan a new QR code to reconnect. History sync will start automatically after reconnecting.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRePairDialogOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="default"
+              className="bg-yellow-600 hover:bg-yellow-700"
+              onClick={() => {
+                rePairMutation.mutate(instanceId);
+                setRePairDialogOpen(false);
+              }}
+              disabled={rePairMutation.isPending}
+            >
+              {rePairMutation.isPending && (
+                <Spinner size="sm" className="mr-2" />
+              )}
+              Yes, Re-pair
             </Button>
           </DialogFooter>
         </DialogContent>

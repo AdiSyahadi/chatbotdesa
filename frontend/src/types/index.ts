@@ -86,6 +86,7 @@ export interface Message {
   mediaType?: string;
   status: MessageStatus;
   direction: MessageDirection;
+  source?: MessageSource;
   sentAt?: string;
   deliveredAt?: string;
   readAt?: string;
@@ -93,9 +94,10 @@ export interface Message {
   createdAt: string;
 }
 
-export type MessageType = "TEXT" | "IMAGE" | "DOCUMENT" | "AUDIO" | "VIDEO" | "LOCATION" | "CONTACT" | "STICKER";
+export type MessageType = "TEXT" | "IMAGE" | "DOCUMENT" | "AUDIO" | "VIDEO" | "LOCATION" | "CONTACT" | "STICKER" | "REACTION" | "POLL" | "UNKNOWN";
 export type MessageStatus = "PENDING" | "SENT" | "DELIVERED" | "READ" | "FAILED";
 export type MessageDirection = "INCOMING" | "OUTGOING";
+export type MessageSource = "REALTIME" | "HISTORY_SYNC" | "MANUAL_IMPORT";
 
 export interface SendMessageRequest {
   instanceId: string;
@@ -243,6 +245,39 @@ export interface ApiResponse<T> {
     message: string;
     details?: unknown;
   };
+}
+
+// History Sync types
+export type HistorySyncStatus = "IDLE" | "SYNCING" | "COMPLETED" | "FAILED" | "PARTIAL";
+
+export interface SyncProgress {
+  total_messages_received: number;
+  messages_inserted: number;
+  messages_skipped_duplicate: number;
+  contacts_synced: number;
+  batch_errors: number;
+  percentage: number;
+  started_at?: string;
+  completed_at?: string;
+  error?: string;
+  quota_reached?: boolean;
+  quota_limit?: number;
+  quota_used?: number;
+}
+
+export interface SyncSettings {
+  sync_history_on_connect: boolean;
+}
+
+export interface SyncSettingsInput {
+  sync_history_on_connect?: boolean;
+}
+
+export interface SyncStatusResponse {
+  status: HistorySyncStatus;
+  progress: SyncProgress | null;
+  settings: SyncSettings;
+  last_sync_at: string | null;
 }
 
 // Dashboard Stats
