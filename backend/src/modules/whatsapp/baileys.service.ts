@@ -1310,6 +1310,8 @@ async function handleHistorySync(
             contacts_synced: 0,
             batch_errors: 0,
             percentage: 0,
+            batches_received: 1,
+            last_batch_at: new Date().toISOString(),
             started_at: new Date().toISOString(),
           },
         },
@@ -1455,6 +1457,17 @@ async function handleHistorySync(
     progress.messages_skipped_duplicate = (progress.messages_skipped_duplicate || 0) + batchSkipped;
     progress.contacts_synced = (progress.contacts_synced || 0) + contactsSynced;
     progress.batch_errors = (progress.batch_errors || 0) + batchErrors;
+    progress.batches_received = (progress.batches_received || 0) + 1;
+    progress.last_batch_at = new Date().toISOString();
+
+    // Calculate messages per second rate
+    if (progress.started_at) {
+      const elapsedMs = Date.now() - new Date(progress.started_at).getTime();
+      const elapsedSec = elapsedMs / 1000;
+      progress.messages_per_second = elapsedSec > 0
+        ? Math.round(progress.messages_inserted / elapsedSec)
+        : 0;
+    }
 
     await prisma.whatsAppInstance.update({
       where: { id: instanceId },

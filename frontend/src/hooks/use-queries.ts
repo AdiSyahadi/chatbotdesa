@@ -749,9 +749,9 @@ export function useSyncStatus(instanceId: string) {
     queryFn: () => syncApi.getSyncStatus(instanceId),
     enabled: !!instanceId,
     refetchInterval: (query) => {
-      // Poll more frequently when syncing
+      // Poll every 2s when syncing for real-time progress bar updates
       const status = query.state.data?.data?.status;
-      return status === 'SYNCING' ? 3000 : 30000;
+      return status === 'SYNCING' ? 2000 : 30000;
     },
   });
 }

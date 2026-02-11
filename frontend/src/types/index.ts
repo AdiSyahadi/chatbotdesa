@@ -257,6 +257,9 @@ export interface SyncProgress {
   contacts_synced: number;
   batch_errors: number;
   percentage: number;
+  batches_received?: number;
+  last_batch_at?: string;
+  messages_per_second?: number;
   started_at?: string;
   completed_at?: string;
   error?: string;

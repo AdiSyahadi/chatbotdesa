@@ -472,108 +472,240 @@ export default function InstanceDetailPage() {
             const progress = sync?.progress;
             const settings = sync?.settings;
 
-            const syncStatusConfig: Record<HistorySyncStatus, { label: string; color: string; bgColor: string }> = {
-              IDLE: { label: 'Idle', color: 'text-gray-700', bgColor: 'bg-gray-100' },
-              SYNCING: { label: 'Syncing...', color: 'text-blue-700', bgColor: 'bg-blue-100' },
-              COMPLETED: { label: 'Completed', color: 'text-green-700', bgColor: 'bg-green-100' },
-              FAILED: { label: 'Failed', color: 'text-red-700', bgColor: 'bg-red-100' },
-              PARTIAL: { label: 'Partial', color: 'text-yellow-700', bgColor: 'bg-yellow-100' },
+            const syncStatusConfig: Record<HistorySyncStatus, { label: string; color: string; bgColor: string; icon: string }> = {
+              IDLE: { label: 'Idle', color: 'text-gray-700', bgColor: 'bg-gray-100', icon: '⏸' },
+              SYNCING: { label: 'Syncing...', color: 'text-blue-700', bgColor: 'bg-blue-100', icon: '🔄' },
+              COMPLETED: { label: 'Completed', color: 'text-green-700', bgColor: 'bg-green-100', icon: '✅' },
+              FAILED: { label: 'Failed', color: 'text-red-700', bgColor: 'bg-red-100', icon: '❌' },
+              PARTIAL: { label: 'Partial', color: 'text-yellow-700', bgColor: 'bg-yellow-100', icon: '⚠️' },
             };
 
             const sConfig = syncStatusConfig[syncStatus];
 
+            // Calculate elapsed time for SYNCING status
+            const getElapsedTime = () => {
+              if (!progress?.started_at) return null;
+              const startedAt = new Date(progress.started_at).getTime();
+              const endTime = progress?.completed_at
+                ? new Date(progress.completed_at).getTime()
+                : Date.now();
+              const elapsedSec = Math.floor((endTime - startedAt) / 1000);
+              const hours = Math.floor(elapsedSec / 3600);
+              const minutes = Math.floor((elapsedSec % 3600) / 60);
+              const seconds = elapsedSec % 60;
+              if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+              if (minutes > 0) return `${minutes}m ${seconds}s`;
+              return `${seconds}s`;
+            };
+
+            // Calculate a pseudo-percentage based on messages processed
+            // Since WhatsApp doesn't tell us total upfront, show an indeterminate-style progress
+            // that advances based on batches received (caps at 95% until completed)
+            const getSyncPercentage = () => {
+              if (syncStatus === 'COMPLETED') return 100;
+              if (syncStatus === 'PARTIAL') return 100;
+              if (syncStatus !== 'SYNCING' || !progress) return 0;
+              // Use batches_received to estimate progress (cap at 95%)
+              // Typical sync has ~20-50 batches
+              const batches = progress.batches_received || 0;
+              const estimated = Math.min(95, Math.round(batches * 2.5));
+              return Math.max(estimated, 5); // At least 5% when syncing starts
+            };
+
+            // Check if sync is still "alive" (received a batch within last 15s)
+            const isSyncAlive = () => {
+              if (syncStatus !== 'SYNCING') return false;
+              if (!progress?.last_batch_at) return true; // Just started
+              const lastBatch = new Date(progress.last_batch_at).getTime();
+              return (Date.now() - lastBatch) < 15000;
+            };
+
             return (
               <>
-                {/* Sync Status */}
+                {/* Sync Status Card with Progress */}
                 <Card>
                   <CardHeader>
                     <CardTitle className="flex items-center gap-2">
                       <History className="h-5 w-5" />
-                      History Sync Status
+                      History Sync
                     </CardTitle>
                     <CardDescription>
                       Sync chat history from WhatsApp to your database
                     </CardDescription>
                   </CardHeader>
-                  <CardContent className="space-y-6">
-                    {/* Status Badge */}
-                    <div className="flex items-center gap-3">
-                      <span className="text-sm font-medium text-muted-foreground">Status:</span>
-                      <Badge className={cn(sConfig.bgColor, sConfig.color, "border-0")}>
-                        {syncStatus === 'SYNCING' && <Spinner size="sm" className="mr-1" />}
-                        {sConfig.label}
-                      </Badge>
+                  <CardContent className="space-y-5">
+                    {/* Status Header */}
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <span className="text-sm font-medium text-muted-foreground">Status:</span>
+                        <Badge className={cn(sConfig.bgColor, sConfig.color, "border-0 gap-1")}>
+                          {syncStatus === 'SYNCING' && <Spinner size="sm" />}
+                          {sConfig.label}
+                        </Badge>
+                      </div>
+                      {syncStatus === 'SYNCING' && (
+                        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                          <span className={cn(
+                            "inline-block w-2 h-2 rounded-full",
+                            isSyncAlive() ? "bg-green-500 animate-pulse" : "bg-yellow-500"
+                          )} />
+                          {isSyncAlive() ? 'Receiving data...' : 'Waiting for next batch...'}
+                        </div>
+                      )}
                     </div>
 
-                    {/* Progress (visible when SYNCING) */}
+                    {/* ── SYNCING STATE: Full Progress Bar ── */}
                     {syncStatus === 'SYNCING' && progress && (
-                      <div className="space-y-3">
-                        <Progress value={progress.percentage || 0} className="h-2" />
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                          <div>
-                            <p className="text-muted-foreground">Messages Received</p>
-                            <p className="font-semibold">{progress.total_messages_received?.toLocaleString() || 0}</p>
+                      <div className="space-y-4">
+                        {/* Progress Bar */}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between text-xs text-muted-foreground">
+                            <span>{progress.messages_inserted?.toLocaleString() || 0} messages synced</span>
+                            <span>{getElapsedTime()}</span>
                           </div>
-                          <div>
-                            <p className="text-muted-foreground">Inserted</p>
-                            <p className="font-semibold text-green-600">{progress.messages_inserted?.toLocaleString() || 0}</p>
-                          </div>
-                          <div>
-                            <p className="text-muted-foreground">Duplicates Skipped</p>
-                            <p className="font-semibold text-gray-500">{progress.messages_skipped_duplicate?.toLocaleString() || 0}</p>
-                          </div>
-                          <div>
-                            <p className="text-muted-foreground">Contacts Synced</p>
-                            <p className="font-semibold">{progress.contacts_synced?.toLocaleString() || 0}</p>
+                          <div className="relative">
+                            <Progress value={getSyncPercentage()} className="h-3" />
+                            {/* Indeterminate shimmer overlay */}
+                            <div className="absolute inset-0 rounded-full overflow-hidden pointer-events-none">
+                              <div
+                                className="h-full w-1/3 bg-gradient-to-r from-transparent via-white/20 to-transparent animate-[shimmer_2s_ease-in-out_infinite]"
+                                style={{
+                                  animation: 'shimmer 2s ease-in-out infinite',
+                                }}
+                              />
+                            </div>
                           </div>
                         </div>
-                        {progress.started_at && (
-                          <p className="text-xs text-muted-foreground">
-                            Started: {formatDate(progress.started_at)}
+
+                        {/* Live Stats Grid */}
+                        <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                          <div className="rounded-lg border bg-card p-3 text-center">
+                            <p className="text-xl font-bold text-primary tabular-nums">
+                              {progress.total_messages_received?.toLocaleString() || 0}
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">Received</p>
+                          </div>
+                          <div className="rounded-lg border bg-card p-3 text-center">
+                            <p className="text-xl font-bold text-green-600 tabular-nums">
+                              {progress.messages_inserted?.toLocaleString() || 0}
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">Inserted</p>
+                          </div>
+                          <div className="rounded-lg border bg-card p-3 text-center">
+                            <p className="text-xl font-bold text-gray-500 tabular-nums">
+                              {progress.messages_skipped_duplicate?.toLocaleString() || 0}
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">Duplicates</p>
+                          </div>
+                          <div className="rounded-lg border bg-card p-3 text-center">
+                            <p className="text-xl font-bold tabular-nums">
+                              {progress.contacts_synced?.toLocaleString() || 0}
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">Contacts</p>
+                          </div>
+                          <div className="rounded-lg border bg-card p-3 text-center">
+                            <p className="text-xl font-bold text-blue-600 tabular-nums">
+                              {progress.messages_per_second || 0}
+                            </p>
+                            <p className="text-xs text-muted-foreground mt-1">msgs/sec</p>
+                          </div>
+                        </div>
+
+                        {/* Meta info */}
+                        <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+                          {progress.started_at && (
+                            <span>Started: {formatDate(progress.started_at)}</span>
+                          )}
+                          {progress.batches_received && (
+                            <span>Batches: {progress.batches_received}</span>
+                          )}
+                          {(progress.batch_errors || 0) > 0 && (
+                            <span className="text-red-500">Errors: {progress.batch_errors}</span>
+                          )}
+                        </div>
+
+                        {/* Info callout */}
+                        <div className="rounded-lg bg-blue-50 border border-blue-200 p-3 flex items-start gap-2">
+                          <Activity className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
+                          <p className="text-xs text-blue-700">
+                            Sync sedang berjalan. WhatsApp mengirim data secara bertahap dalam beberapa batch.
+                            Proses ini bisa memakan waktu 1-10 menit tergantung jumlah chat.
+                            Halaman ini otomatis update setiap 2 detik.
                           </p>
-                        )}
+                        </div>
                       </div>
                     )}
 
-                    {/* Completed info */}
+                    {/* ── COMPLETED / PARTIAL STATE ── */}
                     {(syncStatus === 'COMPLETED' || syncStatus === 'PARTIAL') && progress && (
-                      <div className="rounded-lg bg-muted/50 p-4 space-y-2">
-                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                          <div>
-                            <p className="text-muted-foreground">Messages Synced</p>
-                            <p className="font-semibold">{progress.messages_inserted?.toLocaleString() || 0}</p>
+                      <div className="space-y-3">
+                        {/* Full progress bar at 100% */}
+                        <Progress value={100} className={cn("h-2", syncStatus === 'PARTIAL' ? '[&>div]:bg-yellow-500' : '[&>div]:bg-green-500')} />
+
+                        <div className="rounded-lg bg-muted/50 p-4 space-y-3">
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                            <div>
+                              <p className="text-muted-foreground">Messages Synced</p>
+                              <p className="font-semibold">{progress.messages_inserted?.toLocaleString() || 0}</p>
+                            </div>
+                            <div>
+                              <p className="text-muted-foreground">Contacts Synced</p>
+                              <p className="font-semibold">{progress.contacts_synced?.toLocaleString() || 0}</p>
+                            </div>
+                            <div>
+                              <p className="text-muted-foreground">Duplicates Skipped</p>
+                              <p className="font-semibold">{progress.messages_skipped_duplicate?.toLocaleString() || 0}</p>
+                            </div>
+                            <div>
+                              <p className="text-muted-foreground">Errors</p>
+                              <p className="font-semibold">{progress.batch_errors?.toLocaleString() || 0}</p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-muted-foreground">Contacts Synced</p>
-                            <p className="font-semibold">{progress.contacts_synced?.toLocaleString() || 0}</p>
+                          <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+                            {sync?.last_sync_at && (
+                              <span>Completed: {formatDate(sync.last_sync_at)}</span>
+                            )}
+                            {progress.started_at && progress.completed_at && (
+                              <span>Duration: {getElapsedTime()}</span>
+                            )}
+                            {progress.batches_received && (
+                              <span>Batches: {progress.batches_received}</span>
+                            )}
                           </div>
-                          <div>
-                            <p className="text-muted-foreground">Duplicates Skipped</p>
-                            <p className="font-semibold">{progress.messages_skipped_duplicate?.toLocaleString() || 0}</p>
-                          </div>
-                          <div>
-                            <p className="text-muted-foreground">Errors</p>
-                            <p className="font-semibold">{progress.batch_errors?.toLocaleString() || 0}</p>
-                          </div>
+                          {progress.quota_reached && (
+                            <p className="text-xs text-yellow-600 flex items-center gap-1">
+                              <AlertTriangle className="h-3 w-3" />
+                              Quota reached ({progress.quota_used?.toLocaleString()}/{progress.quota_limit?.toLocaleString()} messages)
+                            </p>
+                          )}
                         </div>
-                        {sync?.last_sync_at && (
-                          <p className="text-xs text-muted-foreground">
-                            Completed: {formatDate(sync.last_sync_at)}
-                          </p>
+                      </div>
+                    )}
+
+                    {/* ── FAILED STATE ── */}
+                    {syncStatus === 'FAILED' && progress && (
+                      <div className="space-y-3">
+                        <Progress value={100} className="h-2 [&>div]:bg-red-500" />
+                        {progress.error && (
+                          <div className="rounded-lg bg-red-50 border border-red-200 p-4">
+                            <p className="text-sm text-red-700">{progress.error}</p>
+                          </div>
                         )}
-                        {progress.quota_reached && (
-                          <p className="text-xs text-yellow-600 flex items-center gap-1">
-                            <AlertTriangle className="h-3 w-3" />
-                            Quota reached ({progress.quota_used?.toLocaleString()}/{progress.quota_limit?.toLocaleString()} messages)
+                        {progress.messages_inserted > 0 && (
+                          <p className="text-xs text-muted-foreground">
+                            {progress.messages_inserted.toLocaleString()} messages were synced before the error occurred.
                           </p>
                         )}
                       </div>
                     )}
 
-                    {/* Failed info */}
-                    {syncStatus === 'FAILED' && progress?.error && (
-                      <div className="rounded-lg bg-red-50 border border-red-200 p-4">
-                        <p className="text-sm text-red-700">{progress.error}</p>
+                    {/* ── IDLE STATE ── */}
+                    {syncStatus === 'IDLE' && (
+                      <div className="rounded-lg bg-muted/50 p-4">
+                        <p className="text-sm text-muted-foreground">
+                          No sync in progress. Enable &quot;Auto-sync on connect&quot; below, then connect via QR code to start syncing.
+                          Or use &quot;Re-pair &amp; Sync&quot; to force a full sync.
+                        </p>
                       </div>
                     )}
                   </CardContent>
