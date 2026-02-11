@@ -1240,7 +1240,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     preHandler: [authenticateApiKey],
     handler: async (request, reply) => {
       const { instanceId } = request.params;
-      const organizationId = (request as any).organizationId;
+      const organizationId = (request as ApiKeyAuthenticatedRequest).apiKey.organization_id;
 
       const instance = await prisma.whatsAppInstance.findFirst({
         where: { id: instanceId, organization_id: organizationId, deleted_at: null },
@@ -1279,7 +1279,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     preHandler: [authenticateApiKey],
     handler: async (request, reply) => {
       const { instanceId } = request.params;
-      const organizationId = (request as any).organizationId;
+      const organizationId = (request as ApiKeyAuthenticatedRequest).apiKey.organization_id;
       const body = request.body || {};
 
       // Validate instance belongs to org
@@ -1351,7 +1351,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     preHandler: [authenticateApiKey],
     handler: async (request, reply) => {
       const { instanceId } = request.params;
-      const organizationId = (request as any).organizationId;
+      const organizationId = (request as ApiKeyAuthenticatedRequest).apiKey.organization_id;
 
       const instance = await prisma.whatsAppInstance.findFirst({
         where: { id: instanceId, organization_id: organizationId, deleted_at: null },
@@ -1444,11 +1444,11 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     handler: async (request, reply) => {
       const { instanceId } = request.params;
       const { action } = request.body;
-      const apiKeyData = (request as any).apiKeyData;
+      const req = request as ApiKeyAuthenticatedRequest;
 
       // Verify ownership
       const instance = await prisma.whatsAppInstance.findFirst({
-        where: { id: instanceId, organization_id: apiKeyData.organization_id },
+        where: { id: instanceId, organization_id: req.apiKey.organization_id },
         select: { id: true, history_sync_status: true },
       });
 
