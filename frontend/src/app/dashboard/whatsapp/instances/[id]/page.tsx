@@ -265,11 +265,51 @@ export default function InstanceDetailPage() {
         <TabsList>
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="qr">QR Code</TabsTrigger>
-          <TabsTrigger value="sync">History Sync</TabsTrigger>
+          <TabsTrigger value="sync" data-value="sync">History Sync</TabsTrigger>
           <TabsTrigger value="settings">Settings</TabsTrigger>
         </TabsList>
 
         <TabsContent value="overview" className="space-y-6">
+          {/* Sync Status Banner — visible on Overview tab */}
+          {(() => {
+            const sync = syncData?.data;
+            const ss = sync?.status as HistorySyncStatus | undefined;
+            const prog = sync?.progress;
+            if (ss === 'SYNCING' && prog) {
+              const pct = Math.min(95, Math.max(5, Math.round((prog.batches_received || 0) * 2.5)));
+              return (
+                <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
+                      <span className="text-sm font-medium text-blue-800">History Sync Sedang Berjalan</span>
+                    </div>
+                    <span className="text-xs text-blue-600 tabular-nums">
+                      {prog.messages_inserted?.toLocaleString() || 0} messages synced
+                    </span>
+                  </div>
+                  <Progress value={pct} className="h-2" />
+                  <p className="text-xs text-blue-600">
+                    Buka tab <button onClick={() => document.querySelector<HTMLButtonElement>('[data-value="sync"]')?.click()} className="underline font-medium">History Sync</button> untuk detail lengkap.
+                  </p>
+                </div>
+              );
+            }
+            if (ss === 'STOPPED') {
+              return (
+                <div className="rounded-lg border border-orange-200 bg-orange-50 p-4 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Square className="h-4 w-4 text-orange-500" />
+                    <span className="text-sm font-medium text-orange-800">History Sync Dihentikan</span>
+                    <span className="text-xs text-orange-600">({prog?.messages_inserted?.toLocaleString() || 0} messages tersimpan)</span>
+                  </div>
+                  <button onClick={() => document.querySelector<HTMLButtonElement>('[data-value="sync"]')?.click()} className="text-xs text-orange-700 underline font-medium">Lihat detail</button>
+                </div>
+              );
+            }
+            return null;
+          })()}
+
           {/* Stats */}
           <div className="grid gap-4 md:grid-cols-4">
             <Card>

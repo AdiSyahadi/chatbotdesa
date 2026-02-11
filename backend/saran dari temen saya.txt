@@ -112,5 +112,5 @@ dengan jelas, termasuk:
 
 
 ================================
-Semua saran di atas bertujuan agar WA API lebih mudah diintegrasikan
+Semua saran di atas bertujuan agar WA API lebih mudah diintegrasikan.
 dan consumer tidak perlu handle edge case yang seharusnya ditangani di level API.

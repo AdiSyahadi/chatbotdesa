@@ -1412,16 +1412,19 @@ async function handleHistorySync(
       });
     }
 
-    // Load current progress
-    const progress = (instance.history_sync_progress as any) || {
-      total_messages_received: 0,
-      messages_inserted: 0,
-      messages_skipped_duplicate: 0,
-      contacts_synced: 0,
-      batch_errors: 0,
-      percentage: 0,
-      started_at: new Date().toISOString(),
-    };
+    // Load current progress (clean any Prisma operator junk like 'set: null')
+    const rawProgress = (instance.history_sync_progress as any) || {};
+    const progress: any = { ...rawProgress };
+    delete progress.set; // Remove Prisma { set: null } artifact if present
+    if (!progress.started_at) {
+      progress.started_at = new Date().toISOString();
+    }
+    if (!progress.total_messages_received) progress.total_messages_received = 0;
+    if (!progress.messages_inserted) progress.messages_inserted = 0;
+    if (!progress.messages_skipped_duplicate) progress.messages_skipped_duplicate = 0;
+    if (!progress.contacts_synced) progress.contacts_synced = 0;
+    if (!progress.batch_errors) progress.batch_errors = 0;
+    if (progress.percentage === undefined) progress.percentage = 0;
 
     progress.total_messages_received = (progress.total_messages_received || 0) + messages.length;
 
@@ -1685,11 +1688,23 @@ async function handleAppendHistoryMessages(
       return;
     }
 
-    // Get instance phone for direction detection
+    // Check if sync is paused/stopped
+    if (syncPausedInstances.has(instanceId)) {
+      console.log(`⏸️ [HISTORY] Sync STOPPED for ${instanceId}, skipping ${messages.length} append messages`);
+      return;
+    }
+
+    // Get instance phone + current sync state for progress tracking
     const instance = await prisma.whatsAppInstance.findUnique({
       where: { id: instanceId },
-      select: { phone_number: true },
+      select: { phone_number: true, history_sync_status: true, history_sync_progress: true },
     });
+
+    if (instance?.history_sync_status === 'STOPPED') {
+      console.log(`⏸️ [HISTORY] Sync STOPPED for ${instanceId}, skipping ${messages.length} append messages`);
+      return;
+    }
+
     const instancePhoneJid = instance?.phone_number ? `${instance.phone_number}@s.whatsapp.net` : '';
 
     let inserted = 0;
@@ -1739,8 +1754,37 @@ async function handleAppendHistoryMessages(
       }
     }
 
+    // Update progress tracking (merge with existing progress)
     if (inserted > 0 || skipped > 0) {
       console.log(`📜 [HISTORY] Append for ${instanceId}: +${inserted} inserted, ${skipped} duplicates skipped`);
+
+      const rawProgress = (instance?.history_sync_progress as any) || {};
+      const progress: any = { ...rawProgress };
+      delete progress.set; // Remove Prisma artifact
+      progress.total_messages_received = (progress.total_messages_received || 0) + messages.length;
+      progress.messages_inserted = (progress.messages_inserted || 0) + inserted;
+      progress.messages_skipped_duplicate = (progress.messages_skipped_duplicate || 0) + skipped;
+      progress.batches_received = (progress.batches_received || 0) + 1;
+      progress.last_batch_at = new Date().toISOString();
+      if (!progress.started_at) progress.started_at = new Date().toISOString();
+
+      // Calculate msgs/sec
+      const elapsedMs = Date.now() - new Date(progress.started_at).getTime();
+      const elapsedSec = elapsedMs / 1000;
+      if (elapsedSec > 0) {
+        progress.messages_per_second = Math.round(progress.messages_inserted / elapsedSec);
+      }
+
+      // Update DB — also set SYNCING if not already
+      const updateData: any = { history_sync_progress: progress, updated_at: new Date() };
+      if (instance?.history_sync_status === 'IDLE' || instance?.history_sync_status === null) {
+        updateData.history_sync_status = 'SYNCING';
+      }
+
+      await prisma.whatsAppInstance.update({
+        where: { id: instanceId },
+        data: updateData,
+      });
     }
   } catch (error) {
     logger.error({ error, instanceId }, '❌ [HISTORY] Error handling append messages');

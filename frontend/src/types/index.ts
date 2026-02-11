@@ -266,6 +266,9 @@ export interface SyncProgress {
   quota_reached?: boolean;
   quota_limit?: number;
   quota_used?: number;
+  stopped_at?: string;
+  stopped_by_user?: boolean;
+  resumed_at?: string;
 }
 
 export interface SyncSettings {

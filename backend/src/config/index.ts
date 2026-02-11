@@ -126,8 +126,8 @@ const config: Config = {
     clientKey: process.env.MIDTRANS_CLIENT_KEY || '',
   },
   rateLimit: {
-    max: parseInt(process.env.RATE_LIMIT_MAX || '100', 10),
-    window: process.env.RATE_LIMIT_WINDOW || '15m',
+    max: parseInt(process.env.RATE_LIMIT_MAX || '1000', 10),
+    window: process.env.RATE_LIMIT_WINDOW || '1m',
   },
   baileys: {
     maxInstancesPerServer: parseInt(process.env.MAX_INSTANCES_PER_SERVER || '50', 10),
