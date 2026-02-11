@@ -898,7 +898,7 @@ export class WhatsAppService {
         where,
         skip,
         take: limit,
-        orderBy: { created_at: 'desc' },
+        orderBy: [{ sent_at: 'desc' }, { created_at: 'desc' }],
         select: {
           id: true,
           wa_message_id: true,
@@ -975,7 +975,7 @@ export class WhatsAppService {
         where,
         skip,
         take: limit,
-        orderBy: { created_at: 'desc' },
+        orderBy: [{ sent_at: 'desc' }, { created_at: 'desc' }],
         select: {
           id: true,
           instance_id: true,

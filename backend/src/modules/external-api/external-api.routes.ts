@@ -516,16 +516,17 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       where.content = { contains: query.search };
     }
 
-    // Time range filters
+    // Time range filters — use sent_at (original message timestamp) not created_at
+    // This ensures history-synced messages are filtered by their real date, not DB insert time
     if (query.since || query.until) {
-      where.created_at = {};
+      where.sent_at = {};
       if (query.since) {
         const sinceDate = new Date(query.since);
-        if (!isNaN(sinceDate.getTime())) where.created_at.gte = sinceDate;
+        if (!isNaN(sinceDate.getTime())) where.sent_at.gte = sinceDate;
       }
       if (query.until) {
         const untilDate = new Date(query.until);
-        if (!isNaN(untilDate.getTime())) where.created_at.lte = untilDate;
+        if (!isNaN(untilDate.getTime())) where.sent_at.lte = untilDate;
       }
     }
 
@@ -534,7 +535,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
         where,
         skip,
         take: limit,
-        orderBy: { created_at: 'desc' },
+        orderBy: [{ sent_at: 'desc' }, { created_at: 'desc' }],
         select: {
           id: true,
           instance_id: true,
