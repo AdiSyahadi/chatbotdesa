@@ -248,7 +248,7 @@ export interface ApiResponse<T> {
 }
 
 // History Sync types
-export type HistorySyncStatus = "IDLE" | "SYNCING" | "COMPLETED" | "FAILED" | "PARTIAL";
+export type HistorySyncStatus = "IDLE" | "SYNCING" | "COMPLETED" | "FAILED" | "PARTIAL" | "STOPPED";
 
 export interface SyncProgress {
   total_messages_received: number;

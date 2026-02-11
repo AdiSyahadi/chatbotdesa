@@ -754,9 +754,11 @@ export function useSyncStatus(instanceId: string) {
     refetchInterval: (query) => {
       const status = query.state.data?.data?.status;
       // SYNCING: poll every 2s for live progress bar
+      // STOPPED: poll every 3s so resume/stop transitions are detected quickly
       // Others: poll every 5s so status changes are detected quickly
-      // (Previously was 30s which caused user to not see SYNCING state quickly)
-      return status === 'SYNCING' ? 2000 : 5000;
+      if (status === 'SYNCING') return 2000;
+      if (status === 'STOPPED') return 3000;
+      return 5000;
     },
   });
 }
@@ -787,6 +789,34 @@ export function useRePairForSync() {
     },
     onError: (error: Error) => {
       toast.error(error.message || 'Failed to re-pair instance');
+    },
+  });
+}
+
+export function useStopSync() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (instanceId: string) => syncApi.stopSync(instanceId),
+    onSuccess: (_data, instanceId) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus(instanceId) });
+      toast.success('History sync stopped.');
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || 'Failed to stop sync');
+    },
+  });
+}
+
+export function useResumeSync() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (instanceId: string) => syncApi.resumeSync(instanceId),
+    onSuccess: (_data, instanceId) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus(instanceId) });
+      toast.success('History sync resumed.');
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || 'Failed to resume sync');
     },
   });
 }

@@ -878,6 +878,7 @@ enum HistorySyncStatus {
   COMPLETED
   FAILED
   PARTIAL
+  STOPPED
 }
 
 enum MessageSource {

@@ -59,6 +59,87 @@ const syncLocks: Map<string, Promise<void>> = new Map();
 // Completion timers: detect end of history sync via timeout
 const syncCompletionTimers: Map<string, NodeJS.Timeout> = new Map();
 
+// Sync pause control: instances in this set will skip processing incoming history batches
+const syncPausedInstances: Set<string> = new Set();
+
+/**
+ * Stop/pause history sync processing for an instance.
+ * WhatsApp may still send data but we will skip DB inserts.
+ */
+export async function stopHistorySync(instanceId: string): Promise<void> {
+  syncPausedInstances.add(instanceId);
+
+  // Cancel completion timer if active
+  const timer = syncCompletionTimers.get(instanceId);
+  if (timer) {
+    clearTimeout(timer);
+    syncCompletionTimers.delete(instanceId);
+  }
+
+  // Update DB status to STOPPED and preserve progress
+  const instance = await prisma.whatsAppInstance.findUnique({
+    where: { id: instanceId },
+    select: { history_sync_progress: true },
+  });
+
+  const progress = (instance?.history_sync_progress as any) || {};
+  progress.stopped_at = new Date().toISOString();
+  progress.stopped_by_user = true;
+
+  await prisma.whatsAppInstance.update({
+    where: { id: instanceId },
+    data: {
+      history_sync_status: 'STOPPED',
+      history_sync_progress: progress,
+    },
+  });
+
+  console.log(`⏸️ [SYNC] History sync STOPPED by user for ${instanceId}`);
+
+  // Emit webhook
+  baileysEvents.emit('history.sync', {
+    instanceId,
+    event: 'history.sync.stopped',
+    data: { instance_id: instanceId, stopped_at: progress.stopped_at },
+  });
+}
+
+/**
+ * Resume history sync processing for an instance.
+ * Next incoming WhatsApp history batch will be processed again.
+ */
+export async function resumeHistorySync(instanceId: string): Promise<void> {
+  syncPausedInstances.delete(instanceId);
+
+  // Update DB status back to SYNCING
+  const instance = await prisma.whatsAppInstance.findUnique({
+    where: { id: instanceId },
+    select: { history_sync_progress: true },
+  });
+
+  const progress = (instance?.history_sync_progress as any) || {};
+  delete progress.stopped_at;
+  delete progress.stopped_by_user;
+  progress.resumed_at = new Date().toISOString();
+
+  await prisma.whatsAppInstance.update({
+    where: { id: instanceId },
+    data: {
+      history_sync_status: 'SYNCING',
+      history_sync_progress: progress,
+    },
+  });
+
+  console.log(`▶️ [SYNC] History sync RESUMED by user for ${instanceId}`);
+
+  // Emit webhook
+  baileysEvents.emit('history.sync', {
+    instanceId,
+    event: 'history.sync.resumed',
+    data: { instance_id: instanceId, resumed_at: progress.resumed_at },
+  });
+}
+
 // ============================================
 // TYPES
 // ============================================
@@ -1257,6 +1338,12 @@ async function handleHistorySync(
 
     if (!instance) {
       logger.warn({ instanceId }, '⚠️ [SYNC] Instance not found, skipping history sync');
+      return;
+    }
+
+    // Check if sync is paused/stopped by user
+    if (syncPausedInstances.has(instanceId) || instance.history_sync_status === 'STOPPED') {
+      console.log(`⏸️ [SYNC] Sync is STOPPED for ${instanceId}, skipping ${messages.length} messages`);
       return;
     }
 

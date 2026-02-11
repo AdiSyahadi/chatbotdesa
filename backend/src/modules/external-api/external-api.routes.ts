@@ -1417,4 +1417,80 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       });
     },
   });
+
+  // ============================================
+  // SYNC CONTROL — Stop / Resume (External API)
+  // ============================================
+
+  /**
+   * Control history sync: stop or resume
+   * POST /api/instances/:instanceId/sync-history/control
+   */
+  fastify.route<{
+    Params: { instanceId: string };
+    Body: { action: 'stop' | 'resume' };
+  }>({
+    method: 'POST',
+    url: '/api/instances/:instanceId/sync-history/control',
+    preHandler: [authenticateApiKey],
+    schema: {
+      params: { type: 'object', properties: { instanceId: { type: 'string', format: 'uuid' } }, required: ['instanceId'] },
+      body: {
+        type: 'object',
+        properties: { action: { type: 'string', enum: ['stop', 'resume'] } },
+        required: ['action'],
+      },
+    },
+    handler: async (request, reply) => {
+      const { instanceId } = request.params;
+      const { action } = request.body;
+      const apiKeyData = (request as any).apiKeyData;
+
+      // Verify ownership
+      const instance = await prisma.whatsAppInstance.findFirst({
+        where: { id: instanceId, organization_id: apiKeyData.organization_id },
+        select: { id: true, history_sync_status: true },
+      });
+
+      if (!instance) {
+        return reply.status(404).send({ success: false, error: 'Instance not found' });
+      }
+
+      const { stopHistorySync, resumeHistorySync } = await import('../whatsapp/baileys.service');
+
+      if (action === 'stop') {
+        if (instance.history_sync_status !== 'SYNCING') {
+          return reply.status(409).send({
+            success: false,
+            error: `Cannot stop sync — current status is ${instance.history_sync_status}. Only SYNCING can be stopped.`,
+          });
+        }
+
+        await stopHistorySync(instanceId);
+        return reply.send({
+          success: true,
+          message: 'History sync stopped successfully.',
+          data: { status: 'STOPPED' },
+        });
+      }
+
+      if (action === 'resume') {
+        if (instance.history_sync_status !== 'STOPPED') {
+          return reply.status(409).send({
+            success: false,
+            error: `Cannot resume sync — current status is ${instance.history_sync_status}. Only STOPPED can be resumed.`,
+          });
+        }
+
+        await resumeHistorySync(instanceId);
+        return reply.send({
+          success: true,
+          message: 'History sync resumed. Incoming batches will be processed again.',
+          data: { status: 'SYNCING' },
+        });
+      }
+
+      return reply.status(400).send({ success: false, error: 'Invalid action. Use "stop" or "resume".' });
+    },
+  });
 }

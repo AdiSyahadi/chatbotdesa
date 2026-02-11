@@ -813,4 +813,81 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       });
     },
   });
+
+  // ============================================
+  // SYNC CONTROL — Stop / Resume
+  // ============================================
+
+  /**
+   * Control history sync: stop or resume
+   * POST /instances/:id/sync-control
+   */
+  fastify.route<{
+    Params: { id: string };
+    Body: { action: 'stop' | 'resume' };
+  }>({
+    method: 'POST',
+    url: '/instances/:id/sync-control',
+    schema: {
+      params: { type: 'object', properties: { id: { type: 'string', format: 'uuid' } }, required: ['id'] },
+      body: {
+        type: 'object',
+        properties: { action: { type: 'string', enum: ['stop', 'resume'] } },
+        required: ['action'],
+      },
+    },
+    handler: async (request, reply) => {
+      const { id } = request.params;
+      const { action } = request.body;
+      const user = request.user as JWTPayload;
+
+      // Verify ownership
+      const instance = await prisma.whatsAppInstance.findFirst({
+        where: { id, organization_id: user.organizationId },
+        select: { id: true, history_sync_status: true },
+      });
+
+      if (!instance) {
+        return reply.status(404).send({ success: false, error: 'Instance not found' });
+      }
+
+      const { stopHistorySync, resumeHistorySync } = await import('./baileys.service');
+
+      if (action === 'stop') {
+        // Only allow stopping when currently syncing
+        if (instance.history_sync_status !== 'SYNCING') {
+          return reply.status(409).send({
+            success: false,
+            error: `Cannot stop sync — current status is ${instance.history_sync_status}. Only SYNCING can be stopped.`,
+          });
+        }
+
+        await stopHistorySync(id);
+        return reply.send({
+          success: true,
+          message: 'History sync stopped successfully.',
+          data: { status: 'STOPPED' },
+        });
+      }
+
+      if (action === 'resume') {
+        // Only allow resuming when currently stopped
+        if (instance.history_sync_status !== 'STOPPED') {
+          return reply.status(409).send({
+            success: false,
+            error: `Cannot resume sync — current status is ${instance.history_sync_status}. Only STOPPED can be resumed.`,
+          });
+        }
+
+        await resumeHistorySync(id);
+        return reply.send({
+          success: true,
+          message: 'History sync resumed. Incoming batches will be processed again.',
+          data: { status: 'SYNCING' },
+        });
+      }
+
+      return reply.status(400).send({ success: false, error: 'Invalid action. Use "stop" or "resume".' });
+    },
+  });
 }

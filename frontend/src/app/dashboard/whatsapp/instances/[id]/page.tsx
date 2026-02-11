@@ -12,6 +12,8 @@ import {
   useSyncStatus,
   useUpdateSyncSettings,
   useRePairForSync,
+  useStopSync,
+  useResumeSync,
 } from "@/hooks/use-queries";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -47,6 +49,8 @@ import {
   Activity,
   History,
   AlertTriangle,
+  Square,
+  Play,
 } from "lucide-react";
 import { cn, formatDate } from "@/lib/utils";
 import { toast } from "sonner";
@@ -77,6 +81,8 @@ export default function InstanceDetailPage() {
   const deleteMutation = useDeleteInstance();
   const updateSyncSettingsMutation = useUpdateSyncSettings();
   const rePairMutation = useRePairForSync();
+  const stopSyncMutation = useStopSync();
+  const resumeSyncMutation = useResumeSync();
 
   const instance = instanceData?.data;
   const qr = qrData?.data;
@@ -486,6 +492,7 @@ export default function InstanceDetailPage() {
               COMPLETED: { label: 'Completed', color: 'text-green-700', bgColor: 'bg-green-100', icon: '✅' },
               FAILED: { label: 'Failed', color: 'text-red-700', bgColor: 'bg-red-100', icon: '❌' },
               PARTIAL: { label: 'Partial', color: 'text-yellow-700', bgColor: 'bg-yellow-100', icon: '⚠️' },
+              STOPPED: { label: 'Stopped', color: 'text-orange-700', bgColor: 'bg-orange-100', icon: '⏹' },
             };
 
             const sConfig = syncStatusConfig[syncStatus];
@@ -512,6 +519,12 @@ export default function InstanceDetailPage() {
             const getSyncPercentage = () => {
               if (syncStatus === 'COMPLETED') return 100;
               if (syncStatus === 'PARTIAL') return 100;
+              if (syncStatus === 'STOPPED') {
+                // Show progress at the point where it was stopped
+                if (!progress) return 0;
+                const batches = progress.batches_received || 0;
+                return Math.min(95, Math.max(5, Math.round(batches * 2.5)));
+              }
               if (syncStatus !== 'SYNCING' || !progress) return 0;
               // Use batches_received to estimate progress (cap at 95%)
               // Typical sync has ~20-50 batches
@@ -641,6 +654,29 @@ export default function InstanceDetailPage() {
                             Halaman ini otomatis update setiap 2 detik.
                           </p>
                         </div>
+
+                        {/* Stop Sync Button */}
+                        <div className="flex items-center justify-between rounded-lg border border-red-200 bg-red-50 p-4">
+                          <div>
+                            <p className="text-sm font-medium text-red-800">Stop Sync</p>
+                            <p className="text-xs text-red-600">
+                              Hentikan sinkronisasi. Pesan yang sudah masuk tetap tersimpan.
+                            </p>
+                          </div>
+                          <Button
+                            variant="destructive"
+                            size="sm"
+                            disabled={stopSyncMutation.isPending}
+                            onClick={() => stopSyncMutation.mutate(instanceId)}
+                          >
+                            {stopSyncMutation.isPending ? (
+                              <Spinner size="sm" className="mr-2" />
+                            ) : (
+                              <Square className="mr-2 h-4 w-4" />
+                            )}
+                            Stop
+                          </Button>
+                        </div>
                       </div>
                     )}
 
@@ -716,6 +752,79 @@ export default function InstanceDetailPage() {
                         </p>
                       </div>
                     )}
+
+                    {/* ── STOPPED STATE ── */}
+                    {syncStatus === 'STOPPED' && (
+                      <div className="space-y-4">
+                        {/* Frozen progress bar */}
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between text-xs text-muted-foreground">
+                            <span>{progress?.messages_inserted?.toLocaleString() || 0} messages synced (stopped)</span>
+                            {progress?.stopped_at && (
+                              <span>Stopped: {formatDate(progress.stopped_at)}</span>
+                            )}
+                          </div>
+                          <Progress value={getSyncPercentage()} className="h-3 [&>div]:bg-orange-500" />
+                        </div>
+
+                        {/* Stats at time of stop */}
+                        {progress && (
+                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            <div className="rounded-lg border bg-card p-3 text-center">
+                              <p className="text-xl font-bold text-primary tabular-nums">
+                                {progress.total_messages_received?.toLocaleString() || 0}
+                              </p>
+                              <p className="text-xs text-muted-foreground mt-1">Received</p>
+                            </div>
+                            <div className="rounded-lg border bg-card p-3 text-center">
+                              <p className="text-xl font-bold text-green-600 tabular-nums">
+                                {progress.messages_inserted?.toLocaleString() || 0}
+                              </p>
+                              <p className="text-xs text-muted-foreground mt-1">Inserted</p>
+                            </div>
+                            <div className="rounded-lg border bg-card p-3 text-center">
+                              <p className="text-xl font-bold text-gray-500 tabular-nums">
+                                {progress.messages_skipped_duplicate?.toLocaleString() || 0}
+                              </p>
+                              <p className="text-xs text-muted-foreground mt-1">Duplicates</p>
+                            </div>
+                            <div className="rounded-lg border bg-card p-3 text-center">
+                              <p className="text-xl font-bold tabular-nums">
+                                {progress.contacts_synced?.toLocaleString() || 0}
+                              </p>
+                              <p className="text-xs text-muted-foreground mt-1">Contacts</p>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Resume info + button */}
+                        <div className="rounded-lg border border-orange-200 bg-orange-50 p-4 space-y-3">
+                          <div className="flex items-start gap-2">
+                            <AlertTriangle className="h-4 w-4 text-orange-500 mt-0.5 shrink-0" />
+                            <p className="text-xs text-orange-700">
+                              Sinkronisasi dihentikan oleh user. Pesan yang sudah masuk tetap tersimpan di database.
+                              Klik &quot;Resume&quot; untuk melanjutkan menerima batch berikutnya dari WhatsApp (jika masih tersedia).
+                              Atau gunakan &quot;Re-pair &amp; Sync&quot; untuk memulai ulang dari awal.
+                            </p>
+                          </div>
+                          <div className="flex gap-2">
+                            <Button
+                              size="sm"
+                              className="bg-green-600 hover:bg-green-700"
+                              disabled={resumeSyncMutation.isPending}
+                              onClick={() => resumeSyncMutation.mutate(instanceId)}
+                            >
+                              {resumeSyncMutation.isPending ? (
+                                <Spinner size="sm" className="mr-2" />
+                              ) : (
+                                <Play className="mr-2 h-4 w-4" />
+                              )}
+                              Resume Sync
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
 
@@ -765,7 +874,9 @@ export default function InstanceDetailPage() {
                       disabled={
                         syncStatus === 'SYNCING' ||
                         instance.status === 'DISCONNECTED' ||
-                        rePairMutation.isPending
+                        rePairMutation.isPending ||
+                        stopSyncMutation.isPending ||
+                        resumeSyncMutation.isPending
                       }
                       onClick={() => setRePairDialogOpen(true)}
                     >

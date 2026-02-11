@@ -582,6 +582,18 @@ export const syncApi = {
     const response = await api.post(`/whatsapp/instances/${instanceId}/re-pair`);
     return response.data;
   },
+
+  /** Stop history sync for an instance (dashboard JWT auth) */
+  stopSync: async (instanceId: string) => {
+    const response = await api.post(`/whatsapp/instances/${instanceId}/sync-control`, { action: 'stop' });
+    return response.data;
+  },
+
+  /** Resume history sync for an instance (dashboard JWT auth) */
+  resumeSync: async (instanceId: string) => {
+    const response = await api.post(`/whatsapp/instances/${instanceId}/sync-control`, { action: 'resume' });
+    return response.data;
+  },
 };
 
 export default api;
