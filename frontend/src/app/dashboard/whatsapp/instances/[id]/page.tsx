@@ -71,7 +71,7 @@ export default function InstanceDetailPage() {
 
   const { data: instanceData, isLoading: instanceLoading, refetch: refetchInstance } = useInstance(instanceId);
   const { data: qrData, isLoading: qrLoading, refetch: refetchQR } = useInstanceQr(instanceId);
-  const { data: syncData } = useSyncStatus(instanceId);
+  const { data: syncData, refetch: refetchSync } = useSyncStatus(instanceId);
   const connectMutation = useConnectInstance();
   const disconnectMutation = useDisconnectInstance();
   const deleteMutation = useDeleteInstance();
@@ -90,6 +90,14 @@ export default function InstanceDetailPage() {
       return () => clearInterval(interval);
     }
   }, [instance?.status, refetchInstance]);
+
+  // Immediately refetch sync status when instance becomes CONNECTED
+  // This ensures the progress bar appears right away after QR scan
+  useEffect(() => {
+    if (instance?.status === "CONNECTED") {
+      refetchSync();
+    }
+  }, [instance?.status, refetchSync]);
 
   // Auto-refresh QR code when needed
   useEffect(() => {

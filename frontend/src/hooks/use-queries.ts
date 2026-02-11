@@ -748,10 +748,15 @@ export function useSyncStatus(instanceId: string) {
     queryKey: queryKeys.syncStatus(instanceId),
     queryFn: () => syncApi.getSyncStatus(instanceId),
     enabled: !!instanceId,
+    staleTime: 0, // Always consider data stale — user is actively viewing this page
+    refetchOnWindowFocus: 'always', // Immediately refresh when user switches back to browser tab
+    refetchIntervalInBackground: true, // Keep polling even when tab is in background
     refetchInterval: (query) => {
-      // Poll every 2s when syncing for real-time progress bar updates
       const status = query.state.data?.data?.status;
-      return status === 'SYNCING' ? 2000 : 30000;
+      // SYNCING: poll every 2s for live progress bar
+      // Others: poll every 5s so status changes are detected quickly
+      // (Previously was 30s which caused user to not see SYNCING state quickly)
+      return status === 'SYNCING' ? 2000 : 5000;
     },
   });
 }
