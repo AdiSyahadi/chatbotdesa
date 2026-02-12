@@ -1,205 +1,158 @@
-Ada beberapa hal yang perlu saya sampaikan:
+# Jawaban untuk Pertanyaan Kamu
 
-Bug/Info dari WA API Teman Kamu
-1. Field send-text masih pakai message, bukan text
-Dokumentasi baru bilang field-nya text, tapi API masih validasi message. Ini inkonsistensi di docs vs implementasi. Bukan masalah besar, CRM kita sudah handle pakai message.
+> **Use case-nya apa?**
 
-2. Duplicate constraint error saat kirim pesan
-Tadi saya coba kirim pesan via API dan dapat error:
+Butuh phone number buat **2 hal**:
+1. **Display di UI CRM** — saat ini kontak @lid tampil sebagai angka acak (misal "37224598995033"), bukan nomor telepon yang bisa dikenali
+2. **Kirim pesan balik** — dari CRM kita perlu bisa initiate/reply chat ke kontak tersebut. Tanpa phone number, kita ga bisa kirim pesan ke mereka
 
-Unique constraint failed on: messages_wa_message_id_instance_id_key
-Ini bug di WA API side — dia gagal simpan pesan outgoing karena duplicate. Mungkin pesan sudah ada di DB tapi dia coba insert lagi. Tanyakan ke teman kamu apakah ini known issue.
+> **Kontak @lid-nya banyak atau sedikit?**
 
-3. Message type templateMessage dan placeholderMessage tidak di-handle
-WA API mengirim pesan dengan type seperti templateMessage, placeholderMessage yang tidak ada di mapping. Ini bukan bug kritis — saya sudah handle di CRM dengan fallback ke OTHER.
+Saat ini **sedikit** — cuma **4 dari 71 conversations** yang @lid. Mayoritas masih @s.whatsapp.net (67 kontak). Tapi kemungkinan akan bertambah seiring waktu karena WhatsApp terus migrasi ke LID-first protocol.
 
-Pertanyaan untuk Teman Kamu
-Tolong tanyakan ini:
+> **Dia pakai Baileys versi berapa?**
 
-Apakah WA API mengirim webhook message.sent untuk pesan outgoing yang dikirim via API? — Karena tadi webhook yang masuk cuma message.received, saya perlu tahu apakah pesan yang kita kirim via CRM juga akan di-webhook balik supaya bisa update status di CRM.
-Duplicate constraint error di messages_wa_message_id_instance_id_key — apakah ini known bug? Terjadi saat kirim pesan via /api/v1/messages/send-text.
-Apakah webhook payload menyertakan phone_number? — Karena beberapa kontak pakai format @lid (JID baru WhatsApp), saya perlu phone_number di webhook payload untuk bisa identifikasi kontak. Kalau tidak ada, pesan dari kontak @lid akan di-skip.
+Ini pertanyaan balik buat kamu — **kamu pakai Baileys versi berapa?** Kalau sudah v6.6+, fitur `lid-mapping.update` event sudah available dan bisa langsung di-implement.
+
+> **Dia butuh real-time resolve atau batch?**
+
+Idealnya **real-time** — supaya saat pesan masuk dari kontak @lid, CRM langsung bisa tampilkan nama + nomor yang benar dan bisa reply. Tapi kalau terlalu kompleks, **batch** juga oke sebagai langkah awal (misal tiap beberapa menit cek mapping baru).
+
+> **Mau kita implement fitur ini di project kita?**
+
+**Ya, tolong implement.** Pendekatan yang kamu suggest sudah bagus:
+- Listen `lid-mapping.update` → simpan ke DB → auto-backfill kontak yang `phone_number: null`
+- Kalau bisa, sertakan `phone_number` di response conversations/messages API untuk kontak @lid yang sudah ter-resolve
+- Bonus: kirim webhook event `lid-mapping.resolved` supaya CRM bisa langsung update tanpa polling
+
+Di sisi CRM, data @lid sudah kita simpan di database. Begitu WA API mulai kirim phone_number untuk kontak @lid, CRM otomatis akan menampilkannya.
+
+---
+---
+
+# Ini jawaban dari kamu sebelumnya (untuk referensi)
+
+# Jawaban
+
+## TL;DR
+
+**Ya, secara teknis bisa — tapi TIDAK bisa langsung dari JID-nya.** `@lid` adalah opaque identifier (ID acak internal WhatsApp) yang sengaja **tidak mengandung nomor telepon**. Mapping LID → nomor telepon harus dibangun dari data yang dikirim WhatsApp secara bertahap melalui beberapa mekanisme.
 
 ---
 
-## JAWABAN (Update 11 Feb 2026)
+## Apa itu @lid JID?
 
-Hai bro, semua laporan kamu sudah saya cek dan fix. Berikut jawaban satu per satu:
+LID = **Linked ID**. Ini adalah sistem identifier baru WhatsApp yang mulai dipakai sejak ~2023-2024 sebagai pengganti nomor telepon langsung di internal protocol. Tujuannya adalah **privacy** — agar nomor telepon asli tidak terekspos secara langsung di protocol layer.
+
+Format:
+- **Lama**: `628123456789@s.whatsapp.net` → nomor telepon langsung terlihat
+- **Baru (LID)**: `37224598995033@lid` → nomor acak, tidak bisa di-decode
+
+Jadi **tidak ada formula/algoritma** untuk mengubah `37224598995033` menjadi nomor telepon. Ini bukan encoding — ini ID acak yang di-assign WhatsApp server.
 
 ---
 
-### Bug 1: Field `message` vs `text` di send-text
+## Bagaimana Cara Mendapatkan Mapping LID → Phone Number?
 
-**Status: SUDAH DIFIX**
+Baileys v6+ sudah punya `LIDMappingStore` yang mengumpulkan mapping LID ↔ PN dari **5 sumber berbeda**:
 
-Sekarang endpoint `/api/v1/messages/send-text` menerima **KEDUA** field — `message` maupun `text`. Jadi CRM kamu bisa pakai salah satu, keduanya valid.
+### 1. History Sync (`phoneNumberToLidMappings`)
+Saat pertama kali connect atau re-sync, WhatsApp mengirim payload history yang **kadang** menyertakan field `phoneNumberToLidMappings`:
 
-Contoh request (keduanya work):
-```json
-// Cara 1 (yang lama, tetap jalan)
-{ "instance_id": "xxx", "to": "628xxx", "message": "Halo!" }
-
-// Cara 2 (pakai text, sekarang juga jalan)
-{ "instance_id": "xxx", "to": "628xxx", "text": "Halo!" }
+```
+historySync.phoneNumberToLidMappings = [
+  { lidJid: '37224598995033@lid', pnJid: '628123456789@s.whatsapp.net' },
+  ...
+]
 ```
 
-Kalau dua-duanya diisi, yang dipakai **`message`** (prioritas). **Kamu tidak perlu ubah apa-apa di CRM.**
+**Catatan**: Ini tidak selalu ada dan tidak selalu lengkap.
 
----
+### 2. Contact Sync Actions (`contactAction`)
+Saat WhatsApp sync kontak, setiap kontak punya field `lidJid`:
 
-### Bug 2: Duplicate constraint error
-
-**Status: SUDAH DIFIX**
-
-Ini memang bug di sisi kami. Root cause-nya:
-
-1. Saat kamu kirim pesan via API → `sendText()` insert pesan ke DB
-2. Lalu WhatsApp (Baileys library) otomatis fire event `messages.upsert` untuk pesan yang sama
-3. Handler kami coba insert lagi dengan `wa_message_id` yang sama → **duplicate error**
-
-**Fix yang diterapkan:**
-- Semua insert sekarang pakai `upsert` (insert-or-update), bukan `create`
-- Kalau message ID sudah ada, dia update instead of error
-- Handler event dari Baileys sekarang juga cek `fromMe` — pesan outgoing ditandai benar sebagai `OUTGOING` (sebelumnya semua ditandai `INCOMING`)
-
-**Yang perlu kamu lakukan:** Tidak ada. Error ini sudah tidak akan muncul lagi. Kalau CRM kamu punya retry logic untuk error ini, bisa dihapus.
-
----
-
-### Bug 3: templateMessage & placeholderMessage tidak di-handle
-
-**Status: SUDAH DIFIX**
-
-Sekarang kami sudah handle tipe pesan berikut yang sebelumnya masuk ke `UNKNOWN`:
-
-| Tipe Pesan | Deskripsi |
-|---|---|
-| `templateMessage` | Pesan template bisnis |
-| `highlyStructuredMessage` | Template i18n |
-| `buttonsMessage` | Pesan dengan tombol |
-| `listMessage` | Pesan dengan list menu |
-| `interactiveMessage` | Pesan interaktif (WA Business) |
-| `placeholderMessage` | Placeholder ("waiting for this message") |
-| `orderMessage` | Pesan pesanan/commerce |
-| `groupInviteMessage` | Undangan grup |
-| `invoiceMessage` | Invoice |
-| `productMessage` | Katalog produk |
-
-**Yang perlu kamu lakukan:** CRM kamu yang pakai fallback ke `OTHER` sudah aman. Tapi sekarang kamu bisa handle tipe-tipe ini secara spesifik kalau mau (misalnya tampilkan "[Template Message]" atau "[List Menu]" di UI CRM). Field `message_type` di webhook akan mengirim tipe yang benar.
-
----
-
-### Pertanyaan 1: Webhook `message.sent` untuk pesan outgoing
-
-**SUDAH AKTIF SEKARANG.**
-
-Sebelumnya memang bug — webhook `message.sent` **tidak pernah dikirim** untuk pesan yang dikirim via API. Sekarang sudah difix.
-
-**Behavior baru:**
-- Kirim pesan via API → webhook `message.sent` akan dikirim ke URL webhook kamu
-- Terima pesan masuk → webhook `message.received` (ini sudah jalan dari dulu)
-
-**Payload `message.sent`:**
-```json
-{
-  "event": "message.sent",
-  "timestamp": "2026-02-11T01:00:00.000Z",
-  "instance_id": "uuid-xxx",
-  "organization_id": "uuid-xxx",
-  "data": {
-    "id": "3EB0XXXXXXXX",
-    "from": "628123456789@s.whatsapp.net",
-    "chat_jid": "628123456789@s.whatsapp.net",
-    "phone_number": "628123456789",
-    "direction": "OUTGOING",
-    "type": "text",
-    "content": "Isi pesan",
-    "timestamp": 1739235600
-  }
+```
+contactAction = {
+  fullName: 'John Doe',
+  lidJid: '37224598995033@lid',   // LID
+  pnJid: null                      // biasanya null
 }
+// id (index[1]) = '628123456789@s.whatsapp.net'  // phone number ada di sini
 ```
 
-**Yang perlu kamu lakukan:** Pastikan webhook kamu subscribe ke event `message.sent`. Kalau belum, update config webhook di dashboard atau via API:
+### 3. pnForLidChatAction
+WhatsApp kadang mengirim sync action khusus `pnForLidChatAction` yang secara eksplisit menyatakan:
 ```
-PATCH /api/v1/webhooks/config
-{
-  "instance_id": "uuid-xxx",
-  "webhook_events": ["message.received", "message.sent", "message.delivered", "message.read"]
-}
+{ pnJid: '628123456789@s.whatsapp.net' }  // untuk chat '37224598995033@lid'
 ```
 
----
+### 4. USync Protocol Query
+Baileys bisa melakukan query ke server WhatsApp menggunakan USync protocol untuk resolve LID → PN secara on-demand. Ini yang paling reliable, tapi **bergantung pada server response**.
 
-### Pertanyaan 2: Duplicate constraint — known bug?
-
-**Ya, ini known bug yang sekarang sudah difix.** Lihat jawaban Bug 2 di atas. Kamu tidak akan dapat error ini lagi.
-
----
-
-### Pertanyaan 3: `phone_number` di webhook payload
-
-**SUDAH DITAMBAHKAN.**
-
-Sebelumnya webhook payload cuma kirim `from` (raw JID). Sekarang payload diperkaya dengan field tambahan:
-
-| Field | Contoh | Keterangan |
-|---|---|---|
-| `from` | `628xxx@s.whatsapp.net` | Raw JID (tetap ada, backwards compatible) |
-| `chat_jid` | `628xxx@s.whatsapp.net` | Sama dengan `from` |
-| `sender_jid` | `628xxx@s.whatsapp.net` | Pengirim (untuk grup, ini member yang kirim) |
-| `phone_number` | `628123456789` | **BARU** — nomor telepon yang extracted dari JID |
-| `direction` | `INCOMING` / `OUTGOING` | **BARU** — arah pesan |
-
-**Untuk kontak LID (`xxx@lid`):**
-- `phone_number` akan bernilai **`null`** karena LID tidak mengandung nomor telepon
-- `from` dan `chat_jid` tetap berisi JID asli (`xxx@lid`)
-- CRM kamu perlu handle case `phone_number === null` — bisa fallback pakai `from` sebagai identifier
-
-**Yang perlu kamu lakukan:**
-1. Update CRM untuk pakai field `phone_number` (bukan extract manual dari `from`)
-2. Tambah handling untuk kasus `phone_number` null (kontak LID)
-3. Pakai field `direction` untuk bedakan incoming vs outgoing
+### 5. Message Envelope
+Saat menerima/mengirim pesan, envelope kadang mengandung `senderAlt` yang bisa dipakai untuk mapping.
 
 ---
 
-## Ringkasan: Apa yang Harus Kamu Lakukan
+## Apakah API Kita Bisa Resolve Ini?
 
-| # | Action | Prioritas |
-|---|--------|-----------|
-| 1 | **Tidak perlu apa-apa** — duplicate error sudah hilang otomatis | ✅ Otomatis |
-| 2 | **Tidak perlu apa-apa** — field `message`/`text` keduanya diterima | ✅ Otomatis |
-| 3 | Subscribe webhook ke event `message.sent` kalau belum | ⚠️ Perlu update |
-| 4 | Update CRM pakai field `phone_number` dari webhook payload | ⚠️ Perlu update |
-| 5 | Handle `phone_number: null` untuk kontak LID | ⚠️ Perlu update |
-| 6 | (Optional) Handle message type baru yang lebih spesifik di UI | 💡 Opsional |
+### Status Saat Ini
+Kode kita saat ini di `extractPhoneFromJid()`:
+```typescript
+if (jid.includes('@lid') || jid.startsWith('LID:')) return null;
+```
+→ **Langsung return null untuk @lid JID.** Jadi kontak yang JID-nya @lid akan tersimpan dengan `phone_number: null`.
 
-Semua fix sudah di-deploy. Kalau ada pertanyaan lain, kabarin aja.
+### Kenapa Belum Di-implement?
+1. **Mapping tidak selalu tersedia** — WhatsApp tidak menjamin semua LID bisa di-resolve
+2. **Timing issue** — mapping baru datang setelah kontak sudah tersimpan
+3. **Baileys store session-based** — mapping hilang kalau session di-reset
+4. **Tidak ada public API endpoint** di WhatsApp untuk query "kasih nomor telepon dari LID ini"
+
+### Apa yang Bisa Dilakukan?
+
+**Opsi A: Listen event `lid-mapping.update`**
+Baileys v6.6 emit event ini setiap kali ada mapping baru. Kita bisa listen dan update kontak di database:
+```typescript
+sock.ev.on('lid-mapping.update', async ({ lid, pn }) => {
+  // Update semua kontak yang punya jid = lid
+  await prisma.contact.updateMany({
+    where: { jid: lid },
+    data: { phone_number: extractPhoneFromJid(pn) }
+  });
+});
+```
+
+**Opsi B: Gunakan `store.lidMapping.getPNForLID()`**
+Di Baileys internal, bisa query mapping yang sudah ter-cache:
+```typescript
+const pn = await signalRepository.lidMapping.getPNForLID('37224598995033@lid');
+// Returns: '628123456789@s.whatsapp.net' atau null kalau belum ada mapping
+```
+
+**Opsi C: Lookup via conversation data**
+Pada history sync, setiap conversation punya field `pnJid` dan `lidJid`. Kita bisa cross-reference dari sini.
 
 ---
 
-## UPDATE 2: History Sync Urutan "Random" (11 Feb 2026)
+## Kesimpulan
 
-### Pertanyaan: Kenapa data sync bukan dari yang terbaru?
+| Aspek | Status |
+|-------|--------|
+| Bisa extract phone dari `@lid` string? | ❌ **Tidak** — ini bukan encoding, tapi ID acak |
+| Bisa mapping LID → Phone via Baileys? | ✅ **Bisa** — via `LIDMappingStore` |
+| Mapping selalu tersedia? | ⚠️ **Tidak dijamin** — tergantung data yang dikirim WA server |
+| Ada public API WhatsApp untuk ini? | ❌ **Tidak ada** |
+| Bisa di-implement di project kita? | ✅ **Bisa** — perlu tambah event listener + DB update logic |
+| Apakah semua @lid bisa di-resolve? | ⚠️ **Tidak semua** — ada kontak yang WA memang tidak kirim mapping-nya |
 
-**Penjelasan:**
+### Rekomendasi
+Kalau mau implement, pendekatan terbaik adalah:
+1. **Listen `lid-mapping.update` event** dari Baileys
+2. **Simpan mapping di database** (tabel baru `lid_phone_mapping`)
+3. **Backfill** kontak yang sudah ada saat mapping baru datang
+4. **Accept** bahwa beberapa LID mungkin tidak pernah bisa di-resolve — ini limitasi WhatsApp, bukan bug
 
-Ini **bukan bug**, tapi behavior dari WhatsApp sendiri. WhatsApp mengirim history sync dalam batch **per-chat** (per kontak/grup), BUKAN berurutan berdasarkan waktu. Contoh:
-- Batch 1: 200 pesan dari Kontak A (campuran pesan lama & baru)
-- Batch 2: 150 pesan dari Grup B 
-- Batch 3: 50 pesan dari Kontak C
-- dst...
+---
 
-Jadi memang datanya "acak" karena WhatsApp yang menentukan urutan pengiriman batch-nya.
-
-**TAPI, ada yang sudah saya fix:**
-
-Sebelumnya, API `GET /api/v1/messages` mengurutkan berdasarkan `created_at` (waktu insert ke DB) — artinya pesan yang *di-sync duluan* muncul di atas, padahal belum tentu itu pesan terbaru.
-
-**Sekarang sudah difix:**
-- API mengurutkan berdasarkan `sent_at` (timestamp asli dari WhatsApp) — jadi pesan terbaru **pasti** muncul di atas
-- Time range filter (`since`/`until`) juga pakai `sent_at`
-- Ditambahkan DB index pada `sent_at` untuk performa query
-
-**Yang perlu kamu lakukan:**
-- **Tidak ada.** API output sudah otomatis terurut berdasarkan waktu asli pesan.
-- Kalau CRM kamu sorting sendiri, pastikan pakai field `sent_at` (bukan `created_at`).
+*Referensi: Baileys v6.6 source code — `src/Signal/lid-mapping.ts`, `src/Utils/history.ts`, `src/Utils/sync-action-utils.ts`*

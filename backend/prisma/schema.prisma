@@ -820,7 +820,30 @@ model Tag {
 }
 
 // ============================================
-// 22. CONTACT TAGS - Many-to-many relation
+// 22. LID PHONE MAPPING - Maps @lid JIDs to real phone numbers
+// ============================================
+model LidPhoneMapping {
+  id                String   @id @default(uuid()) @db.Char(36)
+  instance_id       String   @db.Char(36)
+  
+  lid_jid           String   @db.VarChar(255)  // e.g. 37224598995033@lid
+  phone_jid         String   @db.VarChar(255)  // e.g. 628123456789@s.whatsapp.net
+  phone_number      String   @db.VarChar(50)   // e.g. 628123456789
+  
+  source            String   @db.VarChar(50)   // lid-mapping.update, history-sync, manual
+  
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+  
+  @@unique([instance_id, lid_jid])
+  @@index([instance_id])
+  @@index([lid_jid])
+  @@index([phone_number])
+  @@map("lid_phone_mappings")
+}
+
+// ============================================
+// 23. CONTACT TAGS - Many-to-many relation
 // ============================================
 model ContactTag {
   id                String   @id @default(uuid()) @db.Char(36)

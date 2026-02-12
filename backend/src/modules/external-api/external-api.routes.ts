@@ -17,6 +17,7 @@ import { listContactsQuerySchema, createContactSchema, updateContactSchema, cont
 import { createWebhookService } from '../webhooks/webhooks.service';
 import { getStorageStats } from '../../workers/media-cleanup.worker';
 import { parsePagination } from '../../utils/pagination';
+import { batchResolveLidToPhone } from '../whatsapp/baileys.service';
 import prisma from '../../config/database';
 import logger from '../../config/logger';
 
@@ -847,6 +848,25 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     });
     const contactMap = new Map(contacts.map(c => [`${c.jid}__${c.instance_id}`, c]));
 
+    // Batch-resolve LID JIDs to phone numbers from mapping table
+    const lidJids = paginatedConversations.filter(c => c.is_lid).map(c => c.chat_jid);
+    // Group by instance_id for batch lookup
+    const lidByInstance = new Map<string, string[]>();
+    for (const conv of paginatedConversations) {
+      if (conv.is_lid) {
+        const list = lidByInstance.get(conv.instance_id) || [];
+        list.push(conv.chat_jid);
+        lidByInstance.set(conv.instance_id, list);
+      }
+    }
+    const lidPhoneMap = new Map<string, string>(); // key: "instanceId__lidJid", value: phone_number
+    for (const [instId, lids] of lidByInstance) {
+      const resolved = await batchResolveLidToPhone(instId, lids);
+      for (const [lid, phone] of resolved) {
+        lidPhoneMap.set(`${instId}__${lid}`, phone);
+      }
+    }
+
     // Enrich with last message and contact info
     const enrichedConversations = await Promise.all(
       paginatedConversations.map(async (conv) => {
@@ -885,8 +905,12 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
           phoneNumber = conv.chat_jid.replace('@s.whatsapp.net', '');
         } else if (conv.chat_jid.endsWith('@g.us')) {
           phoneNumber = conv.chat_jid.replace('@g.us', '');
+        } else if (conv.is_lid) {
+          // Try to resolve @lid to phone number from mapping table
+          const resolvedPhone = lidPhoneMap.get(`${conv.instance_id}__${conv.chat_jid}`);
+          phoneNumber = resolvedPhone || '';
         }
-        // @lid has no phone number — leave it empty
+        // @lid with no mapping — leave it empty
 
         // Look up contact from batch-fetched map
         const contact = contactMap.get(`${conv.chat_jid}__${conv.instance_id}`) || null;
@@ -897,6 +921,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
           phone_number: phoneNumber,
           is_group: conv.is_group,
           is_lid: conv.is_lid,
+          lid_resolved: conv.is_lid && phoneNumber !== '', // true if @lid was resolved to phone
           is_self: conv.is_self,
           contact_name: contact?.name || null,
           contact_id: contact?.id || null,
@@ -917,6 +942,141 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
         limit,
         total,
         total_pages: Math.ceil(total / limit),
+      },
+    });
+  });
+
+  // ============================================
+  // LID MAPPING ENDPOINTS (via API Key)
+  // ============================================
+
+  /**
+   * List LID → Phone mappings for an instance
+   * GET /api/v1/lid-mappings
+   */
+  fastify.get('/lid-mappings', {
+    preHandler: [requireApiKeyPermission('contact:read')],
+    schema: {
+      description: 'List all LID → Phone Number mappings for your instances. Useful for resolving @lid JIDs to real phone numbers.',
+      tags: ['External API - LID Mappings'],
+      security: [{ apiKeyAuth: [] }],
+      querystring: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'Filter by instance ID' },
+          lid_jid: { type: 'string', description: 'Filter by specific LID JID' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const query = request.query as { instance_id?: string; lid_jid?: string };
+
+    // Get all instance IDs for this organization
+    const instances = await prisma.whatsAppInstance.findMany({
+      where: {
+        organization_id: req.apiKey.organization_id,
+        deleted_at: null,
+        ...(query.instance_id ? { id: query.instance_id } : {}),
+      },
+      select: { id: true },
+    });
+    const instanceIds = instances.map(i => i.id);
+
+    if (instanceIds.length === 0) {
+      return reply.send({ success: true, data: [], meta: { total: 0 } });
+    }
+
+    const where: any = {
+      instance_id: { in: instanceIds },
+    };
+    if (query.lid_jid) {
+      where.lid_jid = query.lid_jid;
+    }
+
+    const mappings = await prisma.lidPhoneMapping.findMany({
+      where,
+      orderBy: { created_at: 'desc' },
+    });
+
+    return reply.send({
+      success: true,
+      data: mappings.map(m => ({
+        lid_jid: m.lid_jid,
+        phone_jid: m.phone_jid,
+        phone_number: m.phone_number,
+        instance_id: m.instance_id,
+        source: m.source,
+        created_at: m.created_at,
+        updated_at: m.updated_at,
+      })),
+      meta: { total: mappings.length },
+    });
+  });
+
+  /**
+   * Resolve a single LID JID to phone number
+   * GET /api/v1/lid-mappings/resolve/:lid_jid
+   */
+  fastify.get('/lid-mappings/resolve/:lid_jid', {
+    preHandler: [requireApiKeyPermission('contact:read')],
+    schema: {
+      description: 'Resolve a single @lid JID to a real phone number.',
+      tags: ['External API - LID Mappings'],
+      security: [{ apiKeyAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['lid_jid'],
+        properties: {
+          lid_jid: { type: 'string', description: 'The LID JID to resolve (e.g., 37224598995033@lid)' },
+        },
+      },
+      querystring: {
+        type: 'object',
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'Instance ID (optional, searches all if omitted)' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const { lid_jid } = request.params as { lid_jid: string };
+    const query = request.query as { instance_id?: string };
+
+    // Get applicable instance IDs
+    const instances = await prisma.whatsAppInstance.findMany({
+      where: {
+        organization_id: req.apiKey.organization_id,
+        deleted_at: null,
+        ...(query.instance_id ? { id: query.instance_id } : {}),
+      },
+      select: { id: true },
+    });
+    const instanceIds = instances.map(i => i.id);
+
+    const mapping = await prisma.lidPhoneMapping.findFirst({
+      where: {
+        instance_id: { in: instanceIds },
+        lid_jid: lid_jid,
+      },
+    });
+
+    if (!mapping) {
+      return reply.status(404).send({
+        success: false,
+        error: 'LID mapping not found. This LID has not been resolved to a phone number yet.',
+      });
+    }
+
+    return reply.send({
+      success: true,
+      data: {
+        lid_jid: mapping.lid_jid,
+        phone_jid: mapping.phone_jid,
+        phone_number: mapping.phone_number,
+        instance_id: mapping.instance_id,
+        source: mapping.source,
+        resolved_at: mapping.created_at,
       },
     });
   });

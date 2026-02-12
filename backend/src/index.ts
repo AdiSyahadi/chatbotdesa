@@ -285,6 +285,40 @@ async function start() {
       }
     });
 
+    // LID → Phone mapping resolved (for CRM real-time updates)
+    baileysEvents.on('lid.mapping.resolved', async (event: {
+      instanceId: string;
+      lid_jid: string;
+      phone_jid: string;
+      phone_number: string;
+      contacts_updated: number;
+    }) => {
+      try {
+        console.log(`🔗 [WEBHOOK] LID mapping resolved: ${event.lid_jid} → ${event.phone_number}`);
+
+        const instance = await prisma.whatsAppInstance.findUnique({
+          where: { id: event.instanceId },
+          select: { organization_id: true },
+        });
+        if (!instance) return;
+
+        await webhookService.queueWebhook({
+          instance_id: event.instanceId,
+          organization_id: instance.organization_id,
+          event_type: 'lid.mapping.resolved' as any,
+          payload: {
+            lid_jid: event.lid_jid,
+            phone_jid: event.phone_jid,
+            phone_number: event.phone_number,
+            contacts_updated: event.contacts_updated,
+          },
+          idempotency_key: `lid_${event.instanceId}_${event.lid_jid}`,
+        });
+      } catch (error) {
+        console.error('Error forwarding LID mapping event to webhook:', error);
+      }
+    });
+
     console.log('🔗 Webhook event listeners initialized');
   } catch (error) {
     fastify.log.error(error);

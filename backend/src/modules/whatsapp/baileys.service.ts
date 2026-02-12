@@ -755,6 +755,14 @@ export async function initializeConnection(
         }
       }
 
+      // Handle LID → Phone Number mapping updates (Baileys v6.6+)
+      if (eventName === 'lid-mapping.update' && data) {
+        console.log(`🔗 [LID-MAP] lid-mapping.update: lid=${data.lid}, pn=${data.pn}`);
+        handleLidMappingUpdate(instanceId, organizationId, data).catch((err: any) => {
+          console.error(`❌ [LID-MAP] Error handling LID mapping:`, err);
+        });
+      }
+
       return originalEmit(event as any, data);
     };
 
@@ -1508,12 +1516,50 @@ async function handleHistorySync(
 
     // 5. Process contacts
     let contactsSynced = 0;
+    let lidMappingsFound = 0;
     for (const contact of contacts) {
       try {
         if (!contact.id) continue;
         const contactJid = contact.id;
         const phoneNumber = extractPhoneFromJid(contactJid);
         const isGroup = contactJid.endsWith('@g.us');
+
+        // Capture LID ↔ Phone mappings from contact data
+        // Baileys contacts may have: { id: '628xxx@s.whatsapp.net', lid: '37224xxx@lid', phoneNumber: '628xxx@s.whatsapp.net' }
+        const contactLid = (contact as any).lid as string | undefined;
+        const contactPhoneNumber = (contact as any).phoneNumber as string | undefined;
+
+        // Case 1: Contact has PN as id + LID in .lid field
+        if (contactLid && contactLid.endsWith('@lid') && contactJid.endsWith('@s.whatsapp.net')) {
+          const pnClean = contactJid.replace('@s.whatsapp.net', '');
+          await prisma.lidPhoneMapping.upsert({
+            where: { instance_id_lid_jid: { instance_id: instanceId, lid_jid: contactLid } },
+            create: { instance_id: instanceId, lid_jid: contactLid, phone_jid: contactJid, phone_number: pnClean, source: 'history-sync' },
+            update: { phone_jid: contactJid, phone_number: pnClean },
+          }).catch(() => {}); // Silently skip errors
+          lidMappingsFound++;
+        }
+
+        // Case 2: Contact has LID as id + phoneNumber field
+        if (contactJid.endsWith('@lid') && contactPhoneNumber && contactPhoneNumber.endsWith('@s.whatsapp.net')) {
+          const pnClean = contactPhoneNumber.replace('@s.whatsapp.net', '');
+          await prisma.lidPhoneMapping.upsert({
+            where: { instance_id_lid_jid: { instance_id: instanceId, lid_jid: contactJid } },
+            create: { instance_id: instanceId, lid_jid: contactJid, phone_jid: contactPhoneNumber, phone_number: pnClean, source: 'history-sync' },
+            update: { phone_jid: contactPhoneNumber, phone_number: pnClean },
+          }).catch(() => {});
+          // Also backfill the contact phone_number
+          lidMappingsFound++;
+        }
+
+        // Resolve phone_number for @lid contacts using mapping
+        let resolvedPhone = phoneNumber;
+        if (!resolvedPhone && contactJid.endsWith('@lid')) {
+          // Try to look up from mapping we just saved or existing
+          if (contactPhoneNumber?.endsWith('@s.whatsapp.net')) {
+            resolvedPhone = contactPhoneNumber.replace('@s.whatsapp.net', '');
+          }
+        }
 
         await prisma.contact.upsert({
           where: {
@@ -1526,7 +1572,7 @@ async function handleHistorySync(
             organization_id: organizationId,
             instance_id: instanceId,
             jid: contactJid,
-            phone_number: isGroup ? null : phoneNumber,
+            phone_number: isGroup ? null : (resolvedPhone || phoneNumber),
             name: contact.name || null,
             push_name: contact.notify || null,
             is_group: isGroup,
@@ -1534,12 +1580,18 @@ async function handleHistorySync(
           update: {
             push_name: contact.notify || undefined,
             name: contact.name || undefined,
+            // Update phone_number if was null and we now have it
+            ...(resolvedPhone ? { phone_number: resolvedPhone } : {}),
           },
         });
         contactsSynced++;
       } catch (err) {
         logger.error({ err, contactId: contact.id, instanceId }, '⚠️ [SYNC] Contact upsert error');
       }
+    }
+
+    if (lidMappingsFound > 0) {
+      console.log(`🔗 [SYNC] Found ${lidMappingsFound} LID→Phone mapping(s) from history sync contacts`);
     }
 
     // 6. Update progress
@@ -1789,6 +1841,133 @@ async function handleAppendHistoryMessages(
   } catch (error) {
     logger.error({ error, instanceId }, '❌ [HISTORY] Error handling append messages');
   }
+}
+
+// ============================================
+// LID → PHONE MAPPING HANDLER
+// ============================================
+
+/**
+ * Handle LID → Phone Number mapping event from Baileys.
+ * Stores the mapping in DB and backfills existing contacts that have this LID JID.
+ * Also emits a webhook event so external CRMs can react immediately.
+ */
+async function handleLidMappingUpdate(
+  instanceId: string,
+  organizationId: string,
+  mapping: { lid: string; pn: string }
+): Promise<void> {
+  try {
+    const { lid, pn } = mapping;
+    if (!lid || !pn) return;
+
+    // Extract clean phone number from PN JID (e.g. 628123456789@s.whatsapp.net → 628123456789)
+    const phoneNumber = pn.replace('@s.whatsapp.net', '').replace(/@.*$/, '');
+    if (!phoneNumber) return;
+
+    console.log(`🔗 [LID-MAP] Storing mapping: ${lid} → ${pn} (phone: ${phoneNumber})`);
+
+    // 1. Upsert into lid_phone_mappings table
+    await prisma.lidPhoneMapping.upsert({
+      where: {
+        instance_id_lid_jid: {
+          instance_id: instanceId,
+          lid_jid: lid,
+        },
+      },
+      create: {
+        instance_id: instanceId,
+        lid_jid: lid,
+        phone_jid: pn,
+        phone_number: phoneNumber,
+        source: 'lid-mapping.update',
+      },
+      update: {
+        phone_jid: pn,
+        phone_number: phoneNumber,
+        source: 'lid-mapping.update',
+      },
+    });
+
+    // 2. Backfill: update Contact records that have this LID as their JID
+    const updated = await prisma.contact.updateMany({
+      where: {
+        instance_id: instanceId,
+        jid: lid,
+        phone_number: null, // Only update if phone is not already set
+      },
+      data: {
+        phone_number: phoneNumber,
+      },
+    });
+
+    if (updated.count > 0) {
+      console.log(`🔗 [LID-MAP] Backfilled ${updated.count} contact(s) with phone ${phoneNumber} for LID ${lid}`);
+    }
+
+    // 3. Emit webhook event so CRM can update in real-time
+    baileysEvents.emit('lid.mapping.resolved', {
+      instanceId,
+      lid_jid: lid,
+      phone_jid: pn,
+      phone_number: phoneNumber,
+      contacts_updated: updated.count,
+    });
+
+    logger.info({ instanceId, lid, pn, phoneNumber, contactsUpdated: updated.count }, '🔗 LID mapping resolved and stored');
+  } catch (error) {
+    logger.error({ error, instanceId, mapping }, '❌ Error handling LID mapping update');
+  }
+}
+
+/**
+ * Resolve LID JID to phone number using stored mappings.
+ * Returns the phone number if found, null otherwise.
+ */
+export async function resolveLidToPhone(
+  instanceId: string,
+  lidJid: string
+): Promise<string | null> {
+  try {
+    const mapping = await prisma.lidPhoneMapping.findUnique({
+      where: {
+        instance_id_lid_jid: {
+          instance_id: instanceId,
+          lid_jid: lidJid,
+        },
+      },
+    });
+    return mapping?.phone_number ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Batch resolve multiple LID JIDs to phone numbers.
+ * Returns a Map<lid_jid, phone_number>.
+ */
+export async function batchResolveLidToPhone(
+  instanceId: string,
+  lidJids: string[]
+): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  if (lidJids.length === 0) return result;
+
+  try {
+    const mappings = await prisma.lidPhoneMapping.findMany({
+      where: {
+        instance_id: instanceId,
+        lid_jid: { in: lidJids },
+      },
+    });
+    for (const m of mappings) {
+      result.set(m.lid_jid, m.phone_number);
+    }
+  } catch (error) {
+    logger.error({ error, instanceId }, 'Error batch resolving LID mappings');
+  }
+  return result;
 }
 
 /**
