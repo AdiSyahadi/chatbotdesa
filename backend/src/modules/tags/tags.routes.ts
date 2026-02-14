@@ -23,59 +23,7 @@ import {
   BulkTagOperationInput,
   MergeTagsInput,
 } from './tags.schema';
-import logger from '../../config/logger';
-
-// ============================================
-// ERROR HANDLING
-// ============================================
-
-const errorCodeMap: Record<string, { statusCode: number; code: string; message: string }> = {
-  TAG_NOT_FOUND: {
-    statusCode: 404,
-    code: 'TAG_001',
-    message: 'Tag not found',
-  },
-  TAG_EXISTS: {
-    statusCode: 409,
-    code: 'TAG_002',
-    message: 'Tag with this name already exists',
-  },
-};
-
-function handleError(error: unknown, reply: FastifyReply) {
-  if (error instanceof Error) {
-    // Check for specific error messages
-    if (error.message.includes('already exists')) {
-      return reply.status(409).send({
-        success: false,
-        error: {
-          code: 'TAG_002',
-          message: error.message,
-        },
-      });
-    }
-
-    const mappedError = errorCodeMap[error.message];
-    if (mappedError) {
-      return reply.status(mappedError.statusCode).send({
-        success: false,
-        error: {
-          code: mappedError.code,
-          message: mappedError.message,
-        },
-      });
-    }
-  }
-
-  logger.error({ err: error }, 'Tags module error');
-  return reply.status(500).send({
-    success: false,
-    error: {
-      code: 'INTERNAL_ERROR',
-      message: 'An unexpected error occurred',
-    },
-  });
-}
+import { AppError } from '../../types';
 
 // ============================================
 // ROUTES REGISTRATION
@@ -137,7 +85,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
         data: tag,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -184,7 +132,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
         pagination: result.pagination,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -218,7 +166,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
         data: tags,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -252,7 +200,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
         data: stats,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -322,7 +270,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
         data: result,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -366,7 +314,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
         data: result,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -404,13 +352,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
       const tag = await tagService.getTag(user.organizationId, id);
 
       if (!tag) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TAG_001',
-            message: 'Tag not found',
-          },
-        });
+        throw new AppError('Tag not found', 404, 'TAG_001');
       }
 
       return reply.send({
@@ -418,7 +360,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
         data: tag,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -465,13 +407,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
       const tag = await tagService.updateTag(user.organizationId, id, input);
 
       if (!tag) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TAG_001',
-            message: 'Tag not found',
-          },
-        });
+        throw new AppError('Tag not found', 404, 'TAG_001');
       }
 
       return reply.send({
@@ -479,7 +415,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
         data: tag,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -517,13 +453,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
       const deleted = await tagService.deleteTag(user.organizationId, id);
 
       if (!deleted) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TAG_001',
-            message: 'Tag not found',
-          },
-        });
+        throw new AppError('Tag not found', 404, 'TAG_001');
       }
 
       return reply.send({
@@ -531,7 +461,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
         message: 'Tag deleted successfully',
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -581,7 +511,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
         data: result,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -631,7 +561,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
         data: result,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -688,7 +618,7 @@ export async function tagsRoutes(fastify: FastifyInstance) {
         pagination: result.pagination,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 }

@@ -6,6 +6,7 @@
 import { Prisma } from '@prisma/client';
 import prisma from '../../config/database';
 import logger from '../../config/logger';
+import { AppError } from '../../types';
 import {
   CreateTemplateInput,
   UpdateTemplateInput,
@@ -44,7 +45,7 @@ class TemplateService {
     });
 
     if (existingTemplate) {
-      throw new Error(`Template with name "${input.name}" already exists`);
+      throw new AppError(`Template with name "${input.name}" already exists`, 409, 'TEMPLATE_002');
     }
 
     const template = await prisma.messageTemplate.create({
@@ -178,7 +179,7 @@ class TemplateService {
       });
 
       if (duplicateName) {
-        throw new Error(`Template with name "${input.name}" already exists`);
+        throw new AppError(`Template with name "${input.name}" already exists`, 409, 'TEMPLATE_002');
       }
     }
 
@@ -400,7 +401,7 @@ class TemplateService {
         : `${existing.name} (Copy ${counter})`;
 
       if (counter > 100) {
-        throw new Error('Unable to generate unique template name');
+        throw new AppError('Unable to generate unique template name', 500, 'TEMPLATE_003');
       }
     }
 

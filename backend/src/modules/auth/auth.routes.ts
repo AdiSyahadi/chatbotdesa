@@ -16,6 +16,25 @@ import '../../types'; // Import untuk Fastify type augmentation
 // AUTH ROUTES - Clean & Organized
 // ============================================
 
+// Strict rate limits for auth endpoints (brute-force protection)
+const authRateLimit = {
+  config: {
+    rateLimit: { max: 5, timeWindow: '1m' }, // 5 attempts per minute per IP
+  },
+};
+
+const registerRateLimit = {
+  config: {
+    rateLimit: { max: 3, timeWindow: '1m' }, // 3 registrations per minute per IP
+  },
+};
+
+const passwordResetRateLimit = {
+  config: {
+    rateLimit: { max: 3, timeWindow: '5m' }, // 3 attempts per 5 minutes per IP
+  },
+};
+
 export default async function authRoutes(fastify: FastifyInstance) {
   const authService = new AuthService(fastify);
 
@@ -28,6 +47,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
    * POST /api/auth/register
    */
   fastify.post('/register', {
+    ...registerRateLimit,
     schema: {
       description: 'Register new organization with owner user',
       tags: ['Auth'],
@@ -54,6 +74,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
    * POST /api/auth/login
    */
   fastify.post('/login', {
+    ...authRateLimit,
     schema: {
       description: 'Login and get access token',
       tags: ['Auth'],
@@ -99,6 +120,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
    * POST /api/auth/forgot-password
    */
   fastify.post('/forgot-password', {
+    ...passwordResetRateLimit,
     schema: {
       description: 'Request password reset email',
       tags: ['Auth'],
@@ -121,6 +143,7 @@ export default async function authRoutes(fastify: FastifyInstance) {
    * POST /api/auth/reset-password
    */
   fastify.post('/reset-password', {
+    ...passwordResetRateLimit,
     schema: {
       description: 'Reset password using token from email',
       tags: ['Auth'],

@@ -25,51 +25,10 @@ export default prisma;
 
 if (config.app.env !== 'production') globalThis.prisma = prisma;
 
-// Middleware untuk multi-tenant isolation
-// Automatically inject organization_id filter untuk semua query
-prisma.$use(async (params, next) => {
-  // Get organization_id from context (will be set by auth middleware)
-  const organizationId = (params as any).organizationId;
-
-  if (!organizationId) {
-    return next(params);
-  }
-
-  // Models yang perlu organization_id filtering
-  const modelsWithOrgId = [
-    'User',
-    'WhatsAppInstance',
-    'Message',
-    'Contact',
-    'Webhook',
-    'WebhookLog',
-    'ApiKey',
-    'Subscription',
-    'Invoice',
-    'UsageLog',
-    'AuditLog',
-  ];
-
-  if (modelsWithOrgId.includes(params.model || '')) {
-    // Add organization_id to where clause
-    if (params.action === 'findMany' || params.action === 'findFirst') {
-      params.args = params.args || {};
-      params.args.where = params.args.where || {};
-      params.args.where.organization_id = organizationId;
-    }
-
-    // Add organization_id to create/update data
-    if (params.action === 'create' || params.action === 'update') {
-      params.args = params.args || {};
-      params.args.data = params.args.data || {};
-      if (params.action === 'create') {
-        params.args.data.organization_id = organizationId;
-      }
-    }
-  }
-
-  return next(params);
-});
+// NOTE: Multi-tenant isolation is enforced at the service/route layer
+// by explicitly filtering on organization_id from the JWT payload.
+// A Prisma $use middleware was previously here but removed because
+// params.organizationId was never set — it was dead code.
 
 // Graceful shutdown
 process.on('beforeExit', async () => {

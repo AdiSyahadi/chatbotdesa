@@ -19,59 +19,7 @@ import {
   TEMPLATE_CATEGORIES,
   MESSAGE_TYPES,
 } from './templates.schema';
-import logger from '../../config/logger';
-
-// ============================================
-// ERROR HANDLING
-// ============================================
-
-const errorCodeMap: Record<string, { statusCode: number; code: string; message: string }> = {
-  TEMPLATE_NOT_FOUND: {
-    statusCode: 404,
-    code: 'TEMPLATE_001',
-    message: 'Template not found',
-  },
-  TEMPLATE_EXISTS: {
-    statusCode: 409,
-    code: 'TEMPLATE_002',
-    message: 'Template with this name already exists',
-  },
-};
-
-function handleError(error: unknown, reply: FastifyReply) {
-  if (error instanceof Error) {
-    // Check for specific error messages
-    if (error.message.includes('already exists')) {
-      return reply.status(409).send({
-        success: false,
-        error: {
-          code: 'TEMPLATE_002',
-          message: error.message,
-        },
-      });
-    }
-
-    const mappedError = errorCodeMap[error.message];
-    if (mappedError) {
-      return reply.status(mappedError.statusCode).send({
-        success: false,
-        error: {
-          code: mappedError.code,
-          message: mappedError.message,
-        },
-      });
-    }
-  }
-
-  logger.error({ err: error }, 'Templates module error');
-  return reply.status(500).send({
-    success: false,
-    error: {
-      code: 'INTERNAL_ERROR',
-      message: 'An unexpected error occurred',
-    },
-  });
-}
+import { AppError } from '../../types';
 
 // ============================================
 // ROUTES REGISTRATION
@@ -136,7 +84,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
         data: template,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -186,7 +134,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
         pagination: result.pagination,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -220,7 +168,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
         data: stats,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -284,13 +232,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
       const template = await templateService.getTemplate(user.organizationId, id);
 
       if (!template) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TEMPLATE_001',
-            message: 'Template not found',
-          },
-        });
+        throw new AppError('Template not found', 404, 'TEMPLATE_001');
       }
 
       return reply.send({
@@ -298,7 +240,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
         data: template,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -349,13 +291,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
       const template = await templateService.updateTemplate(user.organizationId, id, input);
 
       if (!template) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TEMPLATE_001',
-            message: 'Template not found',
-          },
-        });
+        throw new AppError('Template not found', 404, 'TEMPLATE_001');
       }
 
       return reply.send({
@@ -363,7 +299,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
         data: template,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -401,13 +337,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
       const deleted = await templateService.deleteTemplate(user.organizationId, id);
 
       if (!deleted) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TEMPLATE_001',
-            message: 'Template not found',
-          },
-        });
+        throw new AppError('Template not found', 404, 'TEMPLATE_001');
       }
 
       return reply.send({
@@ -415,7 +345,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
         message: 'Template deleted successfully',
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -468,13 +398,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
       );
 
       if (!preview) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TEMPLATE_001',
-            message: 'Template not found',
-          },
-        });
+        throw new AppError('Template not found', 404, 'TEMPLATE_001');
       }
 
       return reply.send({
@@ -482,7 +406,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
         data: preview,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -527,13 +451,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
       const clone = await templateService.cloneTemplate(user.organizationId, id, body.name);
 
       if (!clone) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TEMPLATE_001',
-            message: 'Template not found',
-          },
-        });
+        throw new AppError('Template not found', 404, 'TEMPLATE_001');
       }
 
       return reply.status(201).send({
@@ -541,7 +459,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
         data: clone,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -583,7 +501,7 @@ export async function templatesRoutes(fastify: FastifyInstance) {
         data: templates,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 }

@@ -63,19 +63,19 @@ export async function shutdownWorkers(): Promise<void> {
 
 // If run directly (standalone worker process)
 if (require.main === module) {
-  console.log('Starting workers in standalone mode...');
+  logger.info('Starting workers in standalone mode...');
   
-  initializeWorkers().catch(err => console.error('Worker init failed:', err));
+  initializeWorkers().catch(err => logger.error({ err }, 'Worker init failed'));
 
   // Graceful shutdown
   process.on('SIGINT', async () => {
-    console.log('Received SIGINT, shutting down...');
+    logger.info('Received SIGINT, shutting down...');
     await shutdownWorkers();
     process.exit(0);
   });
 
   process.on('SIGTERM', async () => {
-    console.log('Received SIGTERM, shutting down...');
+    logger.info('Received SIGTERM, shutting down...');
     await shutdownWorkers();
     process.exit(0);
   });

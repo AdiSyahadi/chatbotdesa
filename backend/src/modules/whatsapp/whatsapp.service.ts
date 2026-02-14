@@ -1,7 +1,10 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../../config/database';
 import { AppError } from '../../types';
-import { InstanceStatus, WarmingPhase } from '@prisma/client';
+import { InstanceStatus, WarmingPhase, Prisma } from '@prisma/client';
+import pino from 'pino';
+
+const logger = pino({ level: process.env.LOG_LEVEL || 'info' });
 import {
   CreateInstanceInput,
   UpdateInstanceInput,
@@ -29,6 +32,35 @@ import {
 } from './baileys.service';
 import { deleteSession, sessionExists, getSessionInfo } from './session.service';
 import { v4 as uuidv4 } from 'uuid';
+
+/**
+ * Race-safe message upsert: Prisma upsert does SELECT then INSERT/UPDATE,
+ * so two concurrent upserts for the same key can both SELECT "not found"
+ * and then both try INSERT, causing P2002 unique constraint violation.
+ * This wrapper catches P2002 and retries as a plain update.
+ */
+async function safeMessageUpsert(args: Prisma.MessageUpsertArgs): Promise<void> {
+  try {
+    await prisma.message.upsert(args);
+  } catch (err: any) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      // Race condition: the other concurrent operation already inserted.
+      // Retry as update only.
+      logger.debug({ where: args.where }, '🔄 [MSG] Upsert race detected (P2002), retrying as update');
+      try {
+        await prisma.message.update({
+          where: args.where,
+          data: args.update,
+        });
+      } catch (updateErr: any) {
+        // If update also fails (e.g. record deleted between), log and move on
+        logger.warn({ where: args.where, err: updateErr.message }, '⚠️ [MSG] Update after P2002 also failed');
+      }
+    } else {
+      throw err; // Re-throw non-P2002 errors
+    }
+  }
+}
 
 // ============================================
 // WHATSAPP SERVICE
@@ -541,10 +573,10 @@ export class WhatsAppService {
     const chatJid = data.to.includes('@') ? data.to : `${data.to}@s.whatsapp.net`;
     const now = new Date();
 
-    // Save outgoing message to database using upsert to handle race condition
-    // with Baileys messages.upsert event (which may fire for the same outgoing message)
+    // Save outgoing message to database using race-safe upsert to handle
+    // concurrent Baileys messages.upsert event (which may fire for the same outgoing message)
     if (result.message_id) {
-      await prisma.message.upsert({
+      await safeMessageUpsert({
         where: {
           unique_wa_message_per_instance: {
             wa_message_id: result.message_id,
@@ -639,9 +671,9 @@ export class WhatsAppService {
     const mediaType = data.media_type.toUpperCase() as any;
     const now = new Date();
 
-    // Save to database using upsert to handle race condition with Baileys event
+    // Save to database using race-safe upsert to handle concurrent Baileys event
     if (result.message_id) {
-      await prisma.message.upsert({
+      await safeMessageUpsert({
         where: {
           unique_wa_message_per_instance: {
             wa_message_id: result.message_id,
@@ -742,9 +774,9 @@ export class WhatsAppService {
     const locationText = data.name || data.address || `[Location: ${data.latitude}, ${data.longitude}]`;
     const now = new Date();
 
-    // Save to database using upsert
+    // Save to database using race-safe upsert
     if (result.message_id) {
-      await prisma.message.upsert({
+      await safeMessageUpsert({
         where: {
           unique_wa_message_per_instance: {
             wa_message_id: result.message_id,
@@ -938,6 +970,7 @@ export class WhatsAppService {
       instanceId?: string;
       direction?: 'INCOMING' | 'OUTGOING';
       status?: string;
+      source?: string;
       page?: number;
       limit?: number;
     }
@@ -970,6 +1003,10 @@ export class WhatsAppService {
       where.status = query.status;
     }
 
+    if (query.source) {
+      where.source = query.source;
+    }
+
     const [messages, total] = await Promise.all([
       prisma.message.findMany({
         where,
@@ -987,6 +1024,7 @@ export class WhatsAppService {
           media_url: true,
           direction: true,
           status: true,
+          source: true,
           sent_at: true,
           delivered_at: true,
           read_at: true,
@@ -1054,31 +1092,5 @@ export class WhatsAppService {
         },
       });
     }
-  }
-
-  /**
-   * Reset daily message counts (call daily via cron)
-   */
-  async resetDailyMessageCounts(): Promise<number> {
-    const result = await prisma.whatsAppInstance.updateMany({
-      where: { deleted_at: null },
-      data: {
-        daily_message_count: 0,
-        // Increment account age
-        account_age_days: { increment: 1 },
-      },
-    });
-
-    // Update warming phases for all instances
-    const instances = await prisma.whatsAppInstance.findMany({
-      where: { deleted_at: null },
-      select: { id: true },
-    });
-
-    for (const instance of instances) {
-      await this.updateWarmingPhase(instance.id);
-    }
-
-    return result.count;
   }
 }

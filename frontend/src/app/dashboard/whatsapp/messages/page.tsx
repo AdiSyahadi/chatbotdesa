@@ -104,6 +104,12 @@ export default function MessagesPage() {
   const [filterSource, setFilterSource] = useState("__all__");
   const [page, setPage] = useState(1);
 
+  // Reset pagination when any filter changes
+  const handleFilterChange = (setter: (v: string) => void) => (value: string) => {
+    setter(value);
+    setPage(1);
+  };
+
   // Form state
   const [formInstanceId, setFormInstanceId] = useState(defaultInstanceId);
   const [formTo, setFormTo] = useState("");
@@ -120,6 +126,7 @@ export default function MessagesPage() {
     instanceId: filterInstanceId === "__all__" ? undefined : filterInstanceId,
     status: filterStatus === "__all__" ? undefined : filterStatus,
     direction: filterDirection === "__all__" ? undefined : filterDirection,
+    source: filterSource === "__all__" ? undefined : filterSource,
   });
   const sendMutation = useSendMessage();
 
@@ -353,7 +360,7 @@ export default function MessagesPage() {
               <Label className="text-xs text-muted-foreground">Instance</Label>
               <Select
                 value={filterInstanceId}
-                onValueChange={setFilterInstanceId}
+                onValueChange={handleFilterChange(setFilterInstanceId)}
               >
                 <SelectTrigger className="mt-1">
                   <SelectValue placeholder="All instances" />
@@ -370,7 +377,7 @@ export default function MessagesPage() {
             </div>
             <div className="w-40">
               <Label className="text-xs text-muted-foreground">Status</Label>
-              <Select value={filterStatus} onValueChange={setFilterStatus}>
+              <Select value={filterStatus} onValueChange={handleFilterChange(setFilterStatus)}>
                 <SelectTrigger className="mt-1">
                   <SelectValue placeholder="All statuses" />
                 </SelectTrigger>
@@ -388,7 +395,7 @@ export default function MessagesPage() {
               <Label className="text-xs text-muted-foreground">Direction</Label>
               <Select
                 value={filterDirection}
-                onValueChange={setFilterDirection}
+                onValueChange={handleFilterChange(setFilterDirection)}
               >
                 <SelectTrigger className="mt-1">
                   <SelectValue placeholder="All directions" />
@@ -402,7 +409,7 @@ export default function MessagesPage() {
             </div>
             <div className="w-40">
               <Label className="text-xs text-muted-foreground">Source</Label>
-              <Select value={filterSource} onValueChange={setFilterSource}>
+              <Select value={filterSource} onValueChange={handleFilterChange(setFilterSource)}>
                 <SelectTrigger className="mt-1">
                   <SelectValue placeholder="All sources" />
                 </SelectTrigger>

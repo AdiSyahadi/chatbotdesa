@@ -284,6 +284,7 @@ export interface SyncStatusResponse {
   progress: SyncProgress | null;
   settings: SyncSettings;
   last_sync_at: string | null;
+  needs_repair?: boolean;
 }
 
 // Dashboard Stats

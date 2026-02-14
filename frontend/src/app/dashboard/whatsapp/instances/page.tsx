@@ -112,11 +112,19 @@ export default function InstancesPage() {
   };
 
   const handleConnect = async (id: string) => {
-    await connectMutation.mutateAsync(id);
+    try {
+      await connectMutation.mutateAsync(id);
+    } catch {
+      // Error handled by mutation onError
+    }
   };
 
   const handleDisconnect = async (id: string) => {
-    await disconnectMutation.mutateAsync(id);
+    try {
+      await disconnectMutation.mutateAsync(id);
+    } catch {
+      // Error handled by mutation onError
+    }
   };
 
   return (

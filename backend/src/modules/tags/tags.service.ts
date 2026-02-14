@@ -6,6 +6,7 @@
 import { Prisma } from '@prisma/client';
 import prisma from '../../config/database';
 import logger from '../../config/logger';
+import { AppError } from '../../types';
 import {
   CreateTagInput,
   UpdateTagInput,
@@ -44,7 +45,7 @@ class TagService {
     });
 
     if (existingTag) {
-      throw new Error(`Tag "${input.name}" already exists`);
+      throw new AppError(`Tag "${input.name}" already exists`, 409, 'TAG_002');
     }
 
     const tag = await prisma.tag.create({
@@ -194,7 +195,7 @@ class TagService {
       });
 
       if (duplicateName) {
-        throw new Error(`Tag "${input.name}" already exists`);
+        throw new AppError(`Tag "${input.name}" already exists`, 409, 'TAG_002');
       }
     }
 
@@ -260,7 +261,7 @@ class TagService {
     });
 
     if (!tag) {
-      throw new Error('TAG_NOT_FOUND');
+      throw new AppError('Tag not found', 404, 'TAG_001');
     }
 
     // Verify contacts exist and belong to organization
@@ -323,7 +324,7 @@ class TagService {
     });
 
     if (!tag) {
-      throw new Error('TAG_NOT_FOUND');
+      throw new AppError('Tag not found', 404, 'TAG_001');
     }
 
     // Delete ContactTag entries
@@ -451,7 +452,7 @@ class TagService {
     });
 
     if (!targetTag) {
-      throw new Error('Target tag not found');
+      throw new AppError('Target tag not found', 404, 'TAG_001');
     }
 
     // Verify source tags exist and exclude target from sources
@@ -547,7 +548,7 @@ class TagService {
     });
 
     if (!tag) {
-      throw new Error('TAG_NOT_FOUND');
+      throw new AppError('Tag not found', 404, 'TAG_001');
     }
 
     // Get contact IDs with this tag

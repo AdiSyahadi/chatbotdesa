@@ -17,7 +17,7 @@ import pino from 'pino';
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
 import prisma from '../../config/database';
-import { InstanceStatus, WarmingPhase, MessageType } from '@prisma/client';
+import { InstanceStatus, WarmingPhase, MessageType, Prisma } from '@prisma/client';
 import {
   useMultiFileAuthState,
   deleteSession,
@@ -41,6 +41,27 @@ export const baileysEvents = new EventEmitter();
 // Store active socket connections
 const activeSockets: Map<string, WASocket> = new Map();
 
+/**
+ * Race-safe message upsert: catches P2002 unique constraint violation
+ * (concurrent SELECT→INSERT race) and retries as update.
+ */
+async function safeMessageUpsert(args: Prisma.MessageUpsertArgs): Promise<void> {
+  try {
+    await prisma.message.upsert(args);
+  } catch (err: any) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+      logger.debug({ where: args.where }, '🔄 [MSG] Upsert race detected (P2002), retrying as update');
+      try {
+        await prisma.message.update({ where: args.where, data: args.update });
+      } catch (updateErr: any) {
+        logger.warn({ where: args.where, err: updateErr.message }, '⚠️ [MSG] Update after P2002 also failed');
+      }
+    } else {
+      throw err;
+    }
+  }
+}
+
 // Store QR codes with expiration
 const qrCodeStore: Map<string, { code: string; expiresAt: Date }> = new Map();
 
@@ -49,6 +70,9 @@ const healthIntervals: Map<string, NodeJS.Timeout> = new Map();
 
 // Reconnect guard: prevent duplicate reconnections
 const reconnectTimers: Map<string, NodeJS.Timeout> = new Map();
+
+// Reconnect attempt counter for exponential backoff
+const reconnectAttempts: Map<string, number> = new Map();
 
 // Sync config cache: avoid DB lookups per event
 const syncConfigCache: Map<string, { syncEnabled: boolean }> = new Map();
@@ -62,21 +86,72 @@ const syncCompletionTimers: Map<string, NodeJS.Timeout> = new Map();
 // Sync pause control: instances in this set will skip processing incoming history batches
 const syncPausedInstances: Set<string> = new Set();
 
-/**
- * Stop/pause history sync processing for an instance.
- * WhatsApp may still send data but we will skip DB inserts.
- */
-export async function stopHistorySync(instanceId: string): Promise<void> {
-  syncPausedInstances.add(instanceId);
+// Flag: instances being disconnected programmatically (by disconnectInstance)
+// When set, the connection.close handler skips DB/session work to avoid race conditions
+const manuallyDisconnecting: Set<string> = new Set();
 
-  // Cancel completion timer if active
+/**
+ * Schedule a reconnect with exponential backoff.
+ * Delays: 5s → 10s → 20s → 40s → 60s (capped). Max 10 attempts.
+ */
+function scheduleReconnect(instanceId: string, organizationId: string, reason: string): void {
+  const existing = reconnectTimers.get(instanceId);
+  if (existing) {
+    logger.info({ instanceId }, '🔌 [RECONNECT] Already scheduled, skipping');
+    return;
+  }
+
+  const attempt = (reconnectAttempts.get(instanceId) || 0) + 1;
+  const MAX_ATTEMPTS = 10;
+  if (attempt > MAX_ATTEMPTS) {
+    logger.error({ instanceId, attempt }, '🔌 [RECONNECT] Max attempts reached, giving up — manual reconnect required');
+    reconnectAttempts.delete(instanceId);
+    updateInstanceStatus(instanceId, 'ERROR', { disconnected_at: new Date() }).catch(() => {});
+    return;
+  }
+
+  reconnectAttempts.set(instanceId, attempt);
+  const delayMs = Math.min(5000 * Math.pow(2, attempt - 1), 60000); // 5s, 10s, 20s, 40s, 60s cap
+  logger.info({ instanceId, attempt, delayMs, reason }, `🔌 [RECONNECT] Scheduling attempt ${attempt}/${MAX_ATTEMPTS} in ${delayMs}ms`);
+
+  updateInstanceStatus(instanceId, 'CONNECTING').catch(() => {});
+
+  const timer = setTimeout(() => {
+    reconnectTimers.delete(instanceId);
+    initializeConnection(instanceId, organizationId)
+      .then(() => {
+        // Success — reset counter (will be confirmed by connection='open' handler)
+        logger.info({ instanceId, attempt }, '🔌 [RECONNECT] initializeConnection succeeded');
+      })
+      .catch((err) => {
+        logger.error({ err, instanceId, attempt }, '🔌 [RECONNECT] Failed, scheduling next attempt');
+        scheduleReconnect(instanceId, organizationId, 'retry_after_failure');
+      });
+  }, delayMs);
+  reconnectTimers.set(instanceId, timer);
+}
+
+/**
+ * Clean up all in-memory sync state for an instance.
+ * Does NOT touch the database — caller is responsible for DB updates.
+ */
+export function cleanupSyncState(instanceId: string): void {
+  syncPausedInstances.add(instanceId);
+  syncLocks.delete(instanceId);
+  syncConfigCache.delete(instanceId);
+
   const timer = syncCompletionTimers.get(instanceId);
   if (timer) {
     clearTimeout(timer);
     syncCompletionTimers.delete(instanceId);
   }
+}
 
-  // Update DB status to STOPPED and preserve progress
+export async function stopHistorySync(instanceId: string): Promise<void> {
+  // 1. In-memory: block new batches from being queued/processed
+  cleanupSyncState(instanceId);
+
+  // 2. DB: update status and preserve progress
   const instance = await prisma.whatsAppInstance.findUnique({
     where: { id: instanceId },
     select: { history_sync_progress: true },
@@ -91,12 +166,13 @@ export async function stopHistorySync(instanceId: string): Promise<void> {
     data: {
       history_sync_status: 'STOPPED',
       history_sync_progress: progress,
+      sync_history_on_connect: false,
     },
   });
 
-  console.log(`⏸️ [SYNC] History sync STOPPED by user for ${instanceId}`);
+  logger.info({ instanceId }, '⏸️ [SYNC] History sync STOPPED by user');
 
-  // Emit webhook
+  // 3. Emit webhook
   baileysEvents.emit('history.sync', {
     instanceId,
     event: 'history.sync.stopped',
@@ -109,9 +185,11 @@ export async function stopHistorySync(instanceId: string): Promise<void> {
  * Next incoming WhatsApp history batch will be processed again.
  */
 export async function resumeHistorySync(instanceId: string): Promise<void> {
+  // 1. In-memory: allow batches to be processed again
   syncPausedInstances.delete(instanceId);
+  syncConfigCache.delete(instanceId); // re-read fresh config on next event
 
-  // Update DB status back to SYNCING
+  // 2. DB: update status and restore progress
   const instance = await prisma.whatsAppInstance.findUnique({
     where: { id: instanceId },
     select: { history_sync_progress: true },
@@ -120,6 +198,7 @@ export async function resumeHistorySync(instanceId: string): Promise<void> {
   const progress = (instance?.history_sync_progress as any) || {};
   delete progress.stopped_at;
   delete progress.stopped_by_user;
+  delete progress.stopped_reason;
   progress.resumed_at = new Date().toISOString();
 
   await prisma.whatsAppInstance.update({
@@ -127,12 +206,50 @@ export async function resumeHistorySync(instanceId: string): Promise<void> {
     data: {
       history_sync_status: 'SYNCING',
       history_sync_progress: progress,
+      sync_history_on_connect: true,
     },
   });
 
-  console.log(`▶️ [SYNC] History sync RESUMED by user for ${instanceId}`);
+  logger.info({ instanceId }, '▶️ [SYNC] History sync RESUMED by user');
 
-  // Emit webhook
+  // 3. Set a safety completion timer — if WhatsApp sends no more batches after resume,
+  //    this prevents the status from staying SYNCING forever.
+  //    handleHistorySync will reset/replace this timer when real batches arrive.
+  const existingTimer = syncCompletionTimers.get(instanceId);
+  if (existingTimer) clearTimeout(existingTimer);
+
+  const safetyTimer = setTimeout(async () => {
+    try {
+      syncCompletionTimers.delete(instanceId);
+      const latest = await prisma.whatsAppInstance.findUnique({
+        where: { id: instanceId },
+        select: { history_sync_status: true, history_sync_progress: true },
+      });
+      // Only finalize if still SYNCING (no new batches came to reset the timer)
+      if (latest?.history_sync_status === 'SYNCING') {
+        const finalProgress = (latest.history_sync_progress as any) || {};
+        finalProgress.percentage = 100;
+        finalProgress.completed_at = new Date().toISOString();
+        const finalStatus = (finalProgress.batch_errors || 0) > 0 ? 'PARTIAL' : 'COMPLETED';
+
+        await prisma.whatsAppInstance.update({
+          where: { id: instanceId },
+          data: {
+            history_sync_status: finalStatus as any,
+            history_sync_progress: finalProgress,
+            last_history_sync_at: new Date(),
+          },
+        });
+        logger.info({ instanceId, finalStatus }, '✅ [SYNC] Resume safety timer: no new batches after 60s');
+      }
+    } catch (err) {
+      logger.error({ err, instanceId }, '❌ [SYNC] Resume safety timer error');
+    }
+  }, 60000); // 60 seconds — generous window for WhatsApp to send more batches
+
+  syncCompletionTimers.set(instanceId, safetyTimer);
+
+  // 4. Emit webhook
   baileysEvents.emit('history.sync', {
     instanceId,
     event: 'history.sync.resumed',
@@ -172,7 +289,7 @@ export interface QRCodeData {
 /**
  * Format phone number to WhatsApp JID
  */
-export function formatPhoneToJid(phone: string): string {
+function formatPhoneToJid(phone: string): string {
   // Remove all non-numeric characters
   let cleaned = phone.replace(/\D/g, '');
   
@@ -216,7 +333,7 @@ function getMessageDelay(warmingPhase: WarmingPhaseType): number {
  * Pure function — reusable by both real-time handler and history sync handler.
  * Returns null if the message should be skipped (e.g., protocolMessage).
  */
-export function extractMessageContent(msg: WAMessage): ExtractedMessageContent | null {
+function extractMessageContent(msg: WAMessage): ExtractedMessageContent | null {
   const messageContent = msg.message;
   if (!messageContent) return null;
 
@@ -366,7 +483,7 @@ export function extractMessageContent(msg: WAMessage): ExtractedMessageContent |
  * Convert Baileys messageTimestamp (which can be a protobuf Long object) to plain number.
  * Returns undefined if the timestamp is falsy.
  */
-export function convertMessageTimestamp(ts: any): number | undefined {
+function convertMessageTimestamp(ts: any): number | undefined {
   if (!ts) return undefined;
   if (typeof ts === 'number') return ts;
   if (typeof ts.toNumber === 'function') return ts.toNumber();
@@ -378,7 +495,7 @@ export function convertMessageTimestamp(ts: any): number | undefined {
  * Uses sha256(chatJid + timestamp + content) to ensure deduplication.
  * Returns 'gen_' prefix + 32 char hex string.
  */
-export function generateFallbackMessageId(chatJid: string, timestamp: number | undefined, content: string): string {
+function generateFallbackMessageId(chatJid: string, timestamp: number | undefined, content: string): string {
   const raw = `${chatJid}|${timestamp || 0}|${content || ''}`;
   const hash = createHash('sha256').update(raw).digest('hex').substring(0, 32);
   return `gen_${hash}`;
@@ -537,12 +654,12 @@ export async function initializeConnection(
   error?: string;
 }> {
   try {
-    console.log(`\n🔌 [INIT] Initializing connection for instance ${instanceId}`);
+    logger.info({ instanceId }, '🔌 [INIT] Initializing connection for instance');
     
     // Check if already connected
     const existingSocket = activeSockets.get(instanceId);
     if (existingSocket?.user) {
-      console.log(`🔌 [INIT] Already connected (user: ${existingSocket.user.id}), skipping`);
+      logger.info({ instanceId, userId: existingSocket.user.id }, '🔌 [INIT] Already connected, skipping');
       return {
         success: true,
         status: 'CONNECTED',
@@ -551,7 +668,7 @@ export async function initializeConnection(
 
     // Close existing socket if any (prevents conflict/replaced errors)
     if (existingSocket) {
-      console.log(`🔌 [INIT] Closing existing socket without user for ${instanceId}`);
+      logger.info({ instanceId }, '🔌 [INIT] Closing existing socket without user');
       try { existingSocket.end(undefined); } catch (e) { /* ignore */ }
       activeSockets.delete(instanceId);
     }
@@ -561,6 +678,16 @@ export async function initializeConnection(
     if (pendingTimer) {
       clearTimeout(pendingTimer);
       reconnectTimers.delete(instanceId);
+    }
+
+    // Clear ALL stale sync state from previous session so fresh sync can proceed
+    syncPausedInstances.delete(instanceId);
+    syncConfigCache.delete(instanceId);
+    syncLocks.delete(instanceId);
+    const staleTimer = syncCompletionTimers.get(instanceId);
+    if (staleTimer) {
+      clearTimeout(staleTimer);
+      syncCompletionTimers.delete(instanceId);
     }
 
     // Update status to CONNECTING
@@ -581,7 +708,7 @@ export async function initializeConnection(
     const syncConfig = await getSyncConfig(instanceId);
     const shouldSyncHistory = syncConfig.syncEnabled;
     if (shouldSyncHistory) {
-      console.log(`📜 [INIT] History sync ENABLED for ${instanceId} — syncFullHistory=true`);
+      logger.info({ instanceId }, '📜 [INIT] History sync ENABLED — syncFullHistory=true');
     }
 
     // Create socket with proper configuration
@@ -617,7 +744,7 @@ export async function initializeConnection(
               return proto.Message.fromObject({ conversation: msg.content });
             }
           } catch (e) {
-            console.log(`⚠️ getMessage error for ${key.id}:`, e);
+            logger.warn({ err: e, keyId: key.id }, '⚠️ getMessage error');
           }
         }
         return undefined;
@@ -626,7 +753,7 @@ export async function initializeConnection(
 
     // Store socket reference
     activeSockets.set(instanceId, socket);
-    console.log(`🔌 [INIT] Socket created and stored for ${instanceId}. Active sockets: ${activeSockets.size}`);
+    logger.info({ instanceId, activeSocketCount: activeSockets.size }, '🔌 [INIT] Socket created and stored');
 
     // ========================================
     // WEBSOCKET-LEVEL MONITORING
@@ -653,7 +780,7 @@ export async function initializeConnection(
           wsMsgFrameCount++;
           const from = node?.attrs?.from || 'unknown';
           const offline = node?.attrs?.offline ? 'YES' : 'no';
-          console.log(`\n🌐 [WS-MSG] CB:message #${wsMsgFrameCount} from=${from} offline=${offline}`);
+          logger.debug({ instanceId, frameNumber: wsMsgFrameCount, from, offline }, '🌐 [WS-MSG] CB:message received');
         });
 
         // Periodic health check with buffer force-flush
@@ -663,14 +790,14 @@ export async function initializeConnection(
         const healthInterval = setInterval(() => {
           const isAlive = activeSockets.has(instanceId);
           if (!isAlive) {
-            console.log(`♻️ [HEALTH] Instance ${instanceId.substring(0, 8)}... removed from activeSockets, stopping health check`);
+            logger.info({ instanceId: instanceId.substring(0, 8) }, '♻️ [HEALTH] Instance removed from activeSockets, stopping health check');
             clearInterval(healthInterval);
             healthIntervals.delete(instanceId);
             return;
           }
 
           const timeSinceLastFrame = Date.now() - lastFrameTime;
-          console.log(`♻️ [HEALTH] ${instanceId.substring(0, 8)}...: wsFrames=${wsFrameCount} msgFrames=${wsMsgFrameCount} lastFrame=${Math.round(timeSinceLastFrame / 1000)}s ago user=${socket.user?.id || 'none'}`);
+          logger.debug({ instanceId: instanceId.substring(0, 8), wsFrameCount, wsMsgFrameCount, lastFrameSecondsAgo: Math.round(timeSinceLastFrame / 1000), user: socket.user?.id || 'none' }, '♻️ [HEALTH] Status check');
 
           // CRITICAL: Force-flush the event buffer in case it's stuck
           // In Baileys v6, createBufferedFunction calls buffer() but never flush().
@@ -680,7 +807,7 @@ export async function initializeConnection(
             if (typeof evAny.flush === 'function') {
               const flushed = evAny.flush();
               if (flushed) {
-                console.log(`♻️ [HEALTH] 🚨 Buffer WAS stuck — force flushed events!`);
+                logger.warn({ instanceId }, '♻️ [HEALTH] 🚨 Buffer WAS stuck — force flushed events!');
               }
             }
           } catch (e: any) {
@@ -689,17 +816,31 @@ export async function initializeConnection(
 
           // If no frames for 60s+ while "connected", the WS might be dead
           if (timeSinceLastFrame > 60000 && socket.user) {
-            console.log(`⚠️ [HEALTH] No WS frames for ${Math.round(timeSinceLastFrame / 1000)}s — connection might be zombie!`);
+            logger.warn({ instanceId, silentSeconds: Math.round(timeSinceLastFrame / 1000) }, '⚠️ [HEALTH] No WS frames — connection might be zombie!');
+            
+            // After 120s+ of silence, force-close the zombie socket to trigger reconnect
+            if (timeSinceLastFrame > 120000) {
+              logger.error({ instanceId, silentSeconds: Math.round(timeSinceLastFrame / 1000) }, '💀 [HEALTH] Zombie connection detected (120s+) — force-closing to trigger reconnect');
+              clearInterval(healthInterval);
+              healthIntervals.delete(instanceId);
+              try {
+                socket.end(new Boom('Zombie connection detected by health check', { statusCode: DisconnectReason.connectionLost }));
+              } catch (e) {
+                logger.warn({ instanceId }, '⚠️ [HEALTH] Error closing zombie socket, removing from activeSockets');
+                activeSockets.delete(instanceId);
+                scheduleReconnect(instanceId, organizationId, 'zombie_health_check');
+              }
+            }
           }
         }, 15000); // every 15 seconds (includes buffer flush)
 
         healthIntervals.set(instanceId, healthInterval);
-        console.log(`🔌 [INIT] WebSocket monitoring + buffer flush attached for ${instanceId}`);
+        logger.info({ instanceId }, '🔌 [INIT] WebSocket monitoring + buffer flush attached');
       } else {
-        console.log(`⚠️ [INIT] socket.ws not accessible for monitoring`);
+        logger.warn({ instanceId }, '⚠️ [INIT] socket.ws not accessible for monitoring');
       }
     } catch (e: any) {
-      console.log(`⚠️ [INIT] WS monitoring setup error:`, e.message);
+      logger.warn({ instanceId, err: e.message }, '⚠️ [INIT] WS monitoring setup error');
     }
 
     // INTERCEPT ev.emit to handle messages DIRECTLY at the emit level
@@ -712,36 +853,46 @@ export async function initializeConnection(
       
       // Log all events for visibility
       if (eventName === 'messages.upsert') {
-        console.log(`🔍 [RAW-EVENT] ${eventName} type=${data?.type} count=${data?.messages?.length}`);
+        logger.debug({ instanceId, eventName, type: data?.type, count: data?.messages?.length }, '🔍 [RAW-EVENT] Event received');
       }
 
       // IMPORTANT: Only process 'notify' type messages (new real-time messages)
       // 'append' type = historical sync from WhatsApp server on connect
       // Route to sync handler if sync is enabled, otherwise ignore
       if (eventName === 'messages.upsert' && data?.type === 'append' && data?.messages) {
-        // Enqueue serialized per instance to avoid race conditions
-        enqueueSyncBatch(instanceId, () =>
-          handleAppendHistoryMessages(instanceId, organizationId, data.messages)
-        );
+        // Skip if sync is paused/stopped (check early to avoid queueing)
+        if (syncPausedInstances.has(instanceId)) {
+          logger.info({ instanceId, droppedCount: data.messages.length }, '⏸️ [SYNC-EVENT] Sync paused, dropping append messages');
+        } else {
+          // Enqueue serialized per instance to avoid race conditions
+          enqueueSyncBatch(instanceId, () =>
+            handleAppendHistoryMessages(instanceId, organizationId, data.messages)
+          );
+        }
       }
 
       // Handle messaging-history.set — main history sync event from WhatsApp
       if (eventName === 'messaging-history.set' && data) {
-        console.log(`📜 [SYNC-EVENT] messaging-history.set: ${data.messages?.length || 0} msgs, ${data.chats?.length || 0} chats, ${data.contacts?.length || 0} contacts, isLatest=${data.isLatest}`);
-        // Enqueue serialized per instance to avoid race conditions
-        enqueueSyncBatch(instanceId, () =>
-          handleHistorySync(instanceId, organizationId, data)
-        );
+        logger.info({ instanceId, msgCount: data.messages?.length || 0, chatCount: data.chats?.length || 0, contactCount: data.contacts?.length || 0, isLatest: data.isLatest }, '📜 [SYNC-EVENT] messaging-history.set received');
+        // Skip if sync is paused/stopped (check early to avoid queueing)
+        if (syncPausedInstances.has(instanceId)) {
+          logger.info({ instanceId }, '⏸️ [SYNC-EVENT] Sync paused, dropping messaging-history.set batch');
+        } else {
+          // Enqueue serialized per instance to avoid race conditions
+          enqueueSyncBatch(instanceId, () =>
+            handleHistorySync(instanceId, organizationId, data)
+          );
+        }
       }
 
       // Process real-time messages DIRECTLY at emit level (before buffering)
       if (eventName === 'messages.upsert' && data?.type === 'notify' && data?.messages) {
-        console.log(`\n🔔🔔🔔 [BAILEYS] Processing ${data.messages.length} notify message(s) at emit level`);
+        logger.info({ instanceId, count: data.messages.length }, '🔔🔔🔔 [BAILEYS] Processing notify message(s) at emit level');
         for (const msg of data.messages) {
           if (msg.key?.remoteJid === 'status@broadcast') continue;
-          console.log(`🔔 [BAILEYS] Message from=${msg.key?.remoteJid}, fromMe=${msg.key?.fromMe}, id=${msg.key?.id}`);
+          logger.debug({ instanceId, from: msg.key?.remoteJid, fromMe: msg.key?.fromMe, msgId: msg.key?.id }, '🔔 [BAILEYS] Message received');
           handleRealtimeMessage(instanceId, organizationId, msg).catch((err: any) => {
-            console.error(`❌ [BAILEYS] Error handling message:`, err);
+            logger.error({ err, instanceId }, '❌ [BAILEYS] Error handling message');
           });
         }
       }
@@ -750,16 +901,16 @@ export async function initializeConnection(
       if (eventName === 'messages.update' && Array.isArray(data)) {
         for (const update of data) {
           handleMessageUpdate(instanceId, update).catch((err: any) => {
-            console.error(`❌ [BAILEYS] Error handling message update:`, err);
+            logger.error({ err, instanceId }, '❌ [BAILEYS] Error handling message update');
           });
         }
       }
 
       // Handle LID → Phone Number mapping updates (Baileys v6.6+)
       if (eventName === 'lid-mapping.update' && data) {
-        console.log(`🔗 [LID-MAP] lid-mapping.update: lid=${data.lid}, pn=${data.pn}`);
+        logger.info({ instanceId, lid: data.lid, pn: data.pn }, '🔗 [LID-MAP] lid-mapping.update received');
         handleLidMappingUpdate(instanceId, organizationId, data).catch((err: any) => {
-          console.error(`❌ [LID-MAP] Error handling LID mapping:`, err);
+          logger.error({ err, instanceId }, '❌ [LID-MAP] Error handling LID mapping');
         });
       }
 
@@ -769,7 +920,7 @@ export async function initializeConnection(
     // =====================
     // EVENT HANDLERS (using ev.process() as recommended by Baileys)
     // =====================
-    console.log(`🔌 [INIT] Binding event handlers for ${instanceId} using ev.process()...`);
+    logger.info({ instanceId }, '🔌 [INIT] Binding event handlers using ev.process()...');
 
     // Credentials update - save to storage (this one uses ev.on as it's not buffered)
     socket.ev.on('creds.update', saveCreds);
@@ -783,7 +934,7 @@ export async function initializeConnection(
         const { connection, lastDisconnect, qr } = update;
 
         // Debug logging
-        console.log(`🔌 [EVENT] connection.update for ${instanceId}: connection=${connection}, hasQr=${!!qr}`);
+        logger.debug({ instanceId, connection, hasQr: !!qr }, '🔌 [EVENT] connection.update');
         logger.info({ instanceId, connection, hasQr: !!qr, update }, 'Connection update received');
 
         // Handle QR Code
@@ -795,10 +946,11 @@ export async function initializeConnection(
               margin: 2,
             });
 
-            // Store QR with 30 second expiration
+            // Store QR with 120 second expiration (longer than Baileys' ~30s regen cycle
+            // so the frontend always has a valid QR to fetch between regenerations)
             qrCodeStore.set(instanceId, {
               code: qrBase64,
-              expiresAt: new Date(Date.now() + 30000),
+              expiresAt: new Date(Date.now() + 120000),
             });
 
             await updateInstanceStatus(instanceId, 'QR_READY', { qr_code: qrBase64 });
@@ -815,6 +967,30 @@ export async function initializeConnection(
         if (connection === 'open') {
           const phoneNumber = socket.user?.id ? extractPhoneFromJid(socket.user.id) : null;
 
+          // Check if sync was auto-stopped by safety net during a temporary disconnect.
+          // If so, recover: reset to SYNCING so incoming history events aren't blocked.
+          const currentInstance = await prisma.whatsAppInstance.findUnique({
+            where: { id: instanceId },
+            select: { history_sync_status: true, history_sync_progress: true, sync_history_on_connect: true },
+          });
+          const syncRecoveryData: Record<string, unknown> = {};
+          if (
+            currentInstance?.history_sync_status === 'STOPPED' &&
+            currentInstance?.sync_history_on_connect === true
+          ) {
+            const prog = (currentInstance.history_sync_progress as any) || {};
+            // Only recover auto-corrected stops, NOT user-initiated stops
+            if (prog.stopped_reason === 'stale_auto_corrected' && !prog.stopped_by_user) {
+              syncRecoveryData.history_sync_status = 'SYNCING';
+              delete prog.stopped_at;
+              delete prog.stopped_reason;
+              prog.recovered_at = new Date().toISOString();
+              syncRecoveryData.history_sync_progress = prog;
+              syncPausedInstances.delete(instanceId);
+              logger.info({ instanceId }, '🔄 [SYNC] Recovered auto-stopped sync on reconnect');
+            }
+          }
+
           await prisma.whatsAppInstance.update({
             where: { id: instanceId },
             data: {
@@ -823,10 +999,12 @@ export async function initializeConnection(
               connected_at: new Date(),
               qr_code: null,
               health_score: 100,
+              ...syncRecoveryData,
             },
           });
 
           qrCodeStore.delete(instanceId);
+          reconnectAttempts.delete(instanceId); // Reset backoff on successful connection
 
           logger.info({ instanceId, phoneNumber }, 'WhatsApp connected');
           baileysEvents.emit('connection', {
@@ -847,7 +1025,15 @@ export async function initializeConnection(
           const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
           const errorMsg = (lastDisconnect?.error as Boom)?.output?.payload?.message || '';
           
-          console.log(`🔌 [CLOSE] Instance ${instanceId}: statusCode=${statusCode}, error="${errorMsg}"`);
+          logger.info({ instanceId, statusCode, errorMsg }, '🔌 [CLOSE] Instance disconnected');
+
+          // If disconnectInstance() initiated this close, skip all DB/session handling
+          // disconnectInstance() manages its own cleanup to avoid race conditions
+          if (manuallyDisconnecting.has(instanceId)) {
+            manuallyDisconnecting.delete(instanceId);
+            logger.info({ instanceId }, '🔌 [CLOSE] Programmatic disconnect, close handler skipping');
+            return;
+          }
 
           // Determine if we should reconnect
           // 440 = connectionReplaced (conflict) — do NOT reconnect, another socket just opened
@@ -859,11 +1045,30 @@ export async function initializeConnection(
           const shouldReconnect = !noReconnectCodes.includes(statusCode || 0);
 
           if (statusCode === DisconnectReason.loggedOut) {
+            // Clean up sync state for this instance
+            cleanupSyncState(instanceId);
             deleteSession(instanceId);
+
+            // Check if sync was active when logged out
+            const currentInst = await prisma.whatsAppInstance.findUnique({
+              where: { id: instanceId },
+              select: { history_sync_status: true, history_sync_progress: true },
+            });
+            const wasSyncing = currentInst?.history_sync_status === 'SYNCING';
+            const logoutProgress = (currentInst?.history_sync_progress as any) || {};
+            if (wasSyncing) {
+              logoutProgress.stopped_at = new Date().toISOString();
+              logoutProgress.stopped_reason = 'logged_out';
+            }
+
             await updateInstanceStatus(instanceId, 'DISCONNECTED', {
               phone_number: null,
               connected_at: null,
               disconnected_at: new Date(),
+              ...(wasSyncing ? {
+                history_sync_status: 'STOPPED',
+                history_sync_progress: logoutProgress,
+              } : {}),
             });
 
             logger.info({ instanceId }, 'Logged out, session deleted');
@@ -876,32 +1081,25 @@ export async function initializeConnection(
             // Connection replaced by another socket (conflict)
             // This is NOT an error — just means a newer socket took over
             // Do NOT reconnect to avoid infinite loop
-            console.log(`🔌 [CLOSE] Conflict (440) for ${instanceId} — socket was replaced, NOT reconnecting`);
+            logger.info({ instanceId }, '🔌 [CLOSE] Conflict (440) — socket was replaced, NOT reconnecting');
             // The newer socket is already connected, so don't update DB status
           } else if (statusCode === DisconnectReason.badSession) {
             deleteSession(instanceId);
-            await updateInstanceStatus(instanceId, 'ERROR', {
-              disconnected_at: new Date(),
-            });
-
-            logger.warn({ instanceId, statusCode }, 'Bad session, please reconnect');
+            logger.warn({ instanceId, statusCode }, 'Bad session — deleted session, scheduling reconnect (QR re-scan required)');
+            // Schedule reconnect with backoff — will present QR for re-scan
+            scheduleReconnect(instanceId, organizationId, 'bad_session');
           } else if (shouldReconnect) {
-            // Only schedule reconnect if not already scheduled
-            const existingTimer = reconnectTimers.get(instanceId);
-            if (existingTimer) {
-              console.log(`🔌 [CLOSE] Reconnect already scheduled for ${instanceId}, skipping`);
-            } else {
-              logger.info({ instanceId, statusCode }, 'Disconnected, will reconnect in 5s');
-              await updateInstanceStatus(instanceId, 'CONNECTING');
-
-              const timer = setTimeout(() => {
-                reconnectTimers.delete(instanceId);
-                initializeConnection(instanceId, organizationId).catch((err) => {
-                  logger.error({ err, instanceId }, 'Reconnection failed');
-                });
-              }, 5000);
-              reconnectTimers.set(instanceId, timer);
+            // Clear any pending completion timer from old session
+            // Without this, the 30s timer can fire during the 5s reconnect delay
+            // and mark sync as COMPLETED prematurely while we're reconnecting
+            const oldCompletionTimer = syncCompletionTimers.get(instanceId);
+            if (oldCompletionTimer) {
+              clearTimeout(oldCompletionTimer);
+              syncCompletionTimers.delete(instanceId);
             }
+
+            // Schedule reconnect with exponential backoff
+            scheduleReconnect(instanceId, organizationId, `disconnect_${statusCode}`);
           }
         }
       }
@@ -909,31 +1107,31 @@ export async function initializeConnection(
       // ---- Messages Upsert (handled at emit level above, this is backup) ----
       if (events['messages.upsert']) {
         const upsert = events['messages.upsert'];
-        console.log(`📋 [PROCESS-BACKUP] messages.upsert via ev.process(): type=${upsert.type}, count=${upsert.messages.length}`);
+        logger.debug({ instanceId, type: upsert.type, count: upsert.messages.length }, '📋 [PROCESS-BACKUP] messages.upsert via ev.process()');
         // NOTE: Primary handling is done at emit interception level above
       }
 
       // ---- Messages Update (handled at emit level above, this is backup) ----
       if (events['messages.update']) {
-        console.log(`📋 [PROCESS-BACKUP] messages.update via ev.process(): ${events['messages.update'].length} updates`);
+        logger.debug({ instanceId, count: events['messages.update'].length }, '📋 [PROCESS-BACKUP] messages.update via ev.process()');
       }
 
       // ---- Messaging History Set (backup — primary handling is at emit level) ----
       if (events['messaging-history.set']) {
         const { messages, chats, contacts, isLatest } = events['messaging-history.set'];
-        console.log(`📋 [PROCESS-BACKUP] messaging-history.set via ev.process(): ${messages.length} msgs, ${chats.length} chats, ${contacts.length} contacts, isLatest=${isLatest}`);
+        logger.debug({ instanceId, msgCount: messages.length, chatCount: chats.length, contactCount: contacts.length, isLatest }, '📋 [PROCESS-BACKUP] messaging-history.set via ev.process()');
         // NOTE: Primary handling is done at emit interception level above
       }
     });
 
-    console.log(`🔌 [INIT] All event handlers bound for ${instanceId} via ev.process(). Waiting for connection...`);
+    logger.info({ instanceId }, '🔌 [INIT] All event handlers bound via ev.process(). Waiting for connection...');
 
     // Wait a bit and check status
     await delay(2000);
     
     const currentStatus = socket.user ? 'CONNECTED' : 'QR_READY';
     const qrData = getQRCode(instanceId);
-    console.log(`🔌 [INIT] Connection result for ${instanceId}: status=${currentStatus}, hasUser=${!!socket.user}, userId=${socket.user?.id || 'N/A'}`);
+    logger.info({ instanceId, status: currentStatus, hasUser: !!socket.user, userId: socket.user?.id || 'N/A' }, '🔌 [INIT] Connection result');
 
     return {
       success: true,
@@ -957,15 +1155,48 @@ export async function initializeConnection(
  */
 export async function disconnectInstance(instanceId: string): Promise<boolean> {
   try {
-    const socket = activeSockets.get(instanceId);
-    
-    if (socket) {
-      await socket.logout();
-      activeSockets.delete(instanceId);
+    // 1. Stop sync processing: in-memory guard + cancel timers + clear queue
+    cleanupSyncState(instanceId);
+
+    // 2. Cancel any pending reconnect timer
+    const pendingReconnect = reconnectTimers.get(instanceId);
+    if (pendingReconnect) {
+      clearTimeout(pendingReconnect);
+      reconnectTimers.delete(instanceId);
     }
 
+    // 3. Close socket and delete session
+    //    Set manuallyDisconnecting flag BEFORE logout so the connection.close
+    //    handler skips DB operations (we handle them below, avoiding race)
+    const socket = activeSockets.get(instanceId);
+    if (socket) {
+      manuallyDisconnecting.add(instanceId);
+      try {
+        await socket.logout();
+      } catch (logoutErr) {
+        logger.warn({ err: logoutErr, instanceId }, 'socket.logout() failed during disconnect');
+      } finally {
+        // Always clean up — if close handler already deleted it, this is a harmless no-op
+        manuallyDisconnecting.delete(instanceId);
+      }
+      activeSockets.delete(instanceId);
+    }
     deleteSession(instanceId);
     qrCodeStore.delete(instanceId);
+
+    // 4. Update DB: status + sync status in single atomic write
+    //    Preserve progress data so user can see what was synced before disconnect
+    const current = await prisma.whatsAppInstance.findUnique({
+      where: { id: instanceId },
+      select: { history_sync_status: true, history_sync_progress: true },
+    });
+
+    const wasSyncing = current?.history_sync_status === 'SYNCING';
+    const progress = (current?.history_sync_progress as any) || {};
+    if (wasSyncing) {
+      progress.stopped_at = new Date().toISOString();
+      progress.stopped_reason = 'disconnected';
+    }
 
     await prisma.whatsAppInstance.update({
       where: { id: instanceId },
@@ -974,6 +1205,11 @@ export async function disconnectInstance(instanceId: string): Promise<boolean> {
         phone_number: null,
         qr_code: null,
         disconnected_at: new Date(),
+        // Only change sync status if it was actively SYNCING
+        ...(wasSyncing ? {
+          history_sync_status: 'STOPPED',
+          history_sync_progress: progress,
+        } : {}),
       },
     });
 
@@ -983,6 +1219,7 @@ export async function disconnectInstance(instanceId: string): Promise<boolean> {
       reason: 'manual_disconnect',
     });
 
+    logger.info({ instanceId, syncStatus: wasSyncing ? 'STOPPED' : 'unchanged' }, '🔌 [DISCONNECT] Instance disconnected');
     return true;
   } catch (error) {
     logger.error({ error, instanceId }, 'Error disconnecting');
@@ -998,17 +1235,33 @@ export async function restartInstance(
   organizationId: string
 ): Promise<boolean> {
   try {
-    // First disconnect
+    // 1. Clean ALL sync state (timers, locks, pause flags)
+    cleanupSyncState(instanceId);
+
+    // 2. Cancel any pending reconnect timer from previous close
+    const pendingReconnect = reconnectTimers.get(instanceId);
+    if (pendingReconnect) {
+      clearTimeout(pendingReconnect);
+      reconnectTimers.delete(instanceId);
+    }
+
+    // 3. Close existing socket with 440 (connectionReplaced) so close handler
+    //    does NOT schedule another reconnect or touch DB
     const socket = activeSockets.get(instanceId);
     if (socket) {
-      socket.end(undefined);
+      manuallyDisconnecting.add(instanceId);
+      try {
+        socket.end(new Boom('Restarting instance', { statusCode: 440 }));
+      } finally {
+        manuallyDisconnecting.delete(instanceId);
+      }
       activeSockets.delete(instanceId);
     }
 
-    // Wait a bit
+    // 4. Wait for socket cleanup
     await delay(2000);
 
-    // Reinitialize
+    // 5. Reinitialize fresh connection
     await initializeConnection(instanceId, organizationId);
     return true;
   } catch (error) {
@@ -1351,19 +1604,19 @@ async function handleHistorySync(
 
     // Check if sync is paused/stopped by user
     if (syncPausedInstances.has(instanceId) || instance.history_sync_status === 'STOPPED') {
-      console.log(`⏸️ [SYNC] Sync is STOPPED for ${instanceId}, skipping ${messages.length} messages`);
+      logger.info({ instanceId, skippedCount: messages.length }, '⏸️ [SYNC] Sync is STOPPED, skipping messages');
       return;
     }
 
     if (!instance.sync_history_on_connect) {
-      console.log(`📜 [SYNC] sync_history_on_connect=false for ${instanceId}, skipping ${messages.length} messages`);
+      logger.info({ instanceId, skippedCount: messages.length }, '📜 [SYNC] sync_history_on_connect=false, skipping messages');
       return;
     }
 
     // 2. Check plan quota
     const plan = instance.organization?.subscription_plan;
     if (plan && !plan.allow_history_sync) {
-      console.log(`📜 [SYNC] Plan does not allow history sync for ${instanceId}`);
+      logger.info({ instanceId }, '📜 [SYNC] Plan does not allow history sync');
       return;
     }
 
@@ -1375,7 +1628,7 @@ async function handleHistorySync(
         where: { instance_id: instanceId, source: 'HISTORY_SYNC' },
       });
       if (currentSyncedCount >= maxSyncMessages) {
-        console.log(`📜 [SYNC] Quota reached for ${instanceId}: ${currentSyncedCount}/${maxSyncMessages} messages`);
+        logger.info({ instanceId, currentSyncedCount, maxSyncMessages }, '📜 [SYNC] Quota reached');
         await prisma.whatsAppInstance.update({
           where: { id: instanceId },
           data: {
@@ -1420,10 +1673,9 @@ async function handleHistorySync(
       });
     }
 
-    // Load current progress (clean any Prisma operator junk like 'set: null')
+    // Load current progress
     const rawProgress = (instance.history_sync_progress as any) || {};
     const progress: any = { ...rawProgress };
-    delete progress.set; // Remove Prisma { set: null } artifact if present
     if (!progress.started_at) {
       progress.started_at = new Date().toISOString();
     }
@@ -1536,7 +1788,7 @@ async function handleHistorySync(
             where: { instance_id_lid_jid: { instance_id: instanceId, lid_jid: contactLid } },
             create: { instance_id: instanceId, lid_jid: contactLid, phone_jid: contactJid, phone_number: pnClean, source: 'history-sync' },
             update: { phone_jid: contactJid, phone_number: pnClean },
-          }).catch(() => {}); // Silently skip errors
+          }).catch((err: unknown) => { logger.debug({ err, instanceId }, 'LID mapping upsert skipped'); }); // Non-critical
           lidMappingsFound++;
         }
 
@@ -1547,7 +1799,7 @@ async function handleHistorySync(
             where: { instance_id_lid_jid: { instance_id: instanceId, lid_jid: contactJid } },
             create: { instance_id: instanceId, lid_jid: contactJid, phone_jid: contactPhoneNumber, phone_number: pnClean, source: 'history-sync' },
             update: { phone_jid: contactPhoneNumber, phone_number: pnClean },
-          }).catch(() => {});
+          }).catch((err: unknown) => { logger.debug({ err, instanceId }, 'LID mapping upsert skipped'); });
           // Also backfill the contact phone_number
           lidMappingsFound++;
         }
@@ -1591,7 +1843,7 @@ async function handleHistorySync(
     }
 
     if (lidMappingsFound > 0) {
-      console.log(`🔗 [SYNC] Found ${lidMappingsFound} LID→Phone mapping(s) from history sync contacts`);
+      logger.info({ instanceId, lidMappingsFound }, '🔗 [SYNC] Found LID→Phone mapping(s) from history sync contacts');
     }
 
     // 6. Update progress
@@ -1601,6 +1853,10 @@ async function handleHistorySync(
     progress.batch_errors = (progress.batch_errors || 0) + batchErrors;
     progress.batches_received = (progress.batches_received || 0) + 1;
     progress.last_batch_at = new Date().toISOString();
+
+    // Calculate percentage based on batches received (heuristic: typical sync ~20-50 batches)
+    // Cap at 95% — only completion detection sets 100%
+    progress.percentage = Math.min(95, Math.max(5, Math.round((progress.batches_received || 0) * 2.5)));
 
     // Calculate messages per second rate
     if (progress.started_at) {
@@ -1619,7 +1875,7 @@ async function handleHistorySync(
       },
     });
 
-    console.log(`📜 [SYNC] Batch done for ${instanceId}: +${batchInserted} inserted, +${batchSkipped} skipped, +${contactsSynced} contacts, errors=${batchErrors}`);
+    logger.info({ instanceId, batchInserted, batchSkipped, contactsSynced, batchErrors }, '📜 [SYNC] Batch done');
 
     // Emit webhook: progress
     baileysEvents.emit('history.sync', {
@@ -1665,7 +1921,7 @@ async function handleHistorySync(
               },
             });
 
-            console.log(`✅ [SYNC] History sync ${finalStatus} for ${instanceId}: ${finalProgress.messages_inserted} messages, ${finalProgress.contacts_synced} contacts`);
+            logger.info({ instanceId, finalStatus, messagesInserted: finalProgress.messages_inserted, contactsSynced: finalProgress.contacts_synced }, '✅ [SYNC] History sync completed');
 
             // Emit webhook: completed
             baileysEvents.emit('history.sync', {
@@ -1736,13 +1992,13 @@ async function handleAppendHistoryMessages(
   try {
     const config = await getSyncConfig(instanceId);
     if (!config.syncEnabled) {
-      console.log(`📜 [HISTORY] Ignoring ${messages.length} historical message(s) (type=append, sync disabled)`);
+      logger.info({ instanceId, count: messages.length }, '📜 [HISTORY] Ignoring historical message(s) (type=append, sync disabled)');
       return;
     }
 
     // Check if sync is paused/stopped
     if (syncPausedInstances.has(instanceId)) {
-      console.log(`⏸️ [HISTORY] Sync STOPPED for ${instanceId}, skipping ${messages.length} append messages`);
+      logger.info({ instanceId, count: messages.length }, '⏸️ [HISTORY] Sync STOPPED, skipping append messages');
       return;
     }
 
@@ -1753,7 +2009,7 @@ async function handleAppendHistoryMessages(
     });
 
     if (instance?.history_sync_status === 'STOPPED') {
-      console.log(`⏸️ [HISTORY] Sync STOPPED for ${instanceId}, skipping ${messages.length} append messages`);
+      logger.info({ instanceId, count: messages.length }, '⏸️ [HISTORY] Sync STOPPED, skipping append messages');
       return;
     }
 
@@ -1808,7 +2064,7 @@ async function handleAppendHistoryMessages(
 
     // Update progress tracking (merge with existing progress)
     if (inserted > 0 || skipped > 0) {
-      console.log(`📜 [HISTORY] Append for ${instanceId}: +${inserted} inserted, ${skipped} duplicates skipped`);
+      logger.info({ instanceId, inserted, skipped }, '📜 [HISTORY] Append batch done');
 
       const rawProgress = (instance?.history_sync_progress as any) || {};
       const progress: any = { ...rawProgress };
@@ -1865,7 +2121,7 @@ async function handleLidMappingUpdate(
     const phoneNumber = pn.replace('@s.whatsapp.net', '').replace(/@.*$/, '');
     if (!phoneNumber) return;
 
-    console.log(`🔗 [LID-MAP] Storing mapping: ${lid} → ${pn} (phone: ${phoneNumber})`);
+    logger.info({ instanceId, lid, pn, phoneNumber }, '🔗 [LID-MAP] Storing mapping');
 
     // 1. Upsert into lid_phone_mappings table
     await prisma.lidPhoneMapping.upsert({
@@ -1902,7 +2158,7 @@ async function handleLidMappingUpdate(
     });
 
     if (updated.count > 0) {
-      console.log(`🔗 [LID-MAP] Backfilled ${updated.count} contact(s) with phone ${phoneNumber} for LID ${lid}`);
+      logger.info({ instanceId, count: updated.count, phoneNumber, lid }, '🔗 [LID-MAP] Backfilled contacts');
     }
 
     // 3. Emit webhook event so CRM can update in real-time
@@ -1917,29 +2173,6 @@ async function handleLidMappingUpdate(
     logger.info({ instanceId, lid, pn, phoneNumber, contactsUpdated: updated.count }, '🔗 LID mapping resolved and stored');
   } catch (error) {
     logger.error({ error, instanceId, mapping }, '❌ Error handling LID mapping update');
-  }
-}
-
-/**
- * Resolve LID JID to phone number using stored mappings.
- * Returns the phone number if found, null otherwise.
- */
-export async function resolveLidToPhone(
-  instanceId: string,
-  lidJid: string
-): Promise<string | null> {
-  try {
-    const mapping = await prisma.lidPhoneMapping.findUnique({
-      where: {
-        instance_id_lid_jid: {
-          instance_id: instanceId,
-          lid_jid: lidJid,
-        },
-      },
-    });
-    return mapping?.phone_number ?? null;
-  } catch {
-    return null;
   }
 }
 
@@ -1999,12 +2232,10 @@ async function handleRealtimeMessage(
     const waMessageId = msg.key.id || undefined;
     const now = new Date();
 
-    // Use upsert to avoid duplicate constraint violation.
-    // If the message was already saved by sendText/sendMedia (outgoing via API),
-    // the upsert will update it (e.g., we could update source or other metadata).
-    // If it's a new message, it inserts.
+    // Use race-safe upsert to avoid duplicate constraint violation.
+    // Both sendText/sendMedia AND this handler may fire for the same outgoing message.
     if (waMessageId) {
-      await prisma.message.upsert({
+      await safeMessageUpsert({
         where: {
           unique_wa_message_per_instance: {
             wa_message_id: waMessageId,
@@ -2148,49 +2379,64 @@ export async function getConnectionInfo(instanceId: string): Promise<ConnectionI
 export async function initializeActiveInstances(): Promise<void> {
   try {
     // --- Stale sync cleanup ---
-    // If server restarted mid-sync, those syncs are dead. Mark them PARTIAL.
-    const staleSyncCount = await prisma.whatsAppInstance.updateMany({
+    // If server restarted mid-sync, those syncs are dead. Finalize them properly.
+    const staleSyncs = await prisma.whatsAppInstance.findMany({
       where: {
         history_sync_status: 'SYNCING',
-        updated_at: { lt: new Date(Date.now() - 10 * 60 * 1000) }, // > 10 minutes ago
+        updated_at: { lt: new Date(Date.now() - 2 * 60 * 1000) }, // > 2 minutes ago
       },
-      data: {
-        history_sync_status: 'PARTIAL',
-      },
+      select: { id: true, history_sync_progress: true },
     });
-    if (staleSyncCount.count > 0) {
-      console.log(`📜 [STARTUP] Marked ${staleSyncCount.count} stale SYNCING instance(s) as PARTIAL`);
+    if (staleSyncs.length > 0) {
+      for (const stale of staleSyncs) {
+        const progress = (stale.history_sync_progress as any) || {};
+        progress.percentage = 100;
+        progress.completed_at = new Date().toISOString();
+        progress.auto_completed_reason = 'server_restart';
+        const finalStatus = (progress.batch_errors || 0) > 0 ? 'PARTIAL' : 'COMPLETED';
+
+        await prisma.whatsAppInstance.update({
+          where: { id: stale.id },
+          data: {
+            history_sync_status: finalStatus,
+            history_sync_progress: progress,
+            last_history_sync_at: new Date(),
+          },
+        });
+      }
+      logger.info({ count: staleSyncs.length }, '📜 [STARTUP] Finalized stale SYNCING instance(s)');
     }
 
     const instances = await prisma.whatsAppInstance.findMany({
       where: {
         is_active: true,
-        status: { in: ['CONNECTED', 'CONNECTING'] },
+        status: { in: ['CONNECTED', 'CONNECTING', 'QR_READY', 'ERROR'] },
         deleted_at: null,
       },
       select: {
         id: true,
         organization_id: true,
+        status: true,
       },
     });
 
-    console.log(`\n📱 [STARTUP] Found ${instances.length} active instance(s) to initialize`);
+    logger.info({ count: instances.length }, '📱 [STARTUP] Found active instance(s) to initialize');
 
     for (const instance of instances) {
       const hasSession = sessionExists(instance.id);
-      console.log(`📱 [STARTUP] Instance ${instance.id}: hasSession=${hasSession}`);
+      logger.info({ instanceId: instance.id, hasSession, status: instance.status }, '📱 [STARTUP] Instance status');
       
       // Check if session exists
       if (hasSession) {
         // Initialize with delay to avoid rate limiting
         setTimeout(() => {
-          console.log(`📱 [STARTUP] Now initializing instance ${instance.id}...`);
+          logger.info({ instanceId: instance.id }, '📱 [STARTUP] Now initializing instance...');
           initializeConnection(instance.id, instance.organization_id).catch((err) => {
-            console.error(`📱 [STARTUP] Failed to initialize instance ${instance.id}:`, err);
+            logger.error({ err, instanceId: instance.id }, '📱 [STARTUP] Failed to initialize instance');
           });
         }, Math.random() * 5000);
       } else {
-        console.log(`📱 [STARTUP] No session for ${instance.id}, marking as DISCONNECTED`);
+        logger.info({ instanceId: instance.id }, '📱 [STARTUP] No session, marking as DISCONNECTED');
         // No session, update status
         await prisma.whatsAppInstance.update({
           where: { id: instance.id },
@@ -2199,6 +2445,6 @@ export async function initializeActiveInstances(): Promise<void> {
       }
     }
   } catch (error) {
-    console.error('📱 [STARTUP] Error initializing active instances:', error);
+    logger.error({ err: error }, '📱 [STARTUP] Error initializing active instances');
   }
 }

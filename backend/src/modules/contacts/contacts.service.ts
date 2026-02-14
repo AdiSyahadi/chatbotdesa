@@ -6,6 +6,7 @@
 import { Prisma } from '@prisma/client';
 import prisma from '../../config/database';
 import logger from '../../config/logger';
+import { AppError } from '../../types';
 import {
   CreateContactInput,
   UpdateContactInput,
@@ -163,7 +164,7 @@ export class ContactService {
     });
 
     if (!instance) {
-      throw new Error('INSTANCE_NOT_FOUND');
+      throw new AppError('WhatsApp instance not found', 404, 'CONTACT_003');
     }
 
     // Format phone to JID
@@ -178,7 +179,7 @@ export class ContactService {
     });
 
     if (existing) {
-      throw new Error('CONTACT_EXISTS');
+      throw new AppError('Contact already exists with this phone number', 409, 'CONTACT_002');
     }
 
     // Create contact
@@ -218,7 +219,7 @@ export class ContactService {
     });
 
     if (!existing) {
-      throw new Error('CONTACT_NOT_FOUND');
+      throw new AppError('Contact not found', 404, 'CONTACT_001');
     }
 
     // Update contact
@@ -251,7 +252,7 @@ export class ContactService {
     });
 
     if (!existing) {
-      throw new Error('CONTACT_NOT_FOUND');
+      throw new AppError('Contact not found', 404, 'CONTACT_001');
     }
 
     await prisma.contact.delete({
@@ -280,7 +281,7 @@ export class ContactService {
     });
 
     if (!instance) {
-      throw new Error('INSTANCE_NOT_FOUND');
+      throw new AppError('WhatsApp instance not found', 404, 'CONTACT_003');
     }
 
     const result: BulkCreateResult = {
@@ -448,7 +449,7 @@ export class ContactService {
     });
 
     if (!contact) {
-      throw new Error('CONTACT_NOT_FOUND');
+      throw new AppError('Contact not found', 404, 'CONTACT_001');
     }
 
     const currentTags = (contact.tags as string[]) || [];
@@ -478,7 +479,7 @@ export class ContactService {
     });
 
     if (!contact) {
-      throw new Error('CONTACT_NOT_FOUND');
+      throw new AppError('Contact not found', 404, 'CONTACT_001');
     }
 
     const currentTags = (contact.tags as string[]) || [];
@@ -512,7 +513,7 @@ export class ContactService {
     });
 
     if (!instance) {
-      throw new Error('INSTANCE_NOT_FOUND');
+      throw new AppError('WhatsApp instance not found', 404, 'CONTACT_003');
     }
 
     const result: ImportContactsResult = {

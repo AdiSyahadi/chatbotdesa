@@ -1,9 +1,11 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../../config/database';
+import config from '../../config';
 import { hashPassword, comparePassword } from '../../utils/crypto';
 import { AppError } from '../../types';
 import { UserRole } from '@prisma/client';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
+import jwt, { type SignOptions } from 'jsonwebtoken';
 import {
   RegisterInput,
   LoginInput,
@@ -17,6 +19,14 @@ import {
 
 export class AuthService {
   constructor(private fastify: FastifyInstance) {}
+
+  /**
+   * Hash a token with SHA-256 for safe DB storage.
+   * Raw tokens are never stored — only their hashes.
+   */
+  private hashToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
 
   /**
    * Register new organization with owner user
@@ -81,7 +91,7 @@ export class AuthService {
     // Save refresh token
     await prisma.user.update({
       where: { id: result.user.id },
-      data: { refresh_token: tokens.refreshToken },
+      data: { refresh_token: this.hashToken(tokens.refreshToken) },
     });
 
     return {
@@ -135,7 +145,7 @@ export class AuthService {
     await prisma.user.update({
       where: { id: user.id },
       data: {
-        refresh_token: tokens.refreshToken,
+        refresh_token: this.hashToken(tokens.refreshToken),
         last_login_at: new Date(),
       },
     });
@@ -157,8 +167,8 @@ export class AuthService {
    */
   async refreshToken(refreshToken: string) {
     try {
-      // Verify refresh token
-      const decoded = this.fastify.jwt.verify(refreshToken) as any;
+      // Verify refresh token with the SEPARATE refresh secret
+      const decoded = jwt.verify(refreshToken, config.jwt.refreshSecret) as any;
 
       // Find user and verify stored token matches
       const user = await prisma.user.findUnique({
@@ -166,7 +176,7 @@ export class AuthService {
         include: { organization: true },
       });
 
-      if (!user || user.refresh_token !== refreshToken) {
+      if (!user || user.refresh_token !== this.hashToken(refreshToken)) {
         throw new AppError('Invalid refresh token', 401, 'AUTH_003');
       }
 
@@ -307,7 +317,7 @@ export class AuthService {
     await prisma.user.update({
       where: { id: user.id },
       data: {
-        reset_token: resetToken,
+        reset_token: this.hashToken(resetToken),
         reset_token_expires_at: resetTokenExpires,
       },
     });
@@ -324,7 +334,7 @@ export class AuthService {
   async resetPassword(token: string, newPassword: string) {
     const user = await prisma.user.findFirst({
       where: {
-        reset_token: token,
+        reset_token: this.hashToken(token),
         reset_token_expires_at: { gt: new Date() },
       },
     });
@@ -370,9 +380,12 @@ export class AuthService {
       { expiresIn: '15m' }
     );
 
-    const refreshToken = this.fastify.jwt.sign(
+    // Sign refresh token with SEPARATE refresh secret (different from access token secret)
+    const refreshOpts: SignOptions = { expiresIn: '7d' };
+    const refreshToken = jwt.sign(
       { userId: user.id, type: 'refresh' },
-      { expiresIn: '7d' }
+      config.jwt.refreshSecret,
+      refreshOpts
     );
 
     return {

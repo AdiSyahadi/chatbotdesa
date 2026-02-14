@@ -1,5 +1,6 @@
 import Redis from 'ioredis';
 import config from './index';
+import logger from './logger';
 
 let redis: Redis | null = null;
 let isRedisConnected = false;
@@ -12,7 +13,7 @@ try {
     enableReadyCheck: true,
     retryStrategy(times) {
       if (times > 5) {
-        console.warn('⚠️ Redis not available - broadcast features will be disabled');
+        logger.warn('Redis not available - broadcast features will be disabled');
         return null; // Stop retrying
       }
       const delay = Math.min(times * 500, 2000);
@@ -22,18 +23,18 @@ try {
 
   redis.on('connect', () => {
     isRedisConnected = true;
-    console.log('✅ Redis connected');
+    logger.info('Redis connected');
   });
 
   redis.on('ready', () => {
     isRedisConnected = true;
-    console.log('✅ Redis ready');
+    logger.info('Redis ready');
   });
 
   redis.on('error', (err) => {
     // Only log if we were previously connected
     if (isRedisConnected) {
-      console.error('❌ Redis connection error:', err.message);
+      logger.error({ err: err.message }, 'Redis connection error');
     }
     isRedisConnected = false;
   });
@@ -42,7 +43,7 @@ try {
     isRedisConnected = false;
   });
 } catch (err) {
-  console.warn('⚠️ Failed to initialize Redis - broadcast features disabled');
+  logger.warn('Failed to initialize Redis - broadcast features disabled');
   redis = null;
 }
 

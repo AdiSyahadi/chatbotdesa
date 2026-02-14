@@ -80,9 +80,19 @@ export const errorHandler = (
     });
   }
 
+  // Rate limit errors from @fastify/rate-limit
+  if ((error as any).statusCode === 429) {
+    return reply.status(429).send({
+      success: false,
+      error: {
+        code: 'RATE_LIMIT_EXCEEDED',
+        message: error.message || 'Too many requests',
+      },
+    });
+  }
+
   // Log unexpected errors
-  console.error('[ERROR_HANDLER]', error.name, error.message, error.stack?.split('\n').slice(0, 5).join('\n'));
-  request.log.error(error);
+  request.log.error({ errorName: error.name, errorMessage: error.message }, '[ERROR_HANDLER]');
 
   return reply.status(500).send({
     success: false,

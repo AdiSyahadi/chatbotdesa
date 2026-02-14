@@ -25,58 +25,7 @@ import {
   BulkDeleteContactsInput,
   ExportContactsQuery,
 } from './contacts.schema';
-import logger from '../../config/logger';
-
-// ============================================
-// ERROR HANDLING
-// ============================================
-
-const errorCodeMap: Record<string, { statusCode: number; code: string; message: string }> = {
-  CONTACT_NOT_FOUND: {
-    statusCode: 404,
-    code: 'CONTACT_001',
-    message: 'Contact not found',
-  },
-  CONTACT_EXISTS: {
-    statusCode: 409,
-    code: 'CONTACT_002',
-    message: 'Contact already exists with this phone number',
-  },
-  INSTANCE_NOT_FOUND: {
-    statusCode: 404,
-    code: 'CONTACT_003',
-    message: 'WhatsApp instance not found',
-  },
-  INVALID_CSV: {
-    statusCode: 400,
-    code: 'CONTACT_004',
-    message: 'Invalid CSV file format',
-  },
-};
-
-function handleError(error: unknown, reply: FastifyReply) {
-  if (error instanceof Error) {
-    const mappedError = errorCodeMap[error.message];
-    if (mappedError) {
-      return reply.status(mappedError.statusCode).send({
-        success: false,
-        error: {
-          code: mappedError.code,
-          message: mappedError.message,
-        },
-      });
-    }
-  }
-
-  logger.error({ err: error }, 'Contacts module error');
-  return reply.status(500).send({
-    success: false,
-    error: {
-      code: 'INTERNAL_ERROR',
-      message: 'An unexpected error occurred',
-    },
-  });
-}
+import { AppError } from '../../types';
 
 // ============================================
 // ROUTES REGISTRATION
@@ -117,7 +66,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         pagination: result.pagination,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -135,7 +84,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         data: { tags },
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -157,7 +106,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         data: { count },
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -200,7 +149,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         data: contacts,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -218,13 +167,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
       );
 
       if (!contact) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'CONTACT_001',
-            message: 'Contact not found',
-          },
-        });
+        throw new AppError('Contact not found', 404, 'CONTACT_001');
       }
 
       return reply.send({
@@ -232,7 +175,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         data: contact,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -254,7 +197,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         data: contact,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -276,7 +219,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         data: result,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -295,13 +238,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         const data = await request.file();
         
         if (!data) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'CONTACT_004',
-              message: 'No file uploaded',
-            },
-          });
+          throw new AppError('No file uploaded', 400, 'CONTACT_004');
         }
 
         // Read CSV content
@@ -311,13 +248,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         // Parse CSV (simple parsing)
         const lines = csvContent.split(/\r?\n/).filter(line => line.trim());
         if (lines.length < 2) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'CONTACT_004',
-              message: 'CSV file must have headers and at least one data row',
-            },
-          });
+          throw new AppError('CSV file must have headers and at least one data row', 400, 'CONTACT_004');
         }
 
         // Parse headers
@@ -343,13 +274,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
           : undefined;
 
         if (!instanceId) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'instance_id is required',
-            },
-          });
+          throw new AppError('instance_id is required', 400, 'VALIDATION_ERROR');
         }
 
         const result = await contactService.importFromCsv(
@@ -374,25 +299,13 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         };
 
         if (!body.instance_id || !body.csv_content) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'instance_id and csv_content are required',
-            },
-          });
+          throw new AppError('instance_id and csv_content are required', 400, 'VALIDATION_ERROR');
         }
 
         // Parse CSV content
         const lines = body.csv_content.split(/\r?\n/).filter(line => line.trim());
         if (lines.length < 2) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'CONTACT_004',
-              message: 'CSV content must have headers and at least one data row',
-            },
-          });
+          throw new AppError('CSV content must have headers and at least one data row', 400, 'CONTACT_004');
         }
 
         const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
@@ -421,7 +334,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         });
       }
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -445,7 +358,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         data: contact,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -464,7 +377,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         data: { message: 'Contact deleted successfully' },
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -486,7 +399,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         data: result,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -510,7 +423,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         data: contact,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -534,7 +447,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         data: contact,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -556,7 +469,7 @@ export async function contactsRoutes(fastify: FastifyInstance) {
         data: result,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 }

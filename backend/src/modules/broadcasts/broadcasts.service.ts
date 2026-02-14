@@ -25,19 +25,14 @@ import {
   BroadcastStatusType,
   formatPhoneNumber,
 } from './broadcasts.schema';
+import { AppError } from '../../types';
 
 // ============================================
 // QUEUE SETUP
 // ============================================
 
 import config from '../../config';
-
-// Redis connection options for BullMQ (requires separate connection)
-const redisConnectionOptions = {
-  host: 'localhost',
-  port: 6379,
-  maxRetriesPerRequest: null,
-};
+import redisConnectionOptions from '../../config/redis-connection';
 
 // Create broadcast queue (optional - depends on Redis availability)
 let broadcastQueue: Queue<BroadcastJobData> | null = null;
@@ -160,7 +155,7 @@ export class BroadcastService {
     });
 
     if (!instance) {
-      throw new Error('INSTANCE_NOT_FOUND');
+      throw new AppError('WhatsApp instance not found', 404, 'BROADCAST_008');
     }
 
     // Create broadcast
@@ -225,11 +220,11 @@ export class BroadcastService {
     });
 
     if (!broadcast) {
-      throw new Error('BROADCAST_NOT_FOUND');
+      throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
     }
 
     if (!['DRAFT', 'SCHEDULED'].includes(broadcast.status)) {
-      throw new Error('BROADCAST_NOT_EDITABLE');
+      throw new AppError('Broadcast cannot be edited in its current status', 400, 'BROADCAST_002');
     }
 
     const updated = await prisma.broadcast.update({
@@ -267,11 +262,11 @@ export class BroadcastService {
     });
 
     if (!broadcast) {
-      throw new Error('BROADCAST_NOT_FOUND');
+      throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
     }
 
     if (!['DRAFT', 'SCHEDULED', 'COMPLETED', 'FAILED'].includes(broadcast.status)) {
-      throw new Error('BROADCAST_CANNOT_DELETE');
+      throw new AppError('Running broadcasts cannot be deleted', 400, 'BROADCAST_003');
     }
 
     // Delete recipients first (cascade)
@@ -302,11 +297,11 @@ export class BroadcastService {
     });
 
     if (!broadcast) {
-      throw new Error('BROADCAST_NOT_FOUND');
+      throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
     }
 
     if (!['DRAFT', 'SCHEDULED'].includes(broadcast.status)) {
-      throw new Error('BROADCAST_NOT_EDITABLE');
+      throw new AppError('Broadcast cannot be edited in its current status', 400, 'BROADCAST_002');
     }
 
     // Get existing phone numbers
@@ -473,7 +468,7 @@ export class BroadcastService {
     });
 
     if (!broadcast) {
-      throw new Error('BROADCAST_NOT_FOUND');
+      throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
     }
 
     return this.addRecipientsFromTags(
@@ -500,7 +495,7 @@ export class BroadcastService {
     });
 
     if (!broadcast) {
-      throw new Error('BROADCAST_NOT_FOUND');
+      throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
     }
 
     return this.addRecipientsFromContactIds(
@@ -526,11 +521,11 @@ export class BroadcastService {
     });
 
     if (!broadcast) {
-      throw new Error('BROADCAST_NOT_FOUND');
+      throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
     }
 
     if (!['DRAFT', 'SCHEDULED'].includes(broadcast.status)) {
-      throw new Error('BROADCAST_NOT_EDITABLE');
+      throw new AppError('Broadcast cannot be edited in its current status', 400, 'BROADCAST_002');
     }
 
     await prisma.broadcastRecipient.delete({
@@ -563,11 +558,11 @@ export class BroadcastService {
     });
 
     if (!broadcast) {
-      throw new Error('BROADCAST_NOT_FOUND');
+      throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
     }
 
     if (!['DRAFT', 'SCHEDULED'].includes(broadcast.status)) {
-      throw new Error('BROADCAST_NOT_EDITABLE');
+      throw new AppError('Broadcast cannot be edited in its current status', 400, 'BROADCAST_002');
     }
 
     await prisma.broadcastRecipient.deleteMany({
@@ -596,7 +591,7 @@ export class BroadcastService {
     });
 
     if (!broadcast) {
-      throw new Error('BROADCAST_NOT_FOUND');
+      throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
     }
 
     const { status, page, limit } = query;
@@ -644,7 +639,7 @@ export class BroadcastService {
     });
 
     if (!broadcast) {
-      throw new Error('BROADCAST_NOT_FOUND');
+      throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
     }
 
     const stats = await prisma.broadcastRecipient.groupBy({
@@ -700,15 +695,15 @@ export class BroadcastService {
     });
 
     if (!broadcast) {
-      throw new Error('BROADCAST_NOT_FOUND');
+      throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
     }
 
     if (!['DRAFT', 'SCHEDULED', 'PAUSED'].includes(broadcast.status)) {
-      throw new Error('BROADCAST_CANNOT_START');
+      throw new AppError('Broadcast cannot be started in its current status', 400, 'BROADCAST_004');
     }
 
     if (broadcast.recipient_count === 0) {
-      throw new Error('BROADCAST_NO_RECIPIENTS');
+      throw new AppError('Broadcast has no recipients', 400, 'BROADCAST_005');
     }
 
     // Verify instance is connected
@@ -720,7 +715,7 @@ export class BroadcastService {
     });
 
     if (!instance) {
-      throw new Error('INSTANCE_NOT_CONNECTED');
+      throw new AppError('WhatsApp instance is not connected', 400, 'BROADCAST_009');
     }
 
     // Update status to RUNNING
@@ -734,7 +729,7 @@ export class BroadcastService {
 
     // Add to queue
     if (!broadcastQueue) {
-      throw new Error('BROADCAST_QUEUE_NOT_AVAILABLE');
+      throw new AppError('Broadcast queue is not available', 503, 'BROADCAST_010');
     }
 
     await broadcastQueue.add(
@@ -768,11 +763,11 @@ export class BroadcastService {
     });
 
     if (!broadcast) {
-      throw new Error('BROADCAST_NOT_FOUND');
+      throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
     }
 
     if (broadcast.status !== 'RUNNING') {
-      throw new Error('BROADCAST_NOT_RUNNING');
+      throw new AppError('Broadcast is not currently running', 400, 'BROADCAST_006');
     }
 
     const updated = await prisma.broadcast.update({
@@ -809,11 +804,11 @@ export class BroadcastService {
     });
 
     if (!broadcast) {
-      throw new Error('BROADCAST_NOT_FOUND');
+      throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
     }
 
     if (!['RUNNING', 'PAUSED', 'SCHEDULED'].includes(broadcast.status)) {
-      throw new Error('BROADCAST_CANNOT_CANCEL');
+      throw new AppError('Broadcast cannot be cancelled in its current status', 400, 'BROADCAST_007');
     }
 
     const updated = await prisma.broadcast.update({

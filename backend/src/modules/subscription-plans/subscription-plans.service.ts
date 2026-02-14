@@ -5,6 +5,7 @@
 
 import prisma from '../../config/database';
 import { Prisma, BillingPeriod, SubscriptionStatus, PrismaClient } from '@prisma/client';
+import { AppError } from '../../types';
 import {
   CreatePlanInput,
   UpdatePlanInput,
@@ -38,7 +39,7 @@ export async function createPlan(data: CreatePlanInput): Promise<PlanResponse> {
   });
 
   if (existingPlan) {
-    throw new Error('Plan with this slug already exists');
+    throw new AppError('Plan with this slug already exists', 409, 'PLAN_002');
   }
 
   const plan = await prisma.subscriptionPlan.create({
@@ -149,7 +150,7 @@ export async function updatePlan(planId: string, data: UpdatePlanInput): Promise
   });
 
   if (!existingPlan) {
-    throw new Error('Plan not found');
+    throw new AppError('Plan not found', 404, 'PLAN_001');
   }
 
   // If updating slug, check for duplicates
@@ -159,7 +160,7 @@ export async function updatePlan(planId: string, data: UpdatePlanInput): Promise
     });
 
     if (duplicateSlug) {
-      throw new Error('Plan with this slug already exists');
+      throw new AppError('Plan with this slug already exists', 409, 'PLAN_002');
     }
   }
 
@@ -206,13 +207,15 @@ export async function deletePlan(planId: string): Promise<void> {
   });
 
   if (!existingPlan) {
-    throw new Error('Plan not found');
+    throw new AppError('Plan not found', 404, 'PLAN_001');
   }
 
   // Prevent deletion if there are active subscriptions
   if (existingPlan.subscriptions.length > 0) {
-    throw new Error(
-      `Cannot delete plan with ${existingPlan.subscriptions.length} active subscription(s). Deactivate the plan instead.`
+    throw new AppError(
+      `Cannot delete plan with ${existingPlan.subscriptions.length} active subscription(s). Deactivate the plan instead.`,
+      400,
+      'PLAN_003'
     );
   }
 
@@ -287,7 +290,7 @@ export async function createSubscription(
   });
 
   if (!organization) {
-    throw new Error('Organization not found');
+    throw new AppError('Organization not found', 404, 'PLAN_001');
   }
 
   // Check if plan exists and is active
@@ -296,11 +299,11 @@ export async function createSubscription(
   });
 
   if (!plan) {
-    throw new Error('Plan not found');
+    throw new AppError('Plan not found', 404, 'PLAN_001');
   }
 
   if (!plan.is_active) {
-    throw new Error('Plan is not active');
+    throw new AppError('Plan is not active', 400, 'PLAN_003');
   }
 
   // Check if organization already has an active subscription
@@ -312,7 +315,7 @@ export async function createSubscription(
   });
 
   if (existingSubscription) {
-    throw new Error('Organization already has an active subscription. Use change plan instead.');
+    throw new AppError('Organization already has an active subscription. Use change plan instead.', 409, 'PLAN_002');
   }
 
   const billingPeriod = (data.billing_period || plan.billing_period) as BillingPeriod;
@@ -422,7 +425,7 @@ export async function updateSubscription(
   });
 
   if (!subscription) {
-    throw new Error('Subscription not found');
+    throw new AppError('Subscription not found', 404, 'PLAN_001');
   }
 
   const updated = await prisma.subscription.update({
@@ -456,7 +459,7 @@ export async function cancelSubscription(
   });
 
   if (!subscription) {
-    throw new Error('Active subscription not found');
+    throw new AppError('Active subscription not found', 404, 'PLAN_001');
   }
 
   if (immediate) {
@@ -529,7 +532,7 @@ export async function changePlan(
   });
 
   if (!currentSubscription) {
-    throw new Error('No active subscription found');
+    throw new AppError('No active subscription found', 404, 'PLAN_001');
   }
 
   // Get new plan
@@ -538,15 +541,15 @@ export async function changePlan(
   });
 
   if (!newPlan) {
-    throw new Error('New plan not found');
+    throw new AppError('New plan not found', 404, 'PLAN_001');
   }
 
   if (!newPlan.is_active) {
-    throw new Error('New plan is not active');
+    throw new AppError('New plan is not active', 400, 'PLAN_003');
   }
 
   if (currentSubscription.plan_id === data.new_plan_id) {
-    throw new Error('Already subscribed to this plan');
+    throw new AppError('Already subscribed to this plan', 400, 'PLAN_004');
   }
 
   // Calculate proration
@@ -646,7 +649,7 @@ export async function getSubscriptionUsage(organizationId: string): Promise<Subs
   });
 
   if (!organization) {
-    throw new Error('Organization not found');
+    throw new AppError('Organization not found', 404, 'PLAN_001');
   }
 
   // Get contact count
@@ -705,11 +708,11 @@ export async function renewSubscription(subscriptionId: string): Promise<Subscri
   });
 
   if (!subscription) {
-    throw new Error('Subscription not found');
+    throw new AppError('Subscription not found', 404, 'PLAN_001');
   }
 
   if (subscription.cancel_at_period_end) {
-    throw new Error('Subscription is set to cancel at period end');
+    throw new AppError('Subscription is set to cancel at period end', 400, 'PLAN_003');
   }
 
   const newPeriodStart = subscription.current_period_end;

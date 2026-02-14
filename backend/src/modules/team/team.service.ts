@@ -6,6 +6,7 @@
 import { Prisma, UserRole, InvitationStatus } from '@prisma/client';
 import prisma from '../../config/database';
 import logger from '../../config/logger';
+import { AppError } from '../../types';
 import { hashPassword } from '../../utils/crypto';
 import { generateRandomToken } from '../../utils/crypto';
 import {
@@ -47,7 +48,7 @@ class TeamService {
     });
 
     if (existingMember) {
-      throw new Error('User is already a member of this organization');
+      throw new AppError('User is already a member of this organization', 409, 'TEAM_004');
     }
 
     // Check if there's already a pending invitation
@@ -60,7 +61,7 @@ class TeamService {
     });
 
     if (existingInvitation) {
-      throw new Error('An invitation is already pending for this email');
+      throw new AppError('An invitation is already pending for this email', 409, 'TEAM_005');
     }
 
     // Generate invitation token
@@ -176,11 +177,11 @@ class TeamService {
     });
 
     if (!invitation) {
-      throw new Error('Invalid invitation token');
+      throw new AppError('Invalid invitation token', 400, 'TEAM_007');
     }
 
     if (invitation.status !== 'PENDING') {
-      throw new Error(`Invitation has been ${invitation.status.toLowerCase()}`);
+      throw new AppError(`Invitation has been ${invitation.status.toLowerCase()}`, 400, 'TEAM_007');
     }
 
     if (new Date() > invitation.expires_at) {
@@ -188,7 +189,7 @@ class TeamService {
         where: { id: invitation.id },
         data: { status: 'EXPIRED' },
       });
-      throw new Error('Invitation has expired');
+      throw new AppError('Invitation has expired', 400, 'TEAM_007');
     }
 
     // Check if user with this email already exists
@@ -197,7 +198,7 @@ class TeamService {
     });
 
     if (existingUser) {
-      throw new Error('An account with this email already exists');
+      throw new AppError('An account with this email already exists', 409, 'TEAM_008');
     }
 
     // Hash password
@@ -254,11 +255,11 @@ class TeamService {
     });
 
     if (!invitation) {
-      throw new Error('INVITATION_NOT_FOUND');
+      throw new AppError('Invitation not found', 404, 'TEAM_002');
     }
 
     if (invitation.status === 'ACCEPTED') {
-      throw new Error('Invitation has already been accepted');
+      throw new AppError('Invitation has already been accepted', 400, 'TEAM_007');
     }
 
     // Generate new token and extend expiry
@@ -465,12 +466,12 @@ class TeamService {
 
     // Prevent changing own role
     if (memberId === updatedById) {
-      throw new Error('Cannot change your own role');
+      throw new AppError('Cannot change your own role', 400, 'TEAM_006');
     }
 
     // Prevent changing owner's role (only one owner per org)
     if (member.role === 'ORG_OWNER') {
-      throw new Error('Cannot change the owner\'s role');
+      throw new AppError('Cannot change the owner\'s role', 400, 'TEAM_006');
     }
 
     // Update role
@@ -506,12 +507,12 @@ class TeamService {
 
     // Prevent self-deactivation
     if (memberId === deactivatedById) {
-      throw new Error('Cannot deactivate your own account');
+      throw new AppError('Cannot deactivate your own account', 400, 'TEAM_006');
     }
 
     // Prevent deactivating owner
     if (member.role === 'ORG_OWNER') {
-      throw new Error('Cannot deactivate the organization owner');
+      throw new AppError('Cannot deactivate the organization owner', 400, 'TEAM_006');
     }
 
     await prisma.user.update({
@@ -575,12 +576,12 @@ class TeamService {
 
     // Prevent self-removal
     if (memberId === removedById) {
-      throw new Error('Cannot remove your own account');
+      throw new AppError('Cannot remove your own account', 400, 'TEAM_006');
     }
 
     // Prevent removing owner
     if (member.role === 'ORG_OWNER') {
-      throw new Error('Cannot remove the organization owner');
+      throw new AppError('Cannot remove the organization owner', 400, 'TEAM_006');
     }
 
     await prisma.user.update({

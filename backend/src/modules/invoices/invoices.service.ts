@@ -5,6 +5,7 @@
 
 import prisma from '../../config/database';
 import { Prisma, InvoiceStatus, PaymentMethod, PrismaClient } from '@prisma/client';
+import { AppError } from '../../types';
 import {
   CreateInvoiceInput,
   UpdateInvoiceInput,
@@ -387,7 +388,7 @@ export async function updateInvoice(
   const existingInvoice = await prisma.invoice.findFirst({ where });
 
   if (!existingInvoice) {
-    throw new Error('Invoice not found');
+    throw new AppError('Invoice not found', 404, 'INVOICE_001');
   }
 
   const updateData: Prisma.InvoiceUpdateInput = {};
@@ -450,15 +451,15 @@ export async function submitPaymentProof(
   });
 
   if (!invoice) {
-    throw new Error('Invoice not found');
+    throw new AppError('Invoice not found', 404, 'INVOICE_001');
   }
 
   if (invoice.status !== 'PENDING') {
-    throw new Error('Can only submit payment proof for pending invoices');
+    throw new AppError('Can only submit payment proof for pending invoices', 400, 'INVOICE_002');
   }
 
   if (invoice.payment_method !== 'MANUAL_TRANSFER') {
-    throw new Error('Payment proof is only required for manual transfers');
+    throw new AppError('Payment proof is only required for manual transfers', 400, 'INVOICE_002');
   }
 
   const updated = await prisma.invoice.update({
@@ -506,11 +507,11 @@ export async function verifyPayment(
   });
 
   if (!invoice) {
-    throw new Error('Invoice not found');
+    throw new AppError('Invoice not found', 404, 'INVOICE_001');
   }
 
   if (invoice.status !== 'PENDING') {
-    throw new Error('Can only verify pending invoices');
+    throw new AppError('Can only verify pending invoices', 400, 'INVOICE_002');
   }
 
   // Update invoice and potentially subscription status
@@ -583,11 +584,11 @@ export async function cancelInvoice(
   const invoice = await prisma.invoice.findFirst({ where });
 
   if (!invoice) {
-    throw new Error('Invoice not found');
+    throw new AppError('Invoice not found', 404, 'INVOICE_001');
   }
 
   if (invoice.status !== 'PENDING') {
-    throw new Error('Can only cancel pending invoices');
+    throw new AppError('Can only cancel pending invoices', 400, 'INVOICE_002');
   }
 
   const updated = await prisma.invoice.update({

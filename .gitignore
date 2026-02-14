@@ -1,0 +1,16 @@
+# Root-level gitignore for monorepo
+
+# SQL dumps
+*.sql
+
+# Misc text files
+pashe.txt
+cararunredis.txt
+saran dari temen saya.txt
+
+# Backup files
+*.bak
+
+# OS
+.DS_Store
+Thumbs.db

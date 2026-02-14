@@ -23,83 +23,7 @@ import {
   BroadcastIdParam,
   ListRecipientsQuery,
 } from './broadcasts.schema';
-import logger from '../../config/logger';
-
-// ============================================
-// ERROR HANDLING
-// ============================================
-
-const errorCodeMap: Record<string, { statusCode: number; code: string; message: string }> = {
-  BROADCAST_NOT_FOUND: {
-    statusCode: 404,
-    code: 'BROADCAST_001',
-    message: 'Broadcast not found',
-  },
-  BROADCAST_NOT_EDITABLE: {
-    statusCode: 400,
-    code: 'BROADCAST_002',
-    message: 'Broadcast cannot be edited. Only DRAFT or SCHEDULED broadcasts can be modified.',
-  },
-  BROADCAST_CANNOT_DELETE: {
-    statusCode: 400,
-    code: 'BROADCAST_003',
-    message: 'Running broadcasts cannot be deleted. Pause or cancel first.',
-  },
-  BROADCAST_CANNOT_START: {
-    statusCode: 400,
-    code: 'BROADCAST_004',
-    message: 'Broadcast cannot be started. It may already be running or completed.',
-  },
-  BROADCAST_NO_RECIPIENTS: {
-    statusCode: 400,
-    code: 'BROADCAST_005',
-    message: 'Broadcast has no recipients. Add recipients before starting.',
-  },
-  BROADCAST_NOT_RUNNING: {
-    statusCode: 400,
-    code: 'BROADCAST_006',
-    message: 'Broadcast is not currently running.',
-  },
-  BROADCAST_CANNOT_CANCEL: {
-    statusCode: 400,
-    code: 'BROADCAST_007',
-    message: 'Broadcast cannot be cancelled in its current state.',
-  },
-  INSTANCE_NOT_FOUND: {
-    statusCode: 404,
-    code: 'BROADCAST_008',
-    message: 'WhatsApp instance not found',
-  },
-  INSTANCE_NOT_CONNECTED: {
-    statusCode: 400,
-    code: 'BROADCAST_009',
-    message: 'WhatsApp instance is not connected. Connect the instance first.',
-  },
-};
-
-function handleError(error: unknown, reply: FastifyReply) {
-  if (error instanceof Error) {
-    const mappedError = errorCodeMap[error.message];
-    if (mappedError) {
-      return reply.status(mappedError.statusCode).send({
-        success: false,
-        error: {
-          code: mappedError.code,
-          message: mappedError.message,
-        },
-      });
-    }
-  }
-
-  logger.error({ err: error }, 'Broadcasts module error');
-  return reply.status(500).send({
-    success: false,
-    error: {
-      code: 'INTERNAL_ERROR',
-      message: 'An unexpected error occurred',
-    },
-  });
-}
+import { AppError } from '../../types';
 
 // ============================================
 // ROUTES REGISTRATION
@@ -140,7 +64,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         pagination: result.pagination,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -158,13 +82,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
       );
 
       if (!broadcast) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'BROADCAST_001',
-            message: 'Broadcast not found',
-          },
-        });
+        throw new AppError('Broadcast not found', 404, 'BROADCAST_001');
       }
 
       return reply.send({
@@ -172,7 +90,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: broadcast,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -194,7 +112,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: broadcast,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -218,7 +136,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: broadcast,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -237,7 +155,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: { message: 'Broadcast deleted successfully' },
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -259,7 +177,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: stats,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -284,7 +202,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         pagination: result.pagination,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -308,7 +226,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: result,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -332,7 +250,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: result,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -356,7 +274,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: result,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -381,7 +299,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: { message: 'Recipient removed successfully' },
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -403,7 +321,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: { message: 'All recipients cleared' },
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -425,7 +343,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: broadcast,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -447,7 +365,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: broadcast,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -469,7 +387,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: broadcast,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -491,7 +409,7 @@ export async function broadcastsRoutes(fastify: FastifyInstance) {
         data: broadcast,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 }

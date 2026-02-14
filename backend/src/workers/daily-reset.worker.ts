@@ -20,11 +20,7 @@ type WarmingPhase = keyof typeof WARMING_PHASE_LIMITS;
 
 const QUEUE_NAME = 'daily-reset';
 
-const redisConnectionOptions = {
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  maxRetriesPerRequest: null,
-};
+import redisConnectionOptions from '../config/redis-connection';
 
 let dailyResetQueue: Queue | null = null;
 let dailyResetWorker: Worker | null = null;

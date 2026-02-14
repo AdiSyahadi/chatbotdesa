@@ -17,7 +17,7 @@ import { toast } from "sonner";
 // Query keys
 export const queryKeys = {
   // WhatsApp
-  instances: ["instances"] as const,
+  instances: (params?: Record<string, unknown>) => ["instances", params] as const,
   instance: (id: string) => ["instances", id] as const,
   instanceQr: (id: string) => ["instances", id, "qr"] as const,
   instanceStatus: (id: string) => ["instances", id, "status"] as const,
@@ -39,7 +39,7 @@ export const queryKeys = {
   // Webhooks
   webhooks: (params?: Record<string, unknown>) => ["webhooks", params] as const,
   webhook: (id: string) => ["webhooks", id] as const,
-  webhookLogs: (id: string) => ["webhooks", id, "logs"] as const,
+  webhookLogs: (id: string, params?: Record<string, unknown>) => ["webhooks", id, "logs", params] as const,
   
   // API Keys
   apiKeys: ["apiKeys"] as const,
@@ -75,7 +75,7 @@ export const queryKeys = {
 
 export function useInstances(params?: { page?: number; limit?: number }) {
   return useQuery({
-    queryKey: queryKeys.instances,
+    queryKey: queryKeys.instances(params),
     queryFn: () => instancesApi.getAll(params),
   });
 }
@@ -88,12 +88,17 @@ export function useInstance(id: string) {
   });
 }
 
-export function useInstanceQr(id: string) {
+export function useInstanceQr(id: string, status?: string) {
   return useQuery({
     queryKey: queryKeys.instanceQr(id),
     queryFn: () => instancesApi.getQrCode(id),
-    enabled: !!id,
-    refetchInterval: 30000, // Refetch every 30 seconds
+    // Only fetch QR when backend has a QR ready — prevents premature 400
+    // that would poison React Query's cache and block subsequent polling
+    enabled: !!id && status === 'QR_READY',
+    staleTime: 0,
+    gcTime: 0,
+    retry: 1,
+    retryDelay: 2000,
   });
 }
 
@@ -113,7 +118,7 @@ export function useCreateInstance() {
     mutationFn: (data: { name: string; webhook_url?: string }) => 
       instancesApi.create(data),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.instances });
+      queryClient.invalidateQueries({ queryKey: ["instances"] });
       toast.success("Instance berhasil dibuat");
     },
     onError: (error: Error) => {
@@ -129,7 +134,7 @@ export function useUpdateInstance() {
     mutationFn: ({ instanceId, data }: { instanceId: string; data: Record<string, unknown> }) => 
       instancesApi.update(instanceId, data),
     onSuccess: (_, variables) => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.instances });
+      queryClient.invalidateQueries({ queryKey: ["instances"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.instance(variables.instanceId) });
       toast.success("Instance berhasil diupdate");
     },
@@ -145,7 +150,7 @@ export function useDeleteInstance() {
   return useMutation({
     mutationFn: (id: string) => instancesApi.delete(id),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.instances });
+      queryClient.invalidateQueries({ queryKey: ["instances"] });
       toast.success("Instance berhasil dihapus");
     },
     onError: (error: Error) => {
@@ -160,8 +165,11 @@ export function useConnectInstance() {
   return useMutation({
     mutationFn: (id: string) => instancesApi.connect(id),
     onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ["instances"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.instance(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.instanceStatus(id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.instanceQr(id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus(id) });
       toast.success("Menghubungkan instance...");
     },
     onError: (error: Error) => {
@@ -176,8 +184,10 @@ export function useDisconnectInstance() {
   return useMutation({
     mutationFn: (id: string) => instancesApi.disconnect(id),
     onSuccess: (_, id) => {
+      queryClient.invalidateQueries({ queryKey: ["instances"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.instance(id) });
       queryClient.invalidateQueries({ queryKey: queryKeys.instanceStatus(id) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus(id) });
       toast.success("Instance terputus");
     },
     onError: (error: Error) => {
@@ -194,6 +204,7 @@ export function useMessages(params?: {
   instanceId?: string;
   status?: string;
   direction?: string;
+  source?: string;
 }) {
   return useQuery({
     queryKey: queryKeys.messages(params),
@@ -471,7 +482,7 @@ export function useWebhook(id: string) {
 
 export function useWebhookLogs(id: string, params?: { page?: number; limit?: number }) {
   return useQuery({
-    queryKey: queryKeys.webhookLogs(id),
+    queryKey: queryKeys.webhookLogs(id, params),
     queryFn: () => webhooksApi.getLogs(id, params),
     enabled: !!id,
   });
@@ -752,13 +763,23 @@ export function useSyncStatus(instanceId: string) {
     refetchOnWindowFocus: 'always', // Immediately refresh when user switches back to browser tab
     refetchIntervalInBackground: true, // Keep polling even when tab is in background
     refetchInterval: (query) => {
-      const status = query.state.data?.data?.status;
+      const data = query.state.data?.data;
+      const syncStatus = data?.status;
+      const instanceStatus = data?.instance_status;
+
       // SYNCING: poll every 2s for live progress bar
-      // STOPPED: poll every 3s so resume/stop transitions are detected quickly
-      // Others: poll every 5s so status changes are detected quickly
-      if (status === 'SYNCING') return 2000;
-      if (status === 'STOPPED') return 3000;
-      return 5000;
+      if (syncStatus === 'SYNCING') return 2000;
+      // STOPPED + connected: poll 3s (user might resume, detect changes fast)
+      if (syncStatus === 'STOPPED' && instanceStatus === 'CONNECTED') return 3000;
+      // STOPPED + disconnected: poll 10s (slower — just to detect reconnection)
+      if (syncStatus === 'STOPPED') return 10000;
+      // IDLE + connected: poll 5s (sync could start any moment after connect)
+      if ((syncStatus === 'IDLE' || !syncStatus) && instanceStatus === 'CONNECTED') return 5000;
+      // IDLE + connecting/QR_READY: poll 5s (about to connect → sync imminent)
+      if ((syncStatus === 'IDLE' || !syncStatus) && (instanceStatus === 'CONNECTING' || instanceStatus === 'QR_READY')) return 5000;
+      // COMPLETED/PARTIAL/FAILED: no polling (terminal states, only re-pair changes them)
+      // IDLE + disconnected: no polling (nothing will change until reconnect)
+      return false;
     },
   });
 }
@@ -783,12 +804,30 @@ export function useRePairForSync() {
   return useMutation({
     mutationFn: (instanceId: string) => syncApi.rePairForSync(instanceId),
     onSuccess: (_data, instanceId) => {
+      queryClient.invalidateQueries({ queryKey: ["instances"] });
       queryClient.invalidateQueries({ queryKey: queryKeys.instance(instanceId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.instanceStatus(instanceId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.instanceQr(instanceId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus(instanceId) });
       toast.success('Instance disconnected. Scan QR code to reconnect with history sync.');
     },
     onError: (error: Error) => {
       toast.error(error.message || 'Failed to re-pair instance');
+    },
+  });
+}
+
+export function useClearSyncData() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (instanceId: string) => syncApi.clearSyncData(instanceId),
+    onSuccess: (_data, instanceId) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.syncStatus(instanceId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.messages() });
+      toast.success('History sync data cleared successfully.');
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || 'Failed to clear sync data');
     },
   });
 }

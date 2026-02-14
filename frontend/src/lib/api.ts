@@ -70,6 +70,13 @@ api.interceptors.response.use(
       }
     }
 
+    // Extract backend error message so callers see meaningful errors
+    // instead of generic "Request failed with status code 400"
+    const backendMessage = error.response?.data?.error?.message;
+    if (backendMessage) {
+      return Promise.reject(new Error(backendMessage));
+    }
+
     return Promise.reject(error);
   }
 );
@@ -263,6 +270,7 @@ export const messagesApi = {
     instanceId?: string;
     status?: string;
     direction?: string;
+    source?: string;
   }) => {
     const response = await api.get("/whatsapp/messages", { params });
     return response.data;
@@ -580,6 +588,12 @@ export const syncApi = {
   /** Re-pair instance for full history sync (dashboard JWT auth) */
   rePairForSync: async (instanceId: string) => {
     const response = await api.post(`/whatsapp/instances/${instanceId}/re-pair`);
+    return response.data;
+  },
+
+  /** Clear all history sync data for an instance (dashboard JWT auth) */
+  clearSyncData: async (instanceId: string) => {
+    const response = await api.delete(`/whatsapp/instances/${instanceId}/sync-data`);
     return response.data;
   },
 

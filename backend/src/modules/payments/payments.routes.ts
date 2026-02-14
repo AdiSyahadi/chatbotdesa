@@ -17,63 +17,8 @@ import {
   BANK_OPTIONS,
   getMidtransSnapUrl,
 } from './payments.schema';
+import { AppError } from '../../types';
 import logger from '../../config/logger';
-
-// ============================================
-// ERROR HANDLING
-// ============================================
-
-function handleError(error: unknown, reply: FastifyReply) {
-  if (error instanceof Error) {
-    if (error.message.includes('not found')) {
-      return reply.status(404).send({
-        success: false,
-        error: {
-          code: 'PAYMENT_001',
-          message: error.message,
-        },
-      });
-    }
-
-    if (error.message.includes('not configured')) {
-      return reply.status(503).send({
-        success: false,
-        error: {
-          code: 'PAYMENT_002',
-          message: error.message,
-        },
-      });
-    }
-
-    if (error.message.includes('Invalid signature')) {
-      return reply.status(401).send({
-        success: false,
-        error: {
-          code: 'PAYMENT_003',
-          message: 'Invalid webhook signature',
-        },
-      });
-    }
-
-    logger.error('Payment Error:', error.message);
-    return reply.status(500).send({
-      success: false,
-      error: {
-        code: 'PAYMENT_500',
-        message: 'An unexpected error occurred',
-      },
-    });
-  }
-
-  logger.error('Payment Unknown Error:', error);
-  return reply.status(500).send({
-    success: false,
-    error: {
-      code: 'PAYMENT_500',
-      message: 'An unexpected error occurred',
-    },
-  });
-}
 
 // ============================================
 // ROUTE REGISTRATION
@@ -99,7 +44,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
         },
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -111,13 +56,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
       const details = await paymentsService.getManualTransferDetails();
 
       if (!details) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'PAYMENT_001',
-            message: 'Manual transfer is not configured',
-          },
-        });
+        throw new AppError('Manual transfer is not configured', 404, 'PAYMENT_001');
       }
 
       return reply.status(200).send({
@@ -125,7 +64,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
         data: details,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -144,13 +83,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
 
         if (!validation.success) {
           logger.warn('Invalid Midtrans webhook payload:', validation.error.errors);
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid webhook payload',
-            },
-          });
+          throw new AppError('Invalid webhook payload', 400, 'PAYMENT_005');
         }
 
         await paymentsService.handleMidtransNotification(validation.data);
@@ -158,7 +91,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
         // Return OK to Midtrans
         return reply.status(200).send({ success: true });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -218,13 +151,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
         const { invoice_id } = request.body as { invoice_id: string };
 
         if (!invoice_id) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'invoice_id is required',
-            },
-          });
+          throw new AppError('invoice_id is required', 400, 'VALIDATION_ERROR');
         }
 
         const result = await paymentsService.createMidtransSnapToken(
@@ -246,7 +173,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
           },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -260,23 +187,12 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const user = request.user as { organizationId: string };
-        const validation = createMidtransTransactionSchema.safeParse(request.body);
-
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid input',
-              details: validation.error.errors,
-            },
-          });
-        }
+        const data = createMidtransTransactionSchema.parse(request.body);
 
         const result = await paymentsService.createMidtransTransaction(
-          validation.data.invoice_id,
+          data.invoice_id,
           user.organizationId,
-          validation.data
+          data
         );
 
         return reply.status(200).send({
@@ -284,7 +200,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
           data: result,
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -307,7 +223,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
           data: status,
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -334,7 +250,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
           },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -350,13 +266,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
         const { method } = request.params as { method: string };
 
         if (!PAYMENT_METHODS.includes(method as PaymentMethodValue)) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid payment method',
-            },
-          });
+          throw new AppError('Invalid payment method', 400, 'VALIDATION_ERROR');
         }
 
         const config = await paymentsService.getPaymentMethodConfig(method as PaymentMethodValue);
@@ -366,7 +276,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
           data: { config },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -382,31 +292,14 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
         const { method } = request.params as { method: string };
 
         if (!PAYMENT_METHODS.includes(method as PaymentMethodValue)) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid payment method',
-            },
-          });
+          throw new AppError('Invalid payment method', 400, 'VALIDATION_ERROR');
         }
 
-        const validation = updatePaymentMethodConfigSchema.safeParse(request.body);
-
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid input',
-              details: validation.error.errors,
-            },
-          });
-        }
+        const data = updatePaymentMethodConfigSchema.parse(request.body);
 
         const config = await paymentsService.updatePaymentMethodConfig(
           method as PaymentMethodValue,
-          validation.data
+          data
         );
 
         logger.info(`Payment method config updated: ${method}`);
@@ -417,7 +310,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
           message: 'Payment method configuration updated successfully',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -437,7 +330,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
           message: 'Payment method configurations initialized',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -477,7 +370,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
           },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -498,7 +391,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
           data: status,
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -519,7 +412,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
           data: status,
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );

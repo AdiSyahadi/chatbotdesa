@@ -25,104 +25,7 @@ import {
   USER_ROLES,
   ROLE_DESCRIPTIONS,
 } from './team.schema';
-import logger from '../../config/logger';
-
-// ============================================
-// ERROR HANDLING
-// ============================================
-
-const errorCodeMap: Record<string, { statusCode: number; code: string; message: string }> = {
-  MEMBER_NOT_FOUND: {
-    statusCode: 404,
-    code: 'TEAM_001',
-    message: 'Team member not found',
-  },
-  INVITATION_NOT_FOUND: {
-    statusCode: 404,
-    code: 'TEAM_002',
-    message: 'Invitation not found',
-  },
-  PERMISSION_DENIED: {
-    statusCode: 403,
-    code: 'TEAM_003',
-    message: 'You do not have permission to perform this action',
-  },
-};
-
-function handleError(error: unknown, reply: FastifyReply) {
-  if (error instanceof Error) {
-    // Check for specific error messages
-    if (error.message.includes('already a member')) {
-      return reply.status(409).send({
-        success: false,
-        error: {
-          code: 'TEAM_004',
-          message: error.message,
-        },
-      });
-    }
-
-    if (error.message.includes('already pending')) {
-      return reply.status(409).send({
-        success: false,
-        error: {
-          code: 'TEAM_005',
-          message: error.message,
-        },
-      });
-    }
-
-    if (error.message.includes('Cannot')) {
-      return reply.status(400).send({
-        success: false,
-        error: {
-          code: 'TEAM_006',
-          message: error.message,
-        },
-      });
-    }
-
-    if (error.message.includes('Invalid invitation') || error.message.includes('expired')) {
-      return reply.status(400).send({
-        success: false,
-        error: {
-          code: 'TEAM_007',
-          message: error.message,
-        },
-      });
-    }
-
-    if (error.message.includes('already exists')) {
-      return reply.status(409).send({
-        success: false,
-        error: {
-          code: 'TEAM_008',
-          message: error.message,
-        },
-      });
-    }
-
-    const mappedError = errorCodeMap[error.message];
-    if (mappedError) {
-      return reply.status(mappedError.statusCode).send({
-        success: false,
-        error: {
-          code: mappedError.code,
-          message: mappedError.message,
-        },
-      });
-    }
-  }
-
-  logger.error({ err: error }, 'Team module error');
-  return reply.status(500).send({
-    success: false,
-    error: {
-      code: 'INTERNAL_ERROR',
-      message: 'An unexpected error occurred',
-    },
-  });
-}
+import { AppError } from '../../types';
 
 // ============================================
 // ROLE CHECK MIDDLEWARE
@@ -188,7 +91,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         data: result,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -235,7 +138,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         message: 'Account created successfully. You can now log in.',
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -347,7 +250,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         message: `Invitation sent to ${input.email}`,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -396,7 +299,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         pagination: result.pagination,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -442,7 +345,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         pagination: result.pagination,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -476,7 +379,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         data: stats,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -521,7 +424,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         message: 'Invitation resent successfully',
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -560,13 +463,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
       const canceled = await teamService.cancelInvitation(user.organizationId, id);
 
       if (!canceled) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TEAM_002',
-            message: 'Invitation not found or already processed',
-          },
-        });
+        throw new AppError('Invitation not found', 404, 'TEAM_002');
       }
 
       return reply.send({
@@ -574,7 +471,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         message: 'Invitation canceled successfully',
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -612,13 +509,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
       const member = await teamService.getTeamMember(user.organizationId, id);
 
       if (!member) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TEAM_001',
-            message: 'Team member not found',
-          },
-        });
+        throw new AppError('Team member not found', 404, 'TEAM_001');
       }
 
       return reply.send({
@@ -626,7 +517,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         data: member,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -678,13 +569,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
       );
 
       if (!member) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TEAM_001',
-            message: 'Team member not found',
-          },
-        });
+        throw new AppError('Team member not found', 404, 'TEAM_001');
       }
 
       return reply.send({
@@ -692,7 +577,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         data: member,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -735,13 +620,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
       );
 
       if (!deactivated) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TEAM_001',
-            message: 'Team member not found',
-          },
-        });
+        throw new AppError('Team member not found', 404, 'TEAM_001');
       }
 
       return reply.send({
@@ -749,7 +628,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         message: 'Team member deactivated',
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -788,13 +667,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
       const member = await teamService.reactivateMember(user.organizationId, id);
 
       if (!member) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TEAM_001',
-            message: 'Team member not found',
-          },
-        });
+        throw new AppError('Team member not found', 404, 'TEAM_001');
       }
 
       return reply.send({
@@ -802,7 +675,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         data: member,
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -845,13 +718,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
       );
 
       if (!removed) {
-        return reply.status(404).send({
-          success: false,
-          error: {
-            code: 'TEAM_001',
-            message: 'Team member not found',
-          },
-        });
+        throw new AppError('Team member not found', 404, 'TEAM_001');
       }
 
       return reply.send({
@@ -859,7 +726,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
         message: 'Team member removed',
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 }

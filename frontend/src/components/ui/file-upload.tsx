@@ -52,6 +52,8 @@ const FileUpload = React.forwardRef<HTMLDivElement, FileUploadProps>(
     const [files, setFiles] = React.useState<FileUploadFile[]>([]);
     const [isDragging, setIsDragging] = React.useState(false);
     const inputRef = React.useRef<HTMLInputElement>(null);
+    const filesRef = React.useRef<FileUploadFile[]>([]);
+    filesRef.current = files;
 
     const effectiveMaxSize = maxSize || MAX_SIZES[accept];
     const acceptTypes = ACCEPT_TYPES[accept];
@@ -165,7 +167,7 @@ const FileUpload = React.forwardRef<HTMLDivElement, FileUploadProps>(
     // Cleanup preview URLs on unmount
     React.useEffect(() => {
       return () => {
-        files.forEach(f => {
+        filesRef.current.forEach(f => {
           if (f.preview) URL.revokeObjectURL(f.preview);
         });
       };

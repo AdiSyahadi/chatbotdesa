@@ -19,6 +19,7 @@ import { getStorageStats } from '../../workers/media-cleanup.worker';
 import { parsePagination } from '../../utils/pagination';
 import { batchResolveLidToPhone } from '../whatsapp/baileys.service';
 import prisma from '../../config/database';
+import { Prisma } from '@prisma/client';
 import logger from '../../config/logger';
 
 // ============================================
@@ -1406,6 +1407,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
         where: { id: instanceId, organization_id: organizationId, deleted_at: null },
         select: {
           id: true,
+          status: true,
           sync_history_on_connect: true,
           history_sync_status: true,
           history_sync_progress: true,
@@ -1417,15 +1419,51 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ success: false, error: 'Instance not found' });
       }
 
+      // Safety net: if instance is disconnected but DB still says SYNCING,
+      // auto-correct to STOPPED (stale state from process crash or missed cleanup)
+      let effectiveStatus = instance.history_sync_status;
+      let effectiveProgress = instance.history_sync_progress;
+      if (
+        effectiveStatus === 'SYNCING' &&
+        instance.status !== 'CONNECTED'
+      ) {
+        const progress = (instance.history_sync_progress as any) || {};
+        progress.stopped_at = new Date().toISOString();
+        progress.stopped_reason = 'stale_auto_corrected';
+        effectiveStatus = 'STOPPED';
+        effectiveProgress = progress;
+
+        // Fix DB in background (fire-and-forget)
+        prisma.whatsAppInstance.update({
+          where: { id: instanceId },
+          data: {
+            history_sync_status: 'STOPPED',
+            history_sync_progress: progress,
+          },
+        }).catch((err: unknown) => {
+          request.log.warn({ err, instanceId }, 'Failed to auto-correct stale sync status');
+        });
+      }
+
+      // Detect if instance needs re-pair
+      const needsRepair = (
+        instance.sync_history_on_connect === true &&
+        instance.status === 'CONNECTED' &&
+        (effectiveStatus === 'IDLE' || effectiveStatus === null) &&
+        instance.last_history_sync_at === null &&
+        instance.history_sync_progress === null
+      );
+
       return reply.send({
         success: true,
         data: {
-          status: instance.history_sync_status,
-          progress: instance.history_sync_progress || null,
+          status: effectiveStatus,
+          progress: effectiveProgress || null,
           settings: {
             sync_history_on_connect: instance.sync_history_on_connect,
           },
           last_sync_at: instance.last_history_sync_at,
+          needs_repair: needsRepair,
         },
       });
     },
@@ -1556,7 +1594,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
         data: {
           sync_history_on_connect: true,
           history_sync_status: 'IDLE',
-          history_sync_progress: { set: null },
+          history_sync_progress: Prisma.DbNull,
         },
       });
 
@@ -1619,10 +1657,12 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       const { stopHistorySync, resumeHistorySync } = await import('../whatsapp/baileys.service');
 
       if (action === 'stop') {
-        if (instance.history_sync_status !== 'SYNCING') {
-          return reply.status(409).send({
-            success: false,
-            error: `Cannot stop sync — current status is ${instance.history_sync_status}. Only SYNCING can be stopped.`,
+        // Allow stopping from any state except already STOPPED (consistent with internal API)
+        if (instance.history_sync_status === 'STOPPED') {
+          return reply.send({
+            success: true,
+            message: 'History sync is already stopped.',
+            data: { status: 'STOPPED' },
           });
         }
 
@@ -1635,10 +1675,12 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       }
 
       if (action === 'resume') {
-        if (instance.history_sync_status !== 'STOPPED') {
-          return reply.status(409).send({
-            success: false,
-            error: `Cannot resume sync — current status is ${instance.history_sync_status}. Only STOPPED can be resumed.`,
+        // Allow resuming from STOPPED or PARTIAL state (consistent with internal API)
+        if (instance.history_sync_status === 'SYNCING') {
+          return reply.send({
+            success: true,
+            message: 'History sync is already running.',
+            data: { status: 'SYNCING' },
           });
         }
 

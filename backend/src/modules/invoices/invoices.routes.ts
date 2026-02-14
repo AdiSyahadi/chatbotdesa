@@ -24,52 +24,7 @@ import {
   INVOICE_STATUS_LABELS,
 } from './invoices.schema';
 import logger from '../../config/logger';
-
-// ============================================
-// ERROR HANDLING
-// ============================================
-
-function handleError(error: unknown, reply: FastifyReply) {
-  if (error instanceof Error) {
-    if (error.message.includes('not found')) {
-      return reply.status(404).send({
-        success: false,
-        error: {
-          code: 'INVOICE_001',
-          message: error.message,
-        },
-      });
-    }
-
-    if (error.message.includes('only')) {
-      return reply.status(400).send({
-        success: false,
-        error: {
-          code: 'INVOICE_002',
-          message: error.message,
-        },
-      });
-    }
-
-    logger.error('Invoice Error:', error.message);
-    return reply.status(500).send({
-      success: false,
-      error: {
-        code: 'INVOICE_500',
-        message: 'An unexpected error occurred',
-      },
-    });
-  }
-
-  logger.error('Invoice Unknown Error:', error);
-  return reply.status(500).send({
-    success: false,
-    error: {
-      code: 'INVOICE_500',
-      message: 'An unexpected error occurred',
-    },
-  });
-}
+import { AppError } from '../../types';
 
 // ============================================
 // ROUTE REGISTRATION
@@ -158,22 +113,11 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const user = request.user as { organizationId: string };
-        const validation = listInvoicesQuerySchema.safeParse(request.query);
-
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid query parameters',
-              details: validation.error.errors,
-            },
-          });
-        }
+        const query = listInvoicesQuerySchema.parse(request.query);
 
         const result = await invoicesService.listInvoices(
           user.organizationId,
-          validation.data
+          query
         );
 
         return reply.status(200).send({
@@ -181,7 +125,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           data: result,
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -202,7 +146,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           data: stats,
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -221,13 +165,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
         const invoice = await invoicesService.getInvoiceById(invoiceId, user.organizationId);
 
         if (!invoice) {
-          return reply.status(404).send({
-            success: false,
-            error: {
-              code: 'INVOICE_001',
-              message: 'Invoice not found',
-            },
-          });
+          throw new AppError('Invoice not found', 404, 'INVOICE_001');
         }
 
         return reply.status(200).send({
@@ -235,7 +173,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           data: { invoice },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -250,23 +188,12 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
       try {
         const user = request.user as { organizationId: string };
         const { invoiceId } = request.params as { invoiceId: string };
-        const validation = submitPaymentProofSchema.safeParse(request.body);
-
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid input',
-              details: validation.error.errors,
-            },
-          });
-        }
+        const body = submitPaymentProofSchema.parse(request.body);
 
         const invoice = await invoicesService.submitPaymentProof(
           invoiceId,
           user.organizationId,
-          validation.data
+          body
         );
 
         logger.info(`Payment proof submitted for invoice ${invoiceId}`);
@@ -277,7 +204,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           message: 'Payment proof submitted successfully. Awaiting verification.',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -303,7 +230,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           message: 'Invoice canceled successfully',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -320,27 +247,16 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
     { preHandler: [requireSuperAdmin] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const validation = adminListInvoicesQuerySchema.safeParse(request.query);
+        const query = adminListInvoicesQuerySchema.parse(request.query);
 
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid query parameters',
-              details: validation.error.errors,
-            },
-          });
-        }
-
-        const result = await invoicesService.adminListInvoices(validation.data);
+        const result = await invoicesService.adminListInvoices(query);
 
         return reply.status(200).send({
           success: true,
           data: result,
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -360,7 +276,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           data: stats,
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -383,7 +299,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -406,7 +322,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -432,20 +348,9 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           });
         }
 
-        const validation = createInvoiceSchema.safeParse(invoiceData);
+        const parsedData = createInvoiceSchema.parse(invoiceData);
 
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid input',
-              details: validation.error.errors,
-            },
-          });
-        }
-
-        const invoice = await invoicesService.createInvoice(organization_id, validation.data);
+        const invoice = await invoicesService.createInvoice(organization_id, parsedData);
 
         logger.info(`Invoice created by admin: ${invoice.id}`);
 
@@ -455,7 +360,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           message: 'Invoice created successfully',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -472,13 +377,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
         const invoice = await invoicesService.getInvoiceById(invoiceId);
 
         if (!invoice) {
-          return reply.status(404).send({
-            success: false,
-            error: {
-              code: 'INVOICE_001',
-              message: 'Invoice not found',
-            },
-          });
+          throw new AppError('Invoice not found', 404, 'INVOICE_001');
         }
 
         return reply.status(200).send({
@@ -486,7 +385,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           data: { invoice },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -500,20 +399,9 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { invoiceId } = request.params as { invoiceId: string };
-        const validation = updateInvoiceSchema.safeParse(request.body);
+        const body = updateInvoiceSchema.parse(request.body);
 
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid input',
-              details: validation.error.errors,
-            },
-          });
-        }
-
-        const invoice = await invoicesService.updateInvoice(invoiceId, null, validation.data);
+        const invoice = await invoicesService.updateInvoice(invoiceId, null, body);
 
         logger.info(`Invoice updated by admin: ${invoiceId}`);
 
@@ -523,7 +411,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           message: 'Invoice updated successfully',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -537,33 +425,22 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { invoiceId } = request.params as { invoiceId: string };
-        const validation = verifyPaymentSchema.safeParse(request.body);
+        const body = verifyPaymentSchema.parse(request.body);
 
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid input',
-              details: validation.error.errors,
-            },
-          });
-        }
+        const invoice = await invoicesService.verifyPayment(invoiceId, body);
 
-        const invoice = await invoicesService.verifyPayment(invoiceId, validation.data);
-
-        logger.info(`Payment verified for invoice ${invoiceId}: ${validation.data.status}`);
+        logger.info(`Payment verified for invoice ${invoiceId}: ${body.status}`);
 
         return reply.status(200).send({
           success: true,
           data: { invoice },
           message:
-            validation.data.status === 'PAID'
+            body.status === 'PAID'
               ? 'Payment verified successfully'
               : 'Payment marked as failed',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -587,7 +464,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
           message: 'Invoice canceled successfully',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );

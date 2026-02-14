@@ -25,11 +25,7 @@ import { WEBHOOK_CONFIG } from '../../config/constants';
 // REDIS CONNECTION FOR BULLMQ
 // ============================================
 
-const redisConnectionOptions = {
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  maxRetriesPerRequest: null,
-};
+import redisConnectionOptions from '../../config/redis-connection';
 
 // ============================================
 // WEBHOOK QUEUE
@@ -65,7 +61,7 @@ function getWebhookQueue(): Queue {
 // ============================================
 
 export class WebhookService {
-  constructor(private readonly fastify: FastifyInstance) {}
+  constructor(private readonly fastify?: FastifyInstance) {}
 
   // ============================================
   // WEBHOOK CONFIGURATION
@@ -986,6 +982,6 @@ export class WebhookService {
 // EXPORT
 // ============================================
 
-export function createWebhookService(fastify: FastifyInstance): WebhookService {
+export function createWebhookService(fastify?: FastifyInstance): WebhookService {
   return new WebhookService(fastify);
 }

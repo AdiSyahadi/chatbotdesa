@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { JWTPayload } from '../../types';
 import { saveFile, validateFile } from '../../services/storage.service';
+import { Readable } from 'stream';
 import '../../types';
 
 // ============================================
@@ -37,8 +38,11 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
       // Get expected type from field name or query
       const expectedType = (request.query as { type?: string }).type;
 
-      // Validate file
-      const validation = validateFile(data.mimetype, data.file.bytesRead, expectedType);
+      // Consume the full stream to get accurate file size for validation
+      const fileBuffer = await data.toBuffer();
+
+      // Validate file type and size using actual byte length
+      const validation = validateFile(data.mimetype, fileBuffer.length, expectedType);
       if (!validation.valid) {
         return reply.status(400).send({
           success: false,
@@ -46,9 +50,9 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Save file
+      // Save file from the consumed buffer (wrap in Readable)
       const result = await saveFile(
-        data.file,
+        Readable.from(fileBuffer),
         data.filename,
         data.mimetype,
         user.organizationId
@@ -100,7 +104,8 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
       const errors: any[] = [];
 
       for await (const file of files) {
-        const validation = validateFile(file.mimetype, file.file.bytesRead);
+        const fileBuffer = await file.toBuffer();
+        const validation = validateFile(file.mimetype, fileBuffer.length);
         
         if (!validation.valid) {
           errors.push({
@@ -111,7 +116,7 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
         }
 
         const result = await saveFile(
-          file.file,
+          Readable.from(fileBuffer),
           file.filename,
           file.mimetype,
           user.organizationId

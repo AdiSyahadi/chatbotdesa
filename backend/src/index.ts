@@ -11,6 +11,7 @@ import prisma from './config/database';
 import logger from './config/logger';
 import { errorHandler } from './types';
 import { authenticate } from './middleware/auth';
+import { authenticateJwtOrApiKey } from './middleware/api-key-auth';
 import authRoutes from './modules/auth/auth.routes';
 import whatsappRoutes from './modules/whatsapp/whatsapp.routes';
 import { contactsRoutes } from './modules/contacts';
@@ -45,7 +46,17 @@ async function start() {
     });
 
     await fastify.register(cors, {
-      origin: config.cors.origin,
+      origin: (origin, cb) => {
+        // Allow requests with no origin (mobile apps, curl, server-to-server)
+        if (!origin) return cb(null, true);
+        const allowedOrigins = (config.cors.origin || 'http://localhost:3000')
+          .split(',')
+          .map((o: string) => o.trim());
+        if (allowedOrigins.includes(origin)) {
+          return cb(null, true);
+        }
+        cb(new Error('CORS: origin not allowed'), false);
+      },
       credentials: true,
     });
 
@@ -65,46 +76,50 @@ async function start() {
       timeWindow: config.rateLimit.window,
     });
 
-    // Swagger documentation
-    await fastify.register(swagger, {
-      openapi: {
-        info: {
-          title: 'WhatsApp SaaS API',
-          description: 'Unofficial WhatsApp SaaS API using Baileys',
-          version: '1.0.0',
-        },
-        servers: [
-          {
-            url: config.app.url,
-            description: 'Development server',
-          },
-        ],
-        components: {
-          securitySchemes: {
-            bearerAuth: {
-              type: 'http',
-              scheme: 'bearer',
-              bearerFormat: 'JWT',
-            },
-            apiKeyAuth: {
-              type: 'apiKey',
-              in: 'header',
-              name: 'X-API-Key',
-              description: 'API key for external integrations',
-            },
-          },
-        },
-        security: [{ bearerAuth: [] }],
-      },
-    });
+    // Swagger documentation — only in development
+    const isDev = process.env.NODE_ENV !== 'production';
 
-    await fastify.register(swaggerUi, {
-      routePrefix: '/api/docs',
-      uiConfig: {
-        docExpansion: 'list',
-        deepLinking: false,
-      },
-    });
+    if (isDev) {
+      await fastify.register(swagger, {
+        openapi: {
+          info: {
+            title: 'WhatsApp SaaS API',
+            description: 'Unofficial WhatsApp SaaS API using Baileys',
+            version: '1.0.0',
+          },
+          servers: [
+            {
+              url: config.app.url,
+              description: 'Development server',
+            },
+          ],
+          components: {
+            securitySchemes: {
+              bearerAuth: {
+                type: 'http',
+                scheme: 'bearer',
+                bearerFormat: 'JWT',
+              },
+              apiKeyAuth: {
+                type: 'apiKey',
+                in: 'header',
+                name: 'X-API-Key',
+                description: 'API key for external integrations',
+              },
+            },
+          },
+          security: [{ bearerAuth: [] }],
+        },
+      });
+
+      await fastify.register(swaggerUi, {
+        routePrefix: '/api/docs',
+        uiConfig: {
+          docExpansion: 'list',
+          deepLinking: false,
+        },
+      });
+    }
 
     // Decorate fastify with authenticate method
     fastify.decorate('authenticate', authenticate);
@@ -165,16 +180,10 @@ async function start() {
       serve: false, // Don't auto-serve — only via reply.sendFile()
     });
 
-    // Authenticated file access endpoint
-    fastify.get('/uploads/*', async (request, reply) => {
-      // Check for JWT auth or API key
-      const authHeader = request.headers.authorization;
-      const apiKey = request.headers['x-api-key'];
-
-      if (!authHeader && !apiKey) {
-        return reply.status(401).send({ success: false, error: 'Authentication required to access files' });
-      }
-
+    // Authenticated file access endpoint — uses real JWT/API-key verification
+    fastify.get('/uploads/*', {
+      onRequest: [authenticateJwtOrApiKey],
+    }, async (request, reply) => {
       const urlPath = (request.params as any)['*'] as string;
       if (!urlPath) {
         return reply.status(400).send({ success: false, error: 'File path required' });
@@ -202,23 +211,21 @@ async function start() {
       host: '0.0.0.0',
     });
 
-    console.log('');
-    console.log('🚀 Server running!');
-    console.log(`📡 API: ${config.app.url}`);
-    console.log(`📚 Docs: ${config.app.url}/api/docs`);
-    console.log(`🏥 Health: ${config.app.url}/health`);
-    console.log('');
+    logger.info('🚀 Server running!');
+    logger.info(`📡 API: ${config.app.url}`);
+    if (isDev) logger.info(`📚 Docs: ${config.app.url}/api/docs`);
+    logger.info(`🏥 Health: ${config.app.url}/health`);
 
     // Initialize active WhatsApp instances (after server is running)
     setTimeout(async () => {
-      console.log('📱 Initializing active WhatsApp instances...');
+      logger.info('📱 Initializing active WhatsApp instances...');
       await initializeActiveInstances();
     }, 2000);
 
     // Initialize background workers (BullMQ) - delay to allow Redis connection
     setTimeout(() => {
-      console.log('🔧 Initializing background workers...');
-      initializeWorkers().catch(err => console.error('Worker init failed:', err));
+      logger.info('🔧 Initializing background workers...');
+      initializeWorkers().catch(err => logger.error({ err }, 'Worker init failed'));
     }, 3000);
 
     // Wire up baileysEvents → webhook delivery
@@ -227,7 +234,7 @@ async function start() {
 
     baileysEvents.on('message', async (event: { instanceId: string; type: string; message: any }) => {
       try {
-        console.log(`📨 [WEBHOOK] Message event received: type=${event.type}, from=${event.message?.from}, id=${event.message?.id}`);
+        logger.info({ type: event.type, from: event.message?.from, id: event.message?.id }, '[WEBHOOK] Message event received');
         
         // Get instance to find organization_id
         const instance = await prisma.whatsAppInstance.findUnique({
@@ -235,11 +242,11 @@ async function start() {
           select: { organization_id: true, webhook_url: true },
         });
         if (!instance) {
-          console.log(`📨 [WEBHOOK] Instance not found: ${event.instanceId}`);
+          logger.warn({ instanceId: event.instanceId }, '[WEBHOOK] Instance not found');
           return;
         }
         
-        console.log(`📨 [WEBHOOK] Instance found, webhook_url: ${instance.webhook_url ? 'SET' : 'NOT SET'}`);
+        logger.debug({ instanceId: event.instanceId, hasWebhook: !!instance.webhook_url }, '[WEBHOOK] Instance found');
 
         const eventType = event.type === 'incoming' ? 'message.received' : 'message.sent';
         
@@ -255,15 +262,15 @@ async function start() {
           idempotency_key: `msg_${event.message?.id || Date.now()}`,
         });
         
-        console.log(`📨 [WEBHOOK] Queue result: ${webhookId ? `queued (${webhookId})` : 'skipped'}`);
+        logger.debug({ webhookId, instanceId: event.instanceId }, '[WEBHOOK] Queue result');
       } catch (error) {
-        console.error('❌ [WEBHOOK] Error forwarding message to webhook:', error);
+        logger.error({ err: error }, '[WEBHOOK] Error forwarding message to webhook');
       }
     });
 
     baileysEvents.on('connection', async (event: { instanceId: string; status: string; phone_number?: string }) => {
       try {
-        console.log(`🔗 [WEBHOOK] Connection event: status=${event.status}, instanceId=${event.instanceId}`);
+        logger.info({ status: event.status, instanceId: event.instanceId }, '[WEBHOOK] Connection event');
         
         const instance = await prisma.whatsAppInstance.findUnique({
           where: { id: event.instanceId },
@@ -281,7 +288,7 @@ async function start() {
           idempotency_key: `conn_${event.instanceId}_${Date.now()}`,
         });
       } catch (error) {
-        console.error('Error forwarding connection event to webhook:', error);
+        logger.error({ err: error }, '[WEBHOOK] Error forwarding connection event');
       }
     });
 
@@ -294,7 +301,7 @@ async function start() {
       contacts_updated: number;
     }) => {
       try {
-        console.log(`🔗 [WEBHOOK] LID mapping resolved: ${event.lid_jid} → ${event.phone_number}`);
+        logger.info({ lid_jid: event.lid_jid, phone_number: event.phone_number }, '[WEBHOOK] LID mapping resolved');
 
         const instance = await prisma.whatsAppInstance.findUnique({
           where: { id: event.instanceId },
@@ -315,11 +322,11 @@ async function start() {
           idempotency_key: `lid_${event.instanceId}_${event.lid_jid}`,
         });
       } catch (error) {
-        console.error('Error forwarding LID mapping event to webhook:', error);
+        logger.error({ err: error }, '[WEBHOOK] Error forwarding LID mapping event');
       }
     });
 
-    console.log('🔗 Webhook event listeners initialized');
+    logger.info('🔗 Webhook event listeners initialized');
   } catch (error) {
     fastify.log.error(error);
     process.exit(1);
@@ -330,9 +337,17 @@ async function start() {
 const signals = ['SIGINT', 'SIGTERM'];
 signals.forEach((signal) => {
   process.on(signal, async () => {
-    console.log(`\n${signal} received, closing server...`);
-    await shutdownWorkers();
-    await fastify.close();
+    logger.info(`${signal} received, closing server...`);
+    try {
+      await shutdownWorkers();
+    } catch (err) {
+      logger.error({ err }, 'Error shutting down workers');
+    }
+    try {
+      await fastify.close();
+    } catch (err) {
+      logger.error({ err }, 'Error closing Fastify');
+    }
     process.exit(0);
   });
 });

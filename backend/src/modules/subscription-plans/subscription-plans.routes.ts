@@ -22,73 +22,7 @@ import {
   BILLING_PERIOD_LABELS,
 } from './subscription-plans.schema';
 import logger from '../../config/logger';
-
-// ============================================
-// ERROR HANDLING
-// ============================================
-
-function handleError(error: unknown, reply: FastifyReply) {
-  if (error instanceof Error) {
-    // Check for specific error messages
-    if (error.message.includes('not found')) {
-      return reply.status(404).send({
-        success: false,
-        error: {
-          code: 'PLAN_001',
-          message: error.message,
-        },
-      });
-    }
-
-    if (error.message.includes('already exists')) {
-      return reply.status(409).send({
-        success: false,
-        error: {
-          code: 'PLAN_002',
-          message: error.message,
-        },
-      });
-    }
-
-    if (error.message.includes('Cannot')) {
-      return reply.status(400).send({
-        success: false,
-        error: {
-          code: 'PLAN_003',
-          message: error.message,
-        },
-      });
-    }
-
-    if (error.message.includes('already')) {
-      return reply.status(400).send({
-        success: false,
-        error: {
-          code: 'PLAN_004',
-          message: error.message,
-        },
-      });
-    }
-
-    logger.error('Subscription Plans Error:', error.message);
-    return reply.status(500).send({
-      success: false,
-      error: {
-        code: 'PLAN_500',
-        message: 'An unexpected error occurred',
-      },
-    });
-  }
-
-  logger.error('Subscription Plans Unknown Error:', error);
-  return reply.status(500).send({
-    success: false,
-    error: {
-      code: 'PLAN_500',
-      message: 'An unexpected error occurred',
-    },
-  });
-}
+import { AppError } from '../../types';
 
 // ============================================
 // ROUTE REGISTRATION
@@ -115,7 +49,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
         },
       });
     } catch (error) {
-      return handleError(error, reply);
+      throw error;
     }
   });
 
@@ -183,19 +117,9 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
     { preHandler: [requireSuperAdmin] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const validation = createPlanSchema.safeParse(request.body);
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid input',
-              details: validation.error.errors,
-            },
-          });
-        }
+        const body = createPlanSchema.parse(request.body);
 
-        const plan = await subscriptionPlansService.createPlan(validation.data);
+        const plan = await subscriptionPlansService.createPlan(body);
 
         logger.info(`Plan created: ${plan.id} - ${plan.name}`);
 
@@ -205,7 +129,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
           message: 'Subscription plan created successfully',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -218,26 +142,16 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
     { preHandler: [requireSuperAdmin] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
-        const validation = listPlansQuerySchema.safeParse(request.query);
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid query parameters',
-              details: validation.error.errors,
-            },
-          });
-        }
+        const query = listPlansQuerySchema.parse(request.query);
 
-        const plans = await subscriptionPlansService.listPlans(validation.data);
+        const plans = await subscriptionPlansService.listPlans(query);
 
         return reply.status(200).send({
           success: true,
           data: { plans },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -257,7 +171,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
           data: stats,
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -274,13 +188,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
         const plan = await subscriptionPlansService.getPlanById(planId);
 
         if (!plan) {
-          return reply.status(404).send({
-            success: false,
-            error: {
-              code: 'PLAN_001',
-              message: 'Plan not found',
-            },
-          });
+          throw new AppError('Plan not found', 404, 'PLAN_001');
         }
 
         return reply.status(200).send({
@@ -288,7 +196,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
           data: { plan },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -302,20 +210,9 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { planId } = request.params as { planId: string };
-        const validation = updatePlanSchema.safeParse(request.body);
+        const body = updatePlanSchema.parse(request.body);
 
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid input',
-              details: validation.error.errors,
-            },
-          });
-        }
-
-        const plan = await subscriptionPlansService.updatePlan(planId, validation.data);
+        const plan = await subscriptionPlansService.updatePlan(planId, body);
 
         logger.info(`Plan updated: ${plan.id}`);
 
@@ -325,7 +222,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
           message: 'Subscription plan updated successfully',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -348,7 +245,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
           message: 'Subscription plan deleted successfully',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -373,7 +270,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
           data: { subscription },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -387,22 +284,11 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const user = request.user as { organizationId: string; userId: string };
-        const validation = createSubscriptionSchema.safeParse(request.body);
-
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid input',
-              details: validation.error.errors,
-            },
-          });
-        }
+        const body = createSubscriptionSchema.parse(request.body);
 
         const subscription = await subscriptionPlansService.createSubscription(
           user.organizationId,
-          validation.data
+          body
         );
 
         logger.info(`Subscription created: ${subscription.id} for org ${user.organizationId}`);
@@ -413,7 +299,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
           message: 'Subscription created successfully',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -434,7 +320,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
           data: { history },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -455,7 +341,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
           data: { usage },
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -469,22 +355,11 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const user = request.user as { organizationId: string; userId: string };
-        const validation = changePlanSchema.safeParse(request.body);
-
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid input',
-              details: validation.error.errors,
-            },
-          });
-        }
+        const body = changePlanSchema.parse(request.body);
 
         const result = await subscriptionPlansService.changePlan(
           user.organizationId,
-          validation.data
+          body
         );
 
         logger.info(`Plan changed for org ${user.organizationId}`);
@@ -495,7 +370,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
           message: 'Subscription plan changed successfully',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -518,13 +393,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
         );
 
         if (!currentSubscription) {
-          return reply.status(404).send({
-            success: false,
-            error: {
-              code: 'PLAN_001',
-              message: 'No active subscription found',
-            },
-          });
+          throw new AppError('No active subscription found', 404, 'PLAN_001');
         }
 
         const subscription = await subscriptionPlansService.cancelSubscription(
@@ -545,7 +414,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
             : 'Subscription will be canceled at the end of the billing period',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );
@@ -560,23 +429,12 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
       try {
         const user = request.user as { organizationId: string };
         const { subscriptionId } = request.params as { subscriptionId: string };
-        const validation = updateSubscriptionSchema.safeParse(request.body);
-
-        if (!validation.success) {
-          return reply.status(400).send({
-            success: false,
-            error: {
-              code: 'VALIDATION_ERROR',
-              message: 'Invalid input',
-              details: validation.error.errors,
-            },
-          });
-        }
+        const body = updateSubscriptionSchema.parse(request.body);
 
         const subscription = await subscriptionPlansService.updateSubscription(
           subscriptionId,
           user.organizationId,
-          validation.data
+          body
         );
 
         return reply.status(200).send({
@@ -585,7 +443,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
           message: 'Subscription updated successfully',
         });
       } catch (error) {
-        return handleError(error, reply);
+        throw error;
       }
     }
   );

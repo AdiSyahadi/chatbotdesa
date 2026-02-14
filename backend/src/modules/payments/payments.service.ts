@@ -5,6 +5,7 @@
 
 import prisma from '../../config/database';
 import { Prisma, PaymentMethod, InvoiceStatus, PrismaClient } from '@prisma/client';
+import { AppError } from '../../types';
 
 // Transaction client type
 type TransactionClient = Omit<PrismaClient, '$connect' | '$disconnect' | '$on' | '$transaction' | '$use' | '$extends'>;
@@ -275,14 +276,14 @@ export async function createMidtransTransaction(
   });
 
   if (!invoice) {
-    throw new Error('Invoice not found or is not pending');
+    throw new AppError('Invoice not found or is not pending', 404, 'PAYMENT_001');
   }
 
   // Get Midtrans config
   const midtransConfig = await getMidtransConfig();
 
   if (!midtransConfig) {
-    throw new Error('Midtrans is not configured. Please contact administrator.');
+    throw new AppError('Midtrans is not configured. Please contact administrator.', 503, 'PAYMENT_002');
   }
 
   // Generate order ID
@@ -335,7 +336,7 @@ export async function createMidtransTransaction(
 
     if (!response.ok) {
       logger.error('Midtrans API error:', result);
-      throw new Error(result.status_message || 'Failed to create Midtrans transaction');
+      throw new AppError(result.status_message || 'Failed to create Midtrans transaction', 502, 'PAYMENT_004');
     }
 
     // Update invoice with Midtrans order ID
@@ -379,14 +380,14 @@ export async function createMidtransSnapToken(
   });
 
   if (!invoice) {
-    throw new Error('Invoice not found or is not pending');
+    throw new AppError('Invoice not found or is not pending', 404, 'PAYMENT_001');
   }
 
   // Get Midtrans config
   const midtransConfig = await getMidtransConfig();
 
   if (!midtransConfig) {
-    throw new Error('Midtrans is not configured. Please contact administrator.');
+    throw new AppError('Midtrans is not configured. Please contact administrator.', 503, 'PAYMENT_002');
   }
 
   // Generate order ID
@@ -439,7 +440,7 @@ export async function createMidtransSnapToken(
 
     if (!response.ok) {
       logger.error('Midtrans Snap API error:', result);
-      throw new Error(result.error_messages?.[0] || 'Failed to create Midtrans Snap token');
+      throw new AppError(result.error_messages?.[0] || 'Failed to create Midtrans Snap token', 502, 'PAYMENT_004');
     }
 
     // Update invoice with Midtrans order ID
@@ -470,7 +471,7 @@ export async function handleMidtransNotification(
   const midtransConfig = await getMidtransConfig();
 
   if (!midtransConfig) {
-    throw new Error('Midtrans is not configured');
+    throw new AppError('Midtrans is not configured', 503, 'PAYMENT_002');
   }
 
   // Verify signature
@@ -484,7 +485,7 @@ export async function handleMidtransNotification(
 
   if (!isValidSignature) {
     logger.warn('Invalid Midtrans signature for order:', notification.order_id);
-    throw new Error('Invalid signature');
+    throw new AppError('Invalid webhook signature', 401, 'PAYMENT_003');
   }
 
   // Find invoice by Midtrans order ID
@@ -495,7 +496,7 @@ export async function handleMidtransNotification(
 
   if (!invoice) {
     logger.warn('Invoice not found for Midtrans order:', notification.order_id);
-    throw new Error('Invoice not found');
+    throw new AppError('Invoice not found', 404, 'PAYMENT_001');
   }
 
   // Map Midtrans status to invoice status
@@ -549,7 +550,7 @@ export async function getPaymentStatus(
   const invoice = await prisma.invoice.findFirst({ where });
 
   if (!invoice) {
-    throw new Error('Invoice not found');
+    throw new AppError('Invoice not found', 404, 'PAYMENT_001');
   }
 
   const response: PaymentStatusResponse = {
@@ -580,7 +581,7 @@ export async function checkMidtransStatus(orderId: string): Promise<any> {
   const midtransConfig = await getMidtransConfig();
 
   if (!midtransConfig) {
-    throw new Error('Midtrans is not configured');
+    throw new AppError('Midtrans is not configured', 503, 'PAYMENT_002');
   }
 
   const apiUrl = getMidtransApiUrl(midtransConfig.is_production);
@@ -596,7 +597,7 @@ export async function checkMidtransStatus(orderId: string): Promise<any> {
   const result = await response.json();
 
   if (!response.ok) {
-    throw new Error(result.status_message || 'Failed to check Midtrans status');
+    throw new AppError(result.status_message || 'Failed to check Midtrans status', 502, 'PAYMENT_004');
   }
 
   return result;

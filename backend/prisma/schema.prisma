@@ -148,7 +148,7 @@ model WhatsAppInstance {
   auto_reply_max_per_hour Int     @default(30)
   
   // History sync
-  sync_history_on_connect  Boolean          @default(false)
+  sync_history_on_connect  Boolean          @default(true)
   history_sync_status      HistorySyncStatus @default(IDLE)
   history_sync_progress    Json?
   last_history_sync_at     DateTime?

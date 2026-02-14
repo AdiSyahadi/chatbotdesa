@@ -1,6 +1,7 @@
 import { FastifyInstance } from 'fastify';
 import { WhatsAppService } from './whatsapp.service';
 import prisma from '../../config/database';
+import { Prisma } from '@prisma/client';
 import {
   createInstanceSchema,
   updateInstanceSchema,
@@ -539,6 +540,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
           instanceId: { type: 'string', format: 'uuid' },
           direction: { type: 'string', enum: ['INCOMING', 'OUTGOING'] },
           status: { type: 'string' },
+          source: { type: 'string', enum: ['REALTIME', 'HISTORY_SYNC', 'MANUAL_IMPORT'] },
           page: { type: 'string', default: '1' },
           limit: { type: 'string', default: '20' },
         },
@@ -550,6 +552,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       instanceId?: string;
       direction?: 'INCOMING' | 'OUTGOING';
       status?: string;
+      source?: string;
       page?: string;
       limit?: string;
     };
@@ -558,6 +561,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       instanceId: query.instanceId,
       direction: query.direction,
       status: query.status,
+      source: query.source,
       page: query.page ? parseInt(query.page) : 1,
       limit: query.limit ? parseInt(query.limit) : 20,
     });
@@ -643,6 +647,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
         where: { id, organization_id: user.organizationId, deleted_at: null },
         select: {
           id: true,
+          status: true,
           sync_history_on_connect: true,
           history_sync_status: true,
           history_sync_progress: true,
@@ -654,15 +659,107 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
         return reply.status(404).send({ success: false, error: 'Instance not found' });
       }
 
+      // Safety net 1: if instance is CONNECTED and sync is stale (>2 min since last batch),
+      // it means the completion timer was lost (e.g. server restart). Auto-complete the sync.
+      // WhatsApp sends batches every few seconds during active sync, so 2 min = definitely done.
+      let effectiveStatus = instance.history_sync_status;
+      let effectiveProgress = instance.history_sync_progress;
+      if (
+        effectiveStatus === 'SYNCING' &&
+        instance.status === 'CONNECTED'
+      ) {
+        const progress = (instance.history_sync_progress as any) || {};
+        const lastBatchAt = progress.last_batch_at
+          ? new Date(progress.last_batch_at).getTime()
+          : progress.started_at
+            ? new Date(progress.started_at).getTime()
+            : 0;
+        const staleDurationMs = Date.now() - lastBatchAt;
+        const COMPLETION_THRESHOLD_MS = 2 * 60 * 1000; // 2 minutes
+
+        if (lastBatchAt > 0 && staleDurationMs > COMPLETION_THRESHOLD_MS) {
+          // Sync is done — no new batches for >2 min while connected. Auto-complete.
+          progress.percentage = 100;
+          progress.completed_at = new Date().toISOString();
+          progress.auto_completed_reason = 'stale_sync_connected';
+          const finalStatus = (progress.batch_errors || 0) > 0 ? 'PARTIAL' : 'COMPLETED';
+          effectiveStatus = finalStatus;
+          effectiveProgress = progress;
+
+          // Persist in background
+          prisma.whatsAppInstance.update({
+            where: { id },
+            data: {
+              history_sync_status: finalStatus,
+              history_sync_progress: progress,
+              last_history_sync_at: new Date(),
+            },
+          }).catch((err: unknown) => {
+            request.log.warn({ err, instanceId: id }, 'Failed to auto-complete stale sync');
+          });
+
+          request.log.info({ instanceId: id, finalStatus, messagesInserted: progress.messages_inserted }, '✅ [SYNC-STATUS] Auto-completed stale sync (connected, no batches for >2min)');
+        }
+      }
+
+      // Safety net 2: if instance is DISCONNECTED and sync has been stale for >5 minutes,
+      // auto-correct to STOPPED (stale state from process crash or missed cleanup).
+      // Short disconnects (<5 min) are tolerated — instance can auto-reconnect.
+      if (
+        effectiveStatus === 'SYNCING' &&
+        instance.status !== 'CONNECTED'
+      ) {
+        const progress = (instance.history_sync_progress as any) || {};
+        const lastBatchAt = progress.last_batch_at
+          ? new Date(progress.last_batch_at).getTime()
+          : progress.started_at
+            ? new Date(progress.started_at).getTime()
+            : 0;
+        const staleDurationMs = Date.now() - lastBatchAt;
+        const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+
+        if (staleDurationMs > STALE_THRESHOLD_MS) {
+          // Genuinely stale — mark as STOPPED and persist
+          progress.stopped_at = new Date().toISOString();
+          progress.stopped_reason = 'stale_auto_corrected';
+          effectiveStatus = 'STOPPED';
+          effectiveProgress = progress;
+
+          // Fix DB in background (fire-and-forget)
+          prisma.whatsAppInstance.update({
+            where: { id },
+            data: {
+              history_sync_status: 'STOPPED',
+              history_sync_progress: progress,
+            },
+          }).catch((err: unknown) => {
+            request.log.warn({ err, instanceId: id }, 'Failed to auto-correct stale sync status');
+          });
+        }
+        // else: recent activity — keep SYNCING, instance may auto-reconnect
+      }
+
+      // Detect if instance needs re-pair:
+      // sync is enabled, instance connected, but never actually received history sync data
+      const needsRepair = (
+        instance.sync_history_on_connect === true &&
+        instance.status === 'CONNECTED' &&
+        (effectiveStatus === 'IDLE' || effectiveStatus === null) &&
+        instance.last_history_sync_at === null &&
+        instance.history_sync_progress === null
+      );
+
       return reply.send({
         success: true,
         data: {
-          status: instance.history_sync_status,
-          progress: instance.history_sync_progress || null,
+          status: effectiveStatus,
+          progress: effectiveProgress || null,
+          instance_status: instance.status, // for frontend smart polling decisions
           settings: {
             sync_history_on_connect: instance.sync_history_on_connect,
           },
           last_sync_at: instance.last_history_sync_at,
+          needs_repair: needsRepair,
         },
       });
     },
@@ -792,7 +889,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
         data: {
           sync_history_on_connect: true,
           history_sync_status: 'IDLE',
-          history_sync_progress: { set: null },
+          history_sync_progress: Prisma.DbNull,
         },
       });
 
@@ -815,6 +912,70 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
   });
 
   // ============================================
+  // SYNC DATA — Clear History
+  // ============================================
+
+  /**
+   * Delete all history sync messages and reset sync state
+   * DELETE /instances/:id/sync-data
+   */
+  fastify.delete<{ Params: { id: string } }>('/instances/:id/sync-data', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      params: { type: 'object', properties: { id: { type: 'string', format: 'uuid' } }, required: ['id'] },
+    },
+    handler: async (request, reply) => {
+      const user = (request as any).user;
+      const { id } = request.params;
+
+      const instance = await prisma.whatsAppInstance.findFirst({
+        where: { id, organization_id: user.organizationId, deleted_at: null },
+        select: { id: true, history_sync_status: true },
+      });
+
+      if (!instance) {
+        return reply.status(404).send({ success: false, error: 'Instance not found' });
+      }
+
+      // Block if sync is currently running
+      if (instance.history_sync_status === 'SYNCING') {
+        return reply.status(409).send({
+          success: false,
+          error: 'Cannot clear data while sync is in progress. Stop the sync first.',
+        });
+      }
+
+      // 1. Stop any in-memory sync state (safety)
+      const { cleanupSyncState } = await import('./baileys.service');
+      cleanupSyncState(id);
+
+      // 2. Delete all HISTORY_SYNC messages for this instance
+      const deleted = await prisma.message.deleteMany({
+        where: { instance_id: id, source: 'HISTORY_SYNC' },
+      });
+
+      // 3. Reset sync state on instance
+      await prisma.whatsAppInstance.update({
+        where: { id },
+        data: {
+          history_sync_status: 'IDLE',
+          history_sync_progress: Prisma.DbNull,
+          last_history_sync_at: null,
+        },
+      });
+
+      return reply.send({
+        success: true,
+        message: `Deleted ${deleted.count} history sync messages. Sync state reset to IDLE.`,
+        data: {
+          deleted_count: deleted.count,
+          status: 'IDLE',
+        },
+      });
+    },
+  });
+
+  // ============================================
   // SYNC CONTROL — Stop / Resume
   // ============================================
 
@@ -828,6 +989,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
   }>({
     method: 'POST',
     url: '/instances/:id/sync-control',
+    onRequest: [fastify.authenticate],
     schema: {
       params: { type: 'object', properties: { id: { type: 'string', format: 'uuid' } }, required: ['id'] },
       body: {
@@ -854,15 +1016,18 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       const { stopHistorySync, resumeHistorySync } = await import('./baileys.service');
 
       if (action === 'stop') {
-        // Only allow stopping when currently syncing
-        if (instance.history_sync_status !== 'SYNCING') {
-          return reply.status(409).send({
-            success: false,
-            error: `Cannot stop sync — current status is ${instance.history_sync_status}. Only SYNCING can be stopped.`,
+        // Allow stopping from any state except already STOPPED
+        if (instance.history_sync_status === 'STOPPED') {
+          return reply.send({
+            success: true,
+            message: 'History sync is already stopped.',
+            data: { status: 'STOPPED' },
           });
         }
 
+        // stopHistorySync handles everything: in-memory, DB status, sync_history_on_connect
         await stopHistorySync(id);
+
         return reply.send({
           success: true,
           message: 'History sync stopped successfully.',
@@ -871,11 +1036,12 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       }
 
       if (action === 'resume') {
-        // Only allow resuming when currently stopped
-        if (instance.history_sync_status !== 'STOPPED') {
-          return reply.status(409).send({
-            success: false,
-            error: `Cannot resume sync — current status is ${instance.history_sync_status}. Only STOPPED can be resumed.`,
+        // Allow resuming from STOPPED or PARTIAL state
+        if (instance.history_sync_status === 'SYNCING') {
+          return reply.send({
+            success: true,
+            message: 'History sync is already running.',
+            data: { status: 'SYNCING' },
           });
         }
 

@@ -11,12 +11,7 @@ import { WebhookPayload } from '../modules/webhooks/webhooks.schema';
 import { getSocket, extractPhoneFromJid, canSendMessage } from '../modules/whatsapp/baileys.service';
 import { WEBHOOK_CONFIG } from '../config/constants';
 
-// Redis connection options for BullMQ (requires separate connection)
-const redisConnectionOptions = {
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379', 10),
-  maxRetriesPerRequest: null,
-};
+import redisConnectionOptions from '../config/redis-connection';
 
 // ============================================
 // WEBHOOK JOB DATA TYPE
@@ -47,7 +42,7 @@ async function processWebhook(job: Job<WebhookJobData>): Promise<void> {
 
   try {
     // Use the service to deliver webhook
-    const webhookService = new WebhookService(null as any);
+    const webhookService = new WebhookService();
     const result = await webhookService.deliverWebhook(webhookUrl, payload, webhookSecret);
 
     // Update webhook status
@@ -120,7 +115,7 @@ async function processWebhook(job: Job<WebhookJobData>): Promise<void> {
     );
 
     // Update status on error
-    const webhookService = new WebhookService(null as any);
+    const webhookService = new WebhookService();
     await webhookService.updateWebhookStatus(webhookId, false, attemptNumber, {
       error: error.message,
       durationMs: 0,
@@ -196,7 +191,7 @@ async function handleAutoReply(
       return;
     }
 
-    console.log(`🤖 [AUTO-REPLY] Sending reply to ${senderJid} (${replyText.substring(0, 50)}...)`);
+    logger.info({ senderJid, replyPreview: replyText.substring(0, 50) }, '🤖 [AUTO-REPLY] Sending reply');
 
     // Get the active socket for this instance
     const socket = getSocket(instanceId);
