@@ -60,6 +60,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
         id: true,
         name: true,
         phone_number: true,
+        wa_display_name: true,
         status: true,
         is_active: true,
         connected_at: true,

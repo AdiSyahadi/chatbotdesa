@@ -10,12 +10,16 @@ import makeWASocket, {
   getAggregateVotesInPollMessage,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  downloadMediaMessage,
+  getContentType,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import * as QRCode from 'qrcode';
 import pino from 'pino';
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
+import { Readable } from 'stream';
+import { saveFile, ensureUploadsDir } from '../../services/storage.service';
 import prisma from '../../config/database';
 import { InstanceStatus, WarmingPhase, MessageType, Prisma } from '@prisma/client';
 import {
@@ -313,8 +317,11 @@ export function extractPhoneFromJid(jid: string): string | null {
   if (jid.includes('@lid') || jid.startsWith('LID:')) return null;
   // Group JIDs — return group id
   if (jid.endsWith('@g.us')) return jid.replace('@g.us', '');
-  // Standard JID
-  return jid.replace('@s.whatsapp.net', '');
+  // Standard JID — strip @domain and :device suffix
+  const cleaned = jid.replace('@s.whatsapp.net', '');
+  // Remove :device suffix (e.g. "6281234567890:54" → "6281234567890")
+  const colonIdx = cleaned.indexOf(':');
+  return colonIdx > 0 ? cleaned.substring(0, colonIdx) : cleaned;
 }
 
 /**
@@ -398,6 +405,9 @@ function extractMessageContent(msg: WAMessage): ExtractedMessageContent | null {
     } else if (inner?.audioMessage) {
       messageType = 'AUDIO';
       text = '[View Once Audio]';
+    } else if (inner?.stickerMessage) {
+      messageType = 'STICKER';
+      text = '[View Once Sticker]';
     } else {
       text = '[View Once Message]';
     }
@@ -465,6 +475,9 @@ function extractMessageContent(msg: WAMessage): ExtractedMessageContent | null {
     } else if (inner.audioMessage) {
       messageType = 'AUDIO';
       text = inner.audioMessage.ptt ? '[Voice Note]' : '[Audio]';
+    } else if (inner.stickerMessage) {
+      messageType = 'STICKER';
+      text = '[Sticker]';
     } else {
       text = '[Disappearing Message]';
     }
@@ -679,6 +692,12 @@ export async function initializeConnection(
       clearTimeout(pendingTimer);
       reconnectTimers.delete(instanceId);
     }
+
+    // Reset reconnect attempt counter so this connection gets a fresh set of retries.
+    // Without this, stale counter from a previous disconnect cycle carries over and
+    // causes scheduleReconnect to hit MAX_ATTEMPTS prematurely (e.g., user manually
+    // clicks Connect after a loggedOut cycle that already exhausted 10 attempts).
+    reconnectAttempts.delete(instanceId);
 
     // Clear ALL stale sync state from previous session so fresh sync can proceed
     syncPausedInstances.delete(instanceId);
@@ -906,12 +925,35 @@ export async function initializeConnection(
         }
       }
 
-      // Handle LID → Phone Number mapping updates (Baileys v6.6+)
-      if (eventName === 'lid-mapping.update' && data) {
-        logger.info({ instanceId, lid: data.lid, pn: data.pn }, '🔗 [LID-MAP] lid-mapping.update received');
-        handleLidMappingUpdate(instanceId, organizationId, data).catch((err: any) => {
+      // Handle LID → Phone Number mapping via chats.phoneNumberShare (Baileys v6.6+)
+      // This is the ACTUAL event name — "lid-mapping.update" does NOT exist in Baileys.
+      if (eventName === 'chats.phoneNumberShare' && data) {
+        logger.info({ instanceId, lid: data.lid, jid: data.jid }, '🔗 [LID-MAP] chats.phoneNumberShare received');
+        handleLidMappingUpdate(instanceId, organizationId, { lid: data.lid, pn: data.jid }, 'chats.phoneNumberShare').catch((err: any) => {
           logger.error({ err, instanceId }, '❌ [LID-MAP] Error handling LID mapping');
         });
+      }
+
+      // Extract LID↔Phone mappings from contacts.upsert events
+      // Contact objects may have both `lid` and `jid` fields — capture the cross-reference
+      if (eventName === 'contacts.upsert' && Array.isArray(data)) {
+        for (const contact of data) {
+          const contactLid = contact.lid as string | undefined;
+          const contactJid = contact.jid as string | undefined;
+          const contactId = contact.id as string | undefined;
+          // Case 1: contact.lid + contact.jid both present
+          if (contactLid?.endsWith('@lid') && contactJid?.endsWith('@s.whatsapp.net')) {
+            handleLidMappingUpdate(instanceId, organizationId, { lid: contactLid, pn: contactJid }, 'contacts.upsert').catch(() => {});
+          }
+          // Case 2: contact.id is @s.whatsapp.net and contact.lid is present
+          if (contactLid?.endsWith('@lid') && contactId?.endsWith('@s.whatsapp.net')) {
+            handleLidMappingUpdate(instanceId, organizationId, { lid: contactLid, pn: contactId }, 'contacts.upsert').catch(() => {});
+          }
+          // Case 3: contact.id is @lid and contact.jid is @s.whatsapp.net
+          if (contactId?.endsWith('@lid') && contactJid?.endsWith('@s.whatsapp.net')) {
+            handleLidMappingUpdate(instanceId, organizationId, { lid: contactId, pn: contactJid }, 'contacts.upsert').catch(() => {});
+          }
+        }
       }
 
       return originalEmit(event as any, data);
@@ -966,6 +1008,7 @@ export async function initializeConnection(
         // Handle successful connection
         if (connection === 'open') {
           const phoneNumber = socket.user?.id ? extractPhoneFromJid(socket.user.id) : null;
+          const waDisplayName = socket.user?.notify || socket.user?.verifiedName || socket.user?.name || null;
 
           // Check if sync was auto-stopped by safety net during a temporary disconnect.
           // If so, recover: reset to SYNCING so incoming history events aren't blocked.
@@ -996,6 +1039,7 @@ export async function initializeConnection(
             data: {
               status: 'CONNECTED',
               phone_number: phoneNumber,
+              wa_display_name: waDisplayName,
               connected_at: new Date(),
               qr_code: null,
               health_score: 100,
@@ -1006,11 +1050,12 @@ export async function initializeConnection(
           qrCodeStore.delete(instanceId);
           reconnectAttempts.delete(instanceId); // Reset backoff on successful connection
 
-          logger.info({ instanceId, phoneNumber }, 'WhatsApp connected');
+          logger.info({ instanceId, phoneNumber, waDisplayName }, 'WhatsApp connected');
           baileysEvents.emit('connection', {
             instanceId,
             status: 'CONNECTED',
             phone_number: phoneNumber,
+            wa_display_name: waDisplayName,
           });
         }
 
@@ -1121,6 +1166,18 @@ export async function initializeConnection(
         const { messages, chats, contacts, isLatest } = events['messaging-history.set'];
         logger.debug({ instanceId, msgCount: messages.length, chatCount: chats.length, contactCount: contacts.length, isLatest }, '📋 [PROCESS-BACKUP] messaging-history.set via ev.process()');
         // NOTE: Primary handling is done at emit interception level above
+      }
+
+      // ---- LID→Phone mapping (backup — primary handling is at emit level) ----
+      if (events['chats.phoneNumberShare']) {
+        const data = events['chats.phoneNumberShare'];
+        logger.debug({ instanceId, lid: data.lid, jid: data.jid }, '📋 [PROCESS-BACKUP] chats.phoneNumberShare via ev.process()');
+      }
+
+      // ---- Contacts Upsert (backup — LID extraction done at emit level) ----
+      if (events['contacts.upsert']) {
+        const contacts = events['contacts.upsert'];
+        logger.debug({ instanceId, count: contacts.length }, '📋 [PROCESS-BACKUP] contacts.upsert via ev.process()');
       }
     });
 
@@ -2111,7 +2168,8 @@ async function handleAppendHistoryMessages(
 async function handleLidMappingUpdate(
   instanceId: string,
   organizationId: string,
-  mapping: { lid: string; pn: string }
+  mapping: { lid: string; pn: string },
+  source: string = 'chats.phoneNumberShare'
 ): Promise<void> {
   try {
     const { lid, pn } = mapping;
@@ -2121,7 +2179,7 @@ async function handleLidMappingUpdate(
     const phoneNumber = pn.replace('@s.whatsapp.net', '').replace(/@.*$/, '');
     if (!phoneNumber) return;
 
-    logger.info({ instanceId, lid, pn, phoneNumber }, '🔗 [LID-MAP] Storing mapping');
+    logger.info({ instanceId, lid, pn, phoneNumber, source }, '🔗 [LID-MAP] Storing mapping');
 
     // 1. Upsert into lid_phone_mappings table
     await prisma.lidPhoneMapping.upsert({
@@ -2136,12 +2194,12 @@ async function handleLidMappingUpdate(
         lid_jid: lid,
         phone_jid: pn,
         phone_number: phoneNumber,
-        source: 'lid-mapping.update',
+        source,
       },
       update: {
         phone_jid: pn,
         phone_number: phoneNumber,
-        source: 'lid-mapping.update',
+        source,
       },
     });
 
@@ -2203,6 +2261,103 @@ export async function batchResolveLidToPhone(
   return result;
 }
 
+/** Media message types that can be downloaded from WhatsApp */
+const DOWNLOADABLE_MEDIA_TYPES: Set<string> = new Set(['IMAGE', 'VIDEO', 'AUDIO', 'DOCUMENT', 'STICKER']);
+
+/**
+ * Download media from a WAMessage and save to local storage.
+ * Returns the public URL if successful, null otherwise.
+ * Non-critical — failure does not block message processing.
+ */
+async function downloadAndSaveMedia(
+  msg: WAMessage,
+  messageType: string,
+  organizationId: string,
+  instanceId: string,
+): Promise<{ url: string; mimetype: string } | null> {
+  try {
+    if (!DOWNLOADABLE_MEDIA_TYPES.has(messageType)) return null;
+
+    const msgContent = msg.message;
+    if (!msgContent) return null;
+
+    // Determine the mimetype from the message content
+    const contentType = getContentType(msgContent);
+    if (!contentType) return null;
+
+    // Get the actual media message object to read mimetype
+    // Handle viewOnce and ephemeral wrappers
+    let innerContent = msgContent;
+    if (msgContent.viewOnceMessage?.message) {
+      innerContent = msgContent.viewOnceMessage.message;
+    } else if (msgContent.viewOnceMessageV2?.message) {
+      innerContent = msgContent.viewOnceMessageV2.message;
+    } else if (msgContent.ephemeralMessage?.message) {
+      innerContent = msgContent.ephemeralMessage.message;
+    }
+
+    // Extract mimetype from the specific media message
+    const mediaMsg = (innerContent as any)[getContentType(innerContent) || ''];
+    const mimetype: string = mediaMsg?.mimetype || 'application/octet-stream';
+
+    // Download media buffer from WhatsApp servers
+    // Use instanceId to look up the correct socket for reupload requests
+    const socket = activeSockets.get(instanceId);
+    const buffer = await downloadMediaMessage(msg, 'buffer', {}, {
+      logger: logger as any,
+      reuploadRequest: socket?.updateMediaMessage as any,
+    });
+
+    if (!buffer || (Buffer.isBuffer(buffer) && buffer.length === 0)) {
+      logger.warn({ msgId: msg.key.id, messageType }, '⚠️ [MEDIA] Downloaded empty buffer');
+      return null;
+    }
+
+    // Determine file extension from mimetype
+    const extMap: Record<string, string> = {
+      'image/jpeg': 'jpg', 'image/png': 'png', 'image/gif': 'gif', 'image/webp': 'webp',
+      'video/mp4': 'mp4', 'video/mpeg': 'mpeg', 'video/quicktime': 'mov',
+      'audio/ogg; codecs=opus': 'ogg', 'audio/ogg': 'ogg', 'audio/mpeg': 'mp3',
+      'audio/mp4': 'm4a', 'audio/wav': 'wav',
+      'application/pdf': 'pdf',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+      'application/msword': 'doc', 'application/vnd.ms-excel': 'xls',
+    };
+    const ext = extMap[mimetype.split(';')[0].trim()] || mimetype.split('/')[1]?.split(';')[0] || 'bin';
+    const filename = `media_${Date.now()}.${ext}`;
+
+    ensureUploadsDir();
+
+    // Save via existing storage service (reuse, don't duplicate)
+    const bufferData = Buffer.isBuffer(buffer) ? buffer : Buffer.from(buffer as any);
+    const result = await saveFile(
+      Readable.from(bufferData),
+      filename,
+      mimetype.split(';')[0].trim(), // Clean mimetype without codec params
+      organizationId,
+    );
+
+    if (!result.success || !result.url) {
+      logger.warn({ msgId: msg.key.id, error: result.error }, '⚠️ [MEDIA] Failed to save media file');
+      return null;
+    }
+
+    // Replace /uploads/ with /media/ so the URL is publicly accessible (capability URL).
+    // /uploads/* requires JWT/API-key auth (for dashboard frontend).
+    // /media/* is public (UUID filenames are unguessable = secure).
+    // External webhook consumers (CRM) need direct access without auth.
+    const publicUrl = result.url.replace('/uploads/', '/media/');
+
+    logger.info({ msgId: msg.key.id, messageType, url: publicUrl, size: bufferData.length }, '📥 [MEDIA] Downloaded and saved media');
+    return { url: publicUrl, mimetype: mimetype.split(';')[0].trim() };
+  } catch (error) {
+    // Non-critical — log and continue. Message is still saved without media_url.
+    logger.warn({ error, msgId: msg.key.id, messageType }, '⚠️ [MEDIA] Failed to download media (non-critical)');
+    return null;
+  }
+}
+
 /**
  * Handle real-time message (both incoming AND outgoing).
  * Uses upsert to gracefully handle the race condition where:
@@ -2230,7 +2385,19 @@ async function handleRealtimeMessage(
       ? '' // Will be filled by the instance's own phone number context
       : (msg.key.participant || msg.key.remoteJid || '');
     const waMessageId = msg.key.id || undefined;
+    const pushName = msg.pushName || null; // WhatsApp profile name of the sender
     const now = new Date();
+
+    // Download and save media for incoming media messages (non-blocking for text)
+    let savedMediaUrl: string | null = null;
+    let savedMediaType: string | null = null;
+    if (DOWNLOADABLE_MEDIA_TYPES.has(messageType) && !fromMe) {
+      const mediaResult = await downloadAndSaveMedia(msg, messageType, organizationId, instanceId);
+      if (mediaResult) {
+        savedMediaUrl = mediaResult.url;
+        savedMediaType = mediaResult.mimetype;
+      }
+    }
 
     // Use race-safe upsert to avoid duplicate constraint violation.
     // Both sendText/sendMedia AND this handler may fire for the same outgoing message.
@@ -2250,6 +2417,8 @@ async function handleRealtimeMessage(
           sender_jid: senderJid,
           message_type: messageType,
           content: text,
+          media_url: savedMediaUrl,
+          media_type: savedMediaType,
           direction,
           status: fromMe ? 'SENT' : 'DELIVERED',
           source: 'REALTIME',
@@ -2264,6 +2433,8 @@ async function handleRealtimeMessage(
             direction,
             status: 'DELIVERED',
             delivered_at: now,
+            // Also set media_url if downloaded
+            ...(savedMediaUrl ? { media_url: savedMediaUrl, media_type: savedMediaType } : {}),
           }),
         },
       });
@@ -2277,6 +2448,8 @@ async function handleRealtimeMessage(
           sender_jid: senderJid,
           message_type: messageType,
           content: text,
+          media_url: savedMediaUrl,
+          media_type: savedMediaType,
           direction,
           status: fromMe ? 'SENT' : 'DELIVERED',
           source: 'REALTIME',
@@ -2288,11 +2461,100 @@ async function handleRealtimeMessage(
 
     // Convert timestamp for webhook (handles protobuf Long objects)
     const timestamp = convertMessageTimestamp(msg.messageTimestamp);
-    const phoneNumber = extractPhoneFromJid(chatJid);
+    let phoneNumber = extractPhoneFromJid(chatJid);
+
+    // Resolve LID → Phone number if this is a @lid chat
+    // Without this, private chat webhooks for LID contacts have phone_number=null
+    // and CRM cannot identify the customer
+    if (!phoneNumber && chatJid.endsWith('@lid')) {
+      try {
+        // Step 1: Check DB mapping cache first (fast path)
+        const mapping = await prisma.lidPhoneMapping.findUnique({
+          where: {
+            instance_id_lid_jid: {
+              instance_id: instanceId,
+              lid_jid: chatJid,
+            },
+          },
+          select: { phone_number: true },
+        });
+        if (mapping?.phone_number) {
+          phoneNumber = mapping.phone_number;
+          logger.debug({ instanceId, lid: chatJid, resolved: phoneNumber }, '🔗 [LID-RESOLVE] Resolved LID to phone from DB');
+        } else {
+          // Step 2: Active resolution via Baileys socket — query WhatsApp directly
+          // sock.onWhatsApp(lid) can resolve LID→phone JID
+          const socket = activeSockets.get(instanceId);
+          if (socket?.user) {
+            try {
+              const results = await socket.onWhatsApp(chatJid);
+              if (results && results.length > 0) {
+                const result = results[0];
+                // result.jid is the @s.whatsapp.net JID if resolved
+                if (result.jid && result.jid.endsWith('@s.whatsapp.net')) {
+                  const resolvedPhone = result.jid.replace('@s.whatsapp.net', '');
+                  phoneNumber = resolvedPhone;
+                  logger.info({ instanceId, lid: chatJid, resolved: resolvedPhone }, '🔗 [LID-RESOLVE] Resolved LID via onWhatsApp query');
+                  // Save to DB for future fast lookups
+                  await prisma.lidPhoneMapping.upsert({
+                    where: { instance_id_lid_jid: { instance_id: instanceId, lid_jid: chatJid } },
+                    create: { instance_id: instanceId, lid_jid: chatJid, phone_jid: result.jid, phone_number: resolvedPhone, source: 'onWhatsApp' },
+                    update: { phone_jid: result.jid, phone_number: resolvedPhone, source: 'onWhatsApp' },
+                  }).catch(() => {}); // Non-critical
+                  // Also backfill contact phone_number
+                  await prisma.contact.updateMany({
+                    where: { instance_id: instanceId, jid: chatJid, phone_number: null },
+                    data: { phone_number: resolvedPhone },
+                  }).catch(() => {});
+                }
+              }
+            } catch (resolveErr) {
+              // onWhatsApp may fail for various reasons — non-critical, just log
+              logger.debug({ err: resolveErr, instanceId, lid: chatJid }, '⚠️ [LID-RESOLVE] onWhatsApp query failed');
+            }
+          }
+          if (!phoneNumber) {
+            logger.debug({ instanceId, lid: chatJid }, '⚠️ [LID-RESOLVE] Could not resolve LID — phone_number will be null');
+          }
+        }
+      } catch (err) {
+        logger.error({ err, instanceId, lid: chatJid }, '❌ [LID-RESOLVE] Error resolving LID mapping');
+      }
+    }
+
+    // Resolve contact name for webhook payload
+    // Priority: msg.pushName (real-time from WA) → Contact.push_name → Contact.name → null
+    let contactName: string | null = pushName;
+    if (!contactName && !fromMe) {
+      try {
+        const lookupJid = chatJid.endsWith('@g.us') ? senderJid : chatJid;
+        if (lookupJid) {
+          const contact = await prisma.contact.findFirst({
+            where: { instance_id: instanceId, jid: lookupJid },
+            select: { push_name: true, name: true },
+          });
+          contactName = contact?.push_name || contact?.name || null;
+        }
+      } catch {
+        // Non-critical — proceed without name
+      }
+    }
+
+    // Update Contact push_name from incoming message if available
+    // This keeps contact names fresh as users change their WA profile names
+    if (pushName && !fromMe) {
+      const contactJid = chatJid.endsWith('@g.us') ? senderJid : chatJid;
+      if (contactJid) {
+        prisma.contact.updateMany({
+          where: { instance_id: instanceId, jid: contactJid, push_name: { not: pushName } },
+          data: { push_name: pushName },
+        }).catch(() => {}); // Fire-and-forget, non-critical
+      }
+    }
 
     // Emit webhook event with proper direction
     const eventType = fromMe ? 'outgoing' : 'incoming';
-    logger.info({ instanceId, from: chatJid, type: messageType, fromMe, direction }, `📨 Emitting ${eventType} message event to baileysEvents`);
+    logger.info({ instanceId, from: chatJid, type: messageType, fromMe, direction, pushName: contactName }, `📨 Emitting ${eventType} message event to baileysEvents`);
     baileysEvents.emit('message', {
       instanceId,
       type: eventType,
@@ -2302,9 +2564,11 @@ async function handleRealtimeMessage(
         chat_jid: chatJid,
         sender_jid: senderJid,
         phone_number: phoneNumber,
+        contact_name: contactName,
         direction,
         type: messageType.toLowerCase(),
         content: text,
+        media_url: savedMediaUrl || undefined,
         timestamp,
       },
     });
@@ -2369,7 +2633,7 @@ export async function getConnectionInfo(instanceId: string): Promise<ConnectionI
   return {
     status: 'CONNECTED',
     phone_number: extractPhoneFromJid(socket.user.id),
-    phone_name: socket.user.name,
+    phone_name: socket.user.notify || socket.user.verifiedName || socket.user.name,
   };
 }
 

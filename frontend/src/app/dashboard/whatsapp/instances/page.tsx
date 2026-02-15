@@ -53,6 +53,7 @@ interface Instance {
   id: string;
   name: string;
   phone_number?: string;
+  wa_display_name?: string;
   status: string;
   health_score?: number;
   messages_today?: number;
@@ -332,6 +333,7 @@ function InstanceCard({ instance, onConnect, onDisconnect, onDelete }: InstanceC
           <CardTitle className="text-base">{instance.name}</CardTitle>
           <CardDescription>
             {instance.phone_number || "Not connected"}
+            {instance.wa_display_name ? ` • ${instance.wa_display_name}` : ""}
           </CardDescription>
         </div>
         <DropdownMenu>
@@ -425,6 +427,7 @@ function InstanceRow({ instance, onConnect, onDisconnect, onDelete }: InstanceCa
           <p className="font-medium">{instance.name}</p>
           <p className="text-sm text-muted-foreground">
             {instance.phone_number || "Not connected"}
+            {instance.wa_display_name ? ` • ${instance.wa_display_name}` : ""}
           </p>
         </div>
       </div>

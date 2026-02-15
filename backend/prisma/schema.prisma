@@ -114,6 +114,7 @@ model WhatsAppInstance {
   
   name              String   @db.VarChar(255)
   phone_number      String?  @db.VarChar(50)
+  wa_display_name   String?  @db.VarChar(255)
   qr_code           String?  @db.Text
   
   // Status

@@ -48,6 +48,12 @@ import {
   CheckCheck,
   Clock,
   XCircle,
+  Image as ImageIcon,
+  Video,
+  FileAudio,
+  FileText,
+  Sticker,
+  Download,
 } from "lucide-react";
 import { cn, formatDate } from "@/lib/utils";
 import { uploadsApi } from "@/lib/api";
@@ -491,10 +497,77 @@ export default function MessagesPage() {
                       <TableCell className="font-medium">
                         {formatPhoneNumber(message.chat_jid)}
                       </TableCell>
-                      <TableCell className="max-w-xs truncate">
-                        {typeof message.content === "string"
-                          ? message.content
-                          : message.content?.text || message.content?.caption || "[Media]"}
+                      <TableCell className="max-w-xs">
+                        {(() => {
+                          const textContent = typeof message.content === "string"
+                            ? message.content
+                            : message.content?.text || message.content?.caption || "";
+                          const mediaType = message.message_type?.toUpperCase();
+                          const mediaUrl = message.media_url;
+
+                          // Media rendering based on message_type
+                          if (mediaUrl && (mediaType === "IMAGE" || mediaType === "STICKER")) {
+                            return (
+                              <div className="space-y-1">
+                                <a href={mediaUrl} target="_blank" rel="noopener noreferrer">
+                                  <img
+                                    src={mediaUrl}
+                                    alt={textContent || "Image"}
+                                    className="max-h-20 max-w-32 rounded object-cover cursor-pointer hover:opacity-80 transition-opacity"
+                                    onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                  />
+                                </a>
+                                {textContent && <p className="text-sm truncate">{textContent}</p>}
+                              </div>
+                            );
+                          }
+                          if (mediaUrl && mediaType === "VIDEO") {
+                            return (
+                              <div className="space-y-1">
+                                <a href={mediaUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline">
+                                  <Video className="h-4 w-4" />
+                                  Video
+                                </a>
+                                {textContent && <p className="text-sm truncate">{textContent}</p>}
+                              </div>
+                            );
+                          }
+                          if (mediaUrl && mediaType === "AUDIO") {
+                            return (
+                              <audio controls className="h-8 max-w-48" preload="none">
+                                <source src={mediaUrl} />
+                              </audio>
+                            );
+                          }
+                          if (mediaUrl && mediaType === "DOCUMENT") {
+                            return (
+                              <a href={mediaUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline">
+                                <FileText className="h-4 w-4" />
+                                {textContent || "Document"}
+                                <Download className="h-3 w-3" />
+                              </a>
+                            );
+                          }
+
+                          // Text-only message or media without URL
+                          if (mediaType && mediaType !== "TEXT" && !mediaUrl) {
+                            const icons: Record<string, React.ReactNode> = {
+                              IMAGE: <ImageIcon className="h-3.5 w-3.5 text-muted-foreground" />,
+                              VIDEO: <Video className="h-3.5 w-3.5 text-muted-foreground" />,
+                              AUDIO: <FileAudio className="h-3.5 w-3.5 text-muted-foreground" />,
+                              DOCUMENT: <FileText className="h-3.5 w-3.5 text-muted-foreground" />,
+                              STICKER: <Sticker className="h-3.5 w-3.5 text-muted-foreground" />,
+                            };
+                            return (
+                              <span className="inline-flex items-center gap-1 text-sm truncate">
+                                {icons[mediaType]}
+                                {textContent || `[${mediaType}]`}
+                              </span>
+                            );
+                          }
+
+                          return <span className="truncate">{textContent || "[Empty]"}</span>;
+                        })()}
                       </TableCell>
                       <TableCell>
                         <span className="text-sm text-muted-foreground">

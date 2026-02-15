@@ -176,14 +176,43 @@ async function start() {
     await fastify.register(fastifyStatic, {
       root: uploadsRoot,
       prefix: '/uploads/',
-      decorateReply: false,
+      // decorateReply must be true (default) so reply.sendFile() is available
       serve: false, // Don't auto-serve — only via reply.sendFile()
     });
 
     // Authenticated file access endpoint — uses real JWT/API-key verification
+    // Used by dashboard frontend (browser with JWT cookie)
     fastify.get('/uploads/*', {
       onRequest: [authenticateJwtOrApiKey],
     }, async (request, reply) => {
+      const urlPath = (request.params as any)['*'] as string;
+      if (!urlPath) {
+        return reply.status(400).send({ success: false, error: 'File path required' });
+      }
+
+      // Sanitize: prevent path traversal
+      const sanitized = path.normalize(urlPath).replace(/^(\.\.[\/\\])+/, '');
+      const filePath = path.resolve(uploadsRoot, sanitized);
+
+      // Verify file is within uploads directory
+      if (!filePath.startsWith(path.resolve(uploadsRoot))) {
+        return reply.status(400).send({ success: false, error: 'Invalid file path' });
+      }
+
+      if (!fs.existsSync(filePath)) {
+        return reply.status(404).send({ success: false, error: 'File not found' });
+      }
+
+      return reply.sendFile(sanitized, uploadsRoot);
+    });
+
+    // ── Public media endpoint (capability URL) ──────────────────────────
+    // Serves media files WITHOUT authentication.
+    // Security: filenames are UUID v4 (122 bits randomness) — unguessable.
+    // Same pattern as S3 pre-signed URLs, Telegram, WhatsApp Web CDN.
+    // Used by external webhook consumers (CRM) that receive media_url.
+    // Path: /media/:orgId/:filename
+    fastify.get('/media/*', async (request, reply) => {
       const urlPath = (request.params as any)['*'] as string;
       if (!urlPath) {
         return reply.status(400).send({ success: false, error: 'File path required' });
@@ -268,7 +297,7 @@ async function start() {
       }
     });
 
-    baileysEvents.on('connection', async (event: { instanceId: string; status: string; phone_number?: string }) => {
+    baileysEvents.on('connection', async (event: { instanceId: string; status: string; phone_number?: string; wa_display_name?: string }) => {
       try {
         logger.info({ status: event.status, instanceId: event.instanceId }, '[WEBHOOK] Connection event');
         
@@ -284,7 +313,7 @@ async function start() {
           instance_id: event.instanceId,
           organization_id: instance.organization_id,
           event_type: eventType as any,
-          payload: { status: event.status, phone_number: event.phone_number },
+          payload: { status: event.status, phone_number: event.phone_number, wa_display_name: event.wa_display_name },
           idempotency_key: `conn_${event.instanceId}_${Date.now()}`,
         });
       } catch (error) {
