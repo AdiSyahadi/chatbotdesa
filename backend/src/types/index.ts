@@ -91,6 +91,17 @@ export const errorHandler = (
     });
   }
 
+  // Multipart file-too-large errors from @fastify/multipart
+  if (error.name === 'RequestFileTooLargeError' || (error as any).statusCode === 413) {
+    return reply.status(413).send({
+      success: false,
+      error: {
+        code: 'FILE_TOO_LARGE',
+        message: 'File too large. Max sizes: image 16MB, audio 16MB, video 64MB, document 100MB',
+      },
+    });
+  }
+
   // Log unexpected errors
   request.log.error({ errorName: error.name, errorMessage: error.message }, '[ERROR_HANDLER]');
 

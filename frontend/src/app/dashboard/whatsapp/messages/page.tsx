@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import { useMessages, useSendMessage, useInstances } from "@/hooks/use-queries";
 import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -100,6 +100,14 @@ const statusConfig: Record<string, { label: string; icon: React.ReactNode; color
 };
 
 export default function MessagesPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center p-8"><Spinner /></div>}>
+      <MessagesPageInner />
+    </Suspense>
+  );
+}
+
+function MessagesPageInner() {
   const searchParams = useSearchParams();
   const defaultInstanceId = searchParams.get("instance") || "";
 

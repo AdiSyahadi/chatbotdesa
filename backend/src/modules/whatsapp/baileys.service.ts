@@ -19,8 +19,11 @@ import pino from 'pino';
 import { EventEmitter } from 'events';
 import { createHash } from 'crypto';
 import { Readable } from 'stream';
+import * as fs from 'fs';
+import * as path from 'path';
 import { saveFile, ensureUploadsDir } from '../../services/storage.service';
 import prisma from '../../config/database';
+import config from '../../config';
 import { InstanceStatus, WarmingPhase, MessageType, Prisma } from '@prisma/client';
 import {
   useMultiFileAuthState,
@@ -1448,6 +1451,42 @@ function getFilenameFromUrl(url: string, defaultName: string): string {
 }
 
 /**
+ * Resolve media URL to a local file path if the URL points to self-hosted storage.
+ * Returns { localPath } for self-hosted files, { remoteUrl } for external URLs.
+ * Self-hosted uploads are served at e.g. http://localhost:3001/uploads/orgId/uuid.ext
+ * Resolving to local path avoids SSRF validation and auth issues when Baileys fetches the file.
+ */
+function resolveMediaSource(mediaUrl: string): { localPath: string } | { remoteUrl: string } {
+  const appUrl = config.app.url; // e.g. "http://localhost:3001"
+  const uploadsPrefix = `${appUrl}/uploads/`;
+  const mediaPrefix = `${appUrl}/media/`;
+
+  let relativePath: string | null = null;
+
+  if (mediaUrl.startsWith(uploadsPrefix)) {
+    // e.g. "http://localhost:3001/uploads/orgId/uuid.jpg" → "orgId/uuid.jpg"
+    relativePath = mediaUrl.substring(uploadsPrefix.length);
+  } else if (mediaUrl.startsWith(mediaPrefix)) {
+    // e.g. "http://localhost:3001/media/orgId/uuid.jpg" → "orgId/uuid.jpg"
+    relativePath = mediaUrl.substring(mediaPrefix.length);
+  }
+
+  if (relativePath) {
+    // Sanitize: prevent path traversal
+    const sanitized = path.normalize(relativePath).replace(/^(\.\.[/\\])+/, '');
+    const uploadsRoot = path.resolve(config.storage.path, 'uploads');
+    const localPath = path.resolve(uploadsRoot, sanitized);
+
+    // Verify the resolved path is within uploads directory and file exists
+    if (localPath.startsWith(uploadsRoot) && fs.existsSync(localPath)) {
+      return { localPath };
+    }
+  }
+
+  return { remoteUrl: mediaUrl };
+}
+
+/**
  * Send media message
  */
 export async function sendMediaMessage(
@@ -1469,11 +1508,21 @@ export async function sendMediaMessage(
     return { success: false, error: canSend.reason };
   }
 
-  // SSRF protection: validate media URL before fetching
-  const urlValidation = await validateMediaUrl(mediaUrl);
-  if (!urlValidation.valid) {
-    return { success: false, error: `Invalid media URL: ${urlValidation.error}` };
+  // Resolve media source: local file path for self-hosted uploads, remote URL otherwise
+  const mediaSource = resolveMediaSource(mediaUrl);
+
+  // Only run SSRF validation for remote URLs (external API calls)
+  if ('remoteUrl' in mediaSource) {
+    const urlValidation = await validateMediaUrl(mediaSource.remoteUrl);
+    if (!urlValidation.valid) {
+      return { success: false, error: `Invalid media URL: ${urlValidation.error}` };
+    }
   }
+
+  // Determine what to pass to Baileys: local file path or remote URL
+  const mediaSrc = 'localPath' in mediaSource
+    ? { url: mediaSource.localPath }
+    : { url: mediaSource.remoteUrl };
 
   try {
     const jid = formatPhoneToJid(to);
@@ -1483,26 +1532,26 @@ export async function sendMediaMessage(
     switch (mediaType) {
       case 'image':
         messageContent = {
-          image: { url: mediaUrl },
+          image: mediaSrc,
           caption,
         };
         break;
       case 'video':
         messageContent = {
-          video: { url: mediaUrl },
+          video: mediaSrc,
           mimetype: getMimetypeFromUrl(mediaUrl, 'video/mp4'),
           caption,
         };
         break;
       case 'audio':
         messageContent = {
-          audio: { url: mediaUrl },
+          audio: mediaSrc,
           mimetype: getMimetypeFromUrl(mediaUrl, 'audio/mpeg'),
         };
         break;
       case 'document':
         messageContent = {
-          document: { url: mediaUrl },
+          document: mediaSrc,
           mimetype: getMimetypeFromUrl(mediaUrl, 'application/octet-stream'),
           fileName: filename || getFilenameFromUrl(mediaUrl, 'document'),
           caption,
@@ -2274,7 +2323,7 @@ async function downloadAndSaveMedia(
   messageType: string,
   organizationId: string,
   instanceId: string,
-): Promise<{ url: string; mimetype: string } | null> {
+): Promise<{ url: string; mimetype: string; fileSize: number; fileName: string | null } | null> {
   try {
     if (!DOWNLOADABLE_MEDIA_TYPES.has(messageType)) return null;
 
@@ -2299,6 +2348,8 @@ async function downloadAndSaveMedia(
     // Extract mimetype from the specific media message
     const mediaMsg = (innerContent as any)[getContentType(innerContent) || ''];
     const mimetype: string = mediaMsg?.mimetype || 'application/octet-stream';
+    // Extract original filename (only exists for document messages from sender)
+    const originalFileName: string | null = mediaMsg?.fileName || null;
 
     // Download media buffer from WhatsApp servers
     // Use instanceId to look up the correct socket for reupload requests
@@ -2350,7 +2401,7 @@ async function downloadAndSaveMedia(
     const publicUrl = result.url.replace('/uploads/', '/media/');
 
     logger.info({ msgId: msg.key.id, messageType, url: publicUrl, size: bufferData.length }, '📥 [MEDIA] Downloaded and saved media');
-    return { url: publicUrl, mimetype: mimetype.split(';')[0].trim() };
+    return { url: publicUrl, mimetype: mimetype.split(';')[0].trim(), fileSize: bufferData.length, fileName: originalFileName };
   } catch (error) {
     // Non-critical — log and continue. Message is still saved without media_url.
     logger.warn({ error, msgId: msg.key.id, messageType }, '⚠️ [MEDIA] Failed to download media (non-critical)');
@@ -2388,14 +2439,21 @@ async function handleRealtimeMessage(
     const pushName = msg.pushName || null; // WhatsApp profile name of the sender
     const now = new Date();
 
-    // Download and save media for incoming media messages (non-blocking for text)
+    // Download and save media for ALL media messages (both incoming and outgoing).
+    // For outgoing from phone: this is the ONLY place media gets saved.
+    // For outgoing from API: sendMedia() already saved the original URL, but this gives
+    // a better /media/ public URL (downloaded from WA servers, saved locally).
     let savedMediaUrl: string | null = null;
     let savedMediaType: string | null = null;
-    if (DOWNLOADABLE_MEDIA_TYPES.has(messageType) && !fromMe) {
+    let savedFileSize: number | null = null;
+    let savedFileName: string | null = null;
+    if (DOWNLOADABLE_MEDIA_TYPES.has(messageType)) {
       const mediaResult = await downloadAndSaveMedia(msg, messageType, organizationId, instanceId);
       if (mediaResult) {
         savedMediaUrl = mediaResult.url;
         savedMediaType = mediaResult.mimetype;
+        savedFileSize = mediaResult.fileSize;
+        savedFileName = mediaResult.fileName;
       }
     }
 
@@ -2426,9 +2484,11 @@ async function handleRealtimeMessage(
           delivered_at: fromMe ? null : now,
         },
         update: {
-          // If already exists (e.g., outgoing saved by sendText), don't overwrite — just mark it was seen by Baileys
-          // Only update fields that Baileys might have better data for
-          ...(fromMe ? {} : {
+          // If already exists (e.g., outgoing saved by sendText/sendMedia), update relevant fields
+          ...(fromMe ? {
+            // For outgoing: update media_url with locally-saved /media/ URL (better than original URL)
+            ...(savedMediaUrl ? { media_url: savedMediaUrl, media_type: savedMediaType } : {}),
+          } : {
             // For incoming: update if somehow the API saved it first (shouldn't happen, but safe)
             direction,
             status: 'DELIVERED',
@@ -2523,20 +2583,37 @@ async function handleRealtimeMessage(
     }
 
     // Resolve contact name for webhook payload
-    // Priority: msg.pushName (real-time from WA) → Contact.push_name → Contact.name → null
-    let contactName: string | null = pushName;
-    if (!contactName && !fromMe) {
+    // For INCOMING: msg.pushName = sender's name = the contact. Use directly, fallback to DB.
+    // For OUTGOING: msg.pushName = OUR name (the account owner), NOT the recipient.
+    //   We must look up the RECIPIENT's name from Contact DB instead.
+    let contactName: string | null = null;
+    if (fromMe) {
+      // Outgoing: contact_name = recipient's name from DB (NOT msg.pushName which is sender/us)
       try {
-        const lookupJid = chatJid.endsWith('@g.us') ? senderJid : chatJid;
-        if (lookupJid) {
-          const contact = await prisma.contact.findFirst({
-            where: { instance_id: instanceId, jid: lookupJid },
-            select: { push_name: true, name: true },
-          });
-          contactName = contact?.push_name || contact?.name || null;
-        }
+        const contact = await prisma.contact.findFirst({
+          where: { instance_id: instanceId, jid: chatJid },
+          select: { push_name: true, name: true },
+        });
+        contactName = contact?.push_name || contact?.name || null;
       } catch {
         // Non-critical — proceed without name
+      }
+    } else {
+      // Incoming: msg.pushName IS the sender = the contact
+      contactName = pushName;
+      if (!contactName) {
+        try {
+          const lookupJid = chatJid.endsWith('@g.us') ? senderJid : chatJid;
+          if (lookupJid) {
+            const contact = await prisma.contact.findFirst({
+              where: { instance_id: instanceId, jid: lookupJid },
+              select: { push_name: true, name: true },
+            });
+            contactName = contact?.push_name || contact?.name || null;
+          }
+        } catch {
+          // Non-critical — proceed without name
+        }
       }
     }
 
@@ -2569,6 +2646,9 @@ async function handleRealtimeMessage(
         type: messageType.toLowerCase(),
         content: text,
         media_url: savedMediaUrl || undefined,
+        mime_type: savedMediaType || undefined,
+        file_size: savedFileSize || undefined,
+        file_name: savedFileName || undefined,
         timestamp,
       },
     });

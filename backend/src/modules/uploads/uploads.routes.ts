@@ -35,8 +35,11 @@ export default async function uploadRoutes(fastify: FastifyInstance) {
         });
       }
 
-      // Get expected type from field name or query
-      const expectedType = (request.query as { type?: string }).type;
+      // Get expected type from multipart form field or query param (fallback)
+      const typeField = data.fields?.type;
+      const expectedType =
+        (typeField && 'value' in typeField ? typeField.value as string : undefined)
+        || (request.query as { type?: string }).type;
 
       // Consume the full stream to get accurate file size for validation
       const fileBuffer = await data.toBuffer();

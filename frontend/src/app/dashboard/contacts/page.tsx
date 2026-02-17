@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { 
   useContacts, 
@@ -79,6 +79,14 @@ interface Instance {
 }
 
 export default function ContactsPage() {
+  return (
+    <Suspense fallback={<div className="flex items-center justify-center p-8"><Spinner /></div>}>
+      <ContactsPageInner />
+    </Suspense>
+  );
+}
+
+function ContactsPageInner() {
   const searchParams = useSearchParams();
   const defaultInstanceId = searchParams.get("instance") || "";
 

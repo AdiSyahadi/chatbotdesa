@@ -18,6 +18,8 @@ import { createWebhookService } from '../webhooks/webhooks.service';
 import { getStorageStats } from '../../workers/media-cleanup.worker';
 import { parsePagination } from '../../utils/pagination';
 import { batchResolveLidToPhone } from '../whatsapp/baileys.service';
+import { saveFile, validateFile } from '../../services/storage.service';
+import { Readable } from 'stream';
 import prisma from '../../config/database';
 import { Prisma } from '@prisma/client';
 import logger from '../../config/logger';
@@ -349,6 +351,78 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
 
     logger.info({ instanceId: body.instance_id, to: body.to, apiKeyId: req.apiKey.id }, 'External API: text message sent');
     return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Upload media file
+   * POST /api/v1/media/upload
+   * Permission: message:send
+   * Returns a public URL that can be used directly in send-media endpoint
+   */
+  fastify.post('/media/upload', {
+    preHandler: [requireApiKeyPermission('message:send')],
+    schema: {
+      description: 'Upload a media file (image/video/audio/document). Returns a public URL for use with send-media.',
+      tags: ['External API - Media'],
+      security: [{ apiKeyAuth: [] }],
+      consumes: ['multipart/form-data'],
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+
+    try {
+      const data = await request.file();
+
+      if (!data) {
+        return reply.status(400).send({ success: false, error: 'No file uploaded. Send file as multipart/form-data with field name "file".' });
+      }
+
+      // Read expected media type from form field or query param
+      const typeField = data.fields?.type;
+      const expectedType =
+        (typeField && 'value' in typeField ? typeField.value as string : undefined)
+        || (request.query as { type?: string }).type;
+
+      // Consume stream to buffer for size validation
+      const fileBuffer = await data.toBuffer();
+
+      // Validate file type and size
+      const validation = validateFile(data.mimetype, fileBuffer.length, expectedType);
+      if (!validation.valid) {
+        return reply.status(400).send({ success: false, error: validation.error });
+      }
+
+      // Save file using existing storage service (reuse, no duplication)
+      const result = await saveFile(
+        Readable.from(fileBuffer),
+        data.filename,
+        data.mimetype,
+        req.apiKey.organization_id
+      );
+
+      if (!result.success) {
+        return reply.status(500).send({ success: false, error: result.error });
+      }
+
+      // Return public URL (/media/ prefix — no auth required, UUID filenames = unguessable)
+      const publicUrl = result.url!.replace('/uploads/', '/media/');
+
+      logger.info({ apiKeyId: req.apiKey.id, mediaType: validation.mediaType, filename: data.filename }, 'External API: media uploaded');
+
+      return reply.send({
+        success: true,
+        data: {
+          url: publicUrl,
+          media_type: validation.mediaType,
+          mime_type: data.mimetype,
+          file_size: fileBuffer.length,
+          original_name: data.filename,
+        },
+      });
+    } catch (error) {
+      logger.error({ error }, 'External API: media upload failed');
+      return reply.status(500).send({ success: false, error: 'Failed to process upload' });
+    }
   });
 
   /**

@@ -141,6 +141,9 @@ export interface MessageWebhookPayload extends WebhookPayload {
     message_type: string;
     content?: string;
     media_url?: string;
+    mime_type?: string;
+    file_size?: number;
+    file_name?: string;
     status: string;
     timestamp: string;
   };

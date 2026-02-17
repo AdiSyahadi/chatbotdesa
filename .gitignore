@@ -1,5 +1,10 @@
 # Root-level gitignore for monorepo
 
+# Environment files (contain secrets)
+.env
+!.env.docker
+!.env.example
+
 # SQL dumps
 *.sql
 
@@ -10,6 +15,10 @@ saran dari temen saya.txt
 
 # Backup files
 *.bak
+
+# Docker volumes (if mapped locally)
+mysql_data/
+redis_data/
 
 # OS
 .DS_Store

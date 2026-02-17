@@ -66,7 +66,7 @@ async function start() {
 
     await fastify.register(multipart, {
       limits: {
-        fileSize: 10 * 1024 * 1024, // 10MB
+        fileSize: 100 * 1024 * 1024, // 100MB — matches max document size in storage.service.ts
         files: 5,
       },
     });
