@@ -50,10 +50,10 @@ export type ApiKeyPermission = typeof API_KEY_PERMISSIONS[number];
  * Create API key schema
  */
 export const createApiKeySchema = z.object({
-  name: z.string().min(1).max(255, 'Name must be at most 255 characters'),
+  name: z.string().min(1, 'API key name is required').max(255, 'Name must be at most 255 characters'),
   permissions: z.array(z.enum(API_KEY_PERMISSIONS)).min(1, 'At least one permission required'),
-  rate_limit: z.number().int().min(10).max(10000).default(1000),
-  expires_at: z.string().datetime().optional(),
+  rate_limit: z.number().int().min(10, 'Rate limit minimum is 10').max(10000, 'Rate limit maximum is 10000').default(1000),
+  expires_at: z.string().datetime('Invalid datetime format').optional(),
 });
 
 export type CreateApiKeyInput = z.infer<typeof createApiKeySchema>;
@@ -66,11 +66,11 @@ export type CreateApiKeyInput = z.infer<typeof createApiKeySchema>;
  * Update API key schema
  */
 export const updateApiKeySchema = z.object({
-  name: z.string().min(1).max(255).optional(),
-  permissions: z.array(z.enum(API_KEY_PERMISSIONS)).min(1).optional(),
-  rate_limit: z.number().int().min(10).max(10000).optional(),
+  name: z.string().min(1, 'API key name is required').max(255, 'Name must be at most 255 characters').optional(),
+  permissions: z.array(z.enum(API_KEY_PERMISSIONS)).min(1, 'At least one permission required').optional(),
+  rate_limit: z.number().int().min(10, 'Rate limit minimum is 10').max(10000, 'Rate limit maximum is 10000').optional(),
   is_active: z.boolean().optional(),
-  expires_at: z.string().datetime().optional().nullable(),
+  expires_at: z.string().datetime('Invalid datetime format').optional().nullable(),
 });
 
 export type UpdateApiKeyInput = z.infer<typeof updateApiKeySchema>;

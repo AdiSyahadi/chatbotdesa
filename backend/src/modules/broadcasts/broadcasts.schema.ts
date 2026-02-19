@@ -71,13 +71,13 @@ export type CreateBroadcastInput = z.infer<typeof createBroadcastSchema>;
  * Update broadcast schema
  */
 export const updateBroadcastSchema = z.object({
-  name: z.string().min(1).max(255).optional(),
-  content: z.string().max(4096).optional(),
-  media_url: z.string().url().max(2048).optional().nullable(),
-  caption: z.string().max(1024).optional().nullable(),
-  scheduled_at: z.string().datetime().optional().nullable(),
-  delay_min_ms: z.number().int().min(1000).max(30000).optional(),
-  delay_max_ms: z.number().int().min(1000).max(60000).optional(),
+  name: z.string().min(1, 'Broadcast name is required').max(255, 'Name must not exceed 255 characters').optional(),
+  content: z.string().max(4096, 'Content must not exceed 4096 characters').optional(),
+  media_url: z.string().url('Invalid media URL format').max(2048, 'Media URL must not exceed 2048 characters').optional().nullable(),
+  caption: z.string().max(1024, 'Caption must not exceed 1024 characters').optional().nullable(),
+  scheduled_at: z.string().datetime('Invalid datetime format').optional().nullable(),
+  delay_min_ms: z.number().int().min(1000, 'Minimum delay is 1000ms').max(30000, 'Maximum delay is 30000ms').optional(),
+  delay_max_ms: z.number().int().min(1000, 'Minimum delay is 1000ms').max(60000, 'Maximum delay is 60000ms').optional(),
 });
 
 export type UpdateBroadcastInput = z.infer<typeof updateBroadcastSchema>;
@@ -87,8 +87,8 @@ export type UpdateBroadcastInput = z.infer<typeof updateBroadcastSchema>;
  */
 export const addRecipientsSchema = z.object({
   recipients: z.array(z.object({
-    phone_number: z.string().min(10).max(20).regex(/^\+?[0-9]+$/, 'Phone number must contain only digits'),
-    contact_name: z.string().max(255).optional(),
+    phone_number: z.string().min(10, 'Phone number must be at least 10 digits').max(20, 'Phone number must be at most 20 characters').regex(/^\+?[0-9]+$/, 'Phone number must contain only digits'),
+    contact_name: z.string().max(255, 'Contact name must not exceed 255 characters').optional(),
     variables: z.record(z.string(), z.union([z.string(), z.number()])).optional(),
   })).min(1, 'At least one recipient is required').max(10000, 'Maximum 10000 recipients per request'),
 });

@@ -145,17 +145,17 @@ export const sendMediaMessageSchema = z.object({
 export const sendLocationSchema = z.object({
   to: z
     .string()
-    .min(10)
-    .max(20)
-    .regex(/^[0-9]+$/),
+    .min(10, 'Phone number too short')
+    .max(20, 'Phone number too long')
+    .regex(/^[0-9]+$/, 'Phone number must contain only digits'),
   latitude: z
     .number()
-    .min(-90)
-    .max(90),
+    .min(-90, 'Latitude must be between -90 and 90')
+    .max(90, 'Latitude must be between -90 and 90'),
   longitude: z
     .number()
-    .min(-180)
-    .max(180),
+    .min(-180, 'Longitude must be between -180 and 180')
+    .max(180, 'Longitude must be between -180 and 180'),
   name: z
     .string()
     .optional(),
@@ -170,12 +170,12 @@ export const sendLocationSchema = z.object({
 export const sendContactSchema = z.object({
   to: z
     .string()
-    .min(10)
-    .max(20)
-    .regex(/^[0-9]+$/),
+    .min(10, 'Phone number too short')
+    .max(20, 'Phone number too long')
+    .regex(/^[0-9]+$/, 'Phone number must contain only digits'),
   contact: z.object({
-    name: z.string(),
-    phone: z.string(),
+    name: z.string().min(1, 'Contact name is required'),
+    phone: z.string().min(1, 'Contact phone is required'),
     organization: z.string().optional(),
   }),
 });

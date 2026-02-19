@@ -36,10 +36,10 @@ export type CreateContactInput = z.infer<typeof createContactSchema>;
  * Update contact schema
  */
 export const updateContactSchema = z.object({
-  name: z.string().max(255).optional(),
-  tags: z.array(z.string().max(50)).max(20).optional(),
+  name: z.string().max(255, 'Name must not exceed 255 characters').optional(),
+  tags: z.array(z.string().max(50, 'Tag must not exceed 50 characters')).max(20, 'Maximum 20 tags allowed').optional(),
   custom_fields: z.record(z.string(), z.any()).optional(),
-  notes: z.string().max(5000).optional(),
+  notes: z.string().max(5000, 'Notes must not exceed 5000 characters').optional(),
 });
 
 export type UpdateContactInput = z.infer<typeof updateContactSchema>;

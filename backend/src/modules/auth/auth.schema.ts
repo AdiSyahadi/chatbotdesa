@@ -48,9 +48,9 @@ export const changePasswordSchema = z.object({
 });
 
 export const updateProfileSchema = z.object({
-  full_name: z.string().min(2).optional(),
+  full_name: z.string().min(2, 'Name must be at least 2 characters').optional(),
   phone: z.string().optional(),
-  avatar_url: z.string().url().optional(),
+  avatar_url: z.string().url('Invalid avatar URL format').optional(),
 });
 
 // Type exports
