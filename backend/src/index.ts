@@ -33,9 +33,14 @@ import path from 'path';
 import fs from 'fs';
 import fastifyStatic from '@fastify/static';
 
+import { randomUUID } from 'crypto';
+
 const fastify = Fastify({
   logger: true,
   bodyLimit: 10 * 1024 * 1024, // 10MB
+  // PATCH-100: Generate request IDs for tracing (honour client-provided X-Request-Id)
+  genReqId: (req) => (req.headers['x-request-id'] as string) || randomUUID(),
+  requestIdHeader: 'x-request-id',
 });
 
 async function start() {
@@ -127,6 +132,11 @@ async function start() {
     // Error handler
     fastify.setErrorHandler(errorHandler);
 
+    // PATCH-100: Echo Request-ID in response headers for correlation
+    fastify.addHook('onRequest', async (req, reply) => {
+      reply.header('X-Request-Id', req.id);
+    });
+
     // Root route
     fastify.get('/', async () => {
       return {
@@ -137,12 +147,41 @@ async function start() {
       };
     });
 
-    // Health check
+    // Health check — PATCH-099: enhanced with DB and Redis ping
     fastify.get('/health', async () => {
+      const checks: Record<string, string> = {};
+      let overall: 'ok' | 'degraded' = 'ok';
+
+      // DB ping
+      try {
+        await prisma.$queryRaw`SELECT 1`;
+        checks.database = 'ok';
+      } catch {
+        checks.database = 'error';
+        overall = 'degraded';
+      }
+
+      // Redis ping (import lazily from rate-limiter singleton)
+      try {
+        const { getRedisForHealthCheck } = await import('./middleware/api-rate-limiter');
+        const redis = getRedisForHealthCheck();
+        if (redis) {
+          await redis.ping();
+          checks.redis = 'ok';
+        } else {
+          checks.redis = 'not_connected';
+          overall = 'degraded';
+        }
+      } catch {
+        checks.redis = 'error';
+        overall = 'degraded';
+      }
+
       return {
-        status: 'ok',
+        status: overall,
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
+        checks,
       };
     });
 
@@ -207,12 +246,18 @@ async function start() {
     });
 
     // ── Public media endpoint (capability URL) ──────────────────────────
-    // Serves media files WITHOUT authentication.
-    // Security: filenames are UUID v4 (122 bits randomness) — unguessable.
+    // Serves media files WITHOUT session auth.
+    // Security model: UUID v4 filenames (122-bit randomness) = capability URLs.
     // Same pattern as S3 pre-signed URLs, Telegram, WhatsApp Web CDN.
-    // Used by external webhook consumers (CRM) that receive media_url.
-    // Path: /media/:orgId/:filename
-    fastify.get('/media/*', async (request, reply) => {
+    // PATCH-090: Added rate limiting + security headers to mitigate enumeration/leak risks.
+    fastify.get('/media/*', {
+      config: {
+        rateLimit: {
+          max: 60,
+          timeWindow: '1 minute',
+        },
+      },
+    }, async (request, reply) => {
       const urlPath = (request.params as any)['*'] as string;
       if (!urlPath) {
         return reply.status(400).send({ success: false, error: 'File path required' });
@@ -230,6 +275,10 @@ async function start() {
       if (!fs.existsSync(filePath)) {
         return reply.status(404).send({ success: false, error: 'File not found' });
       }
+
+      // Security headers: prevent caching of sensitive media
+      reply.header('Cache-Control', 'private, no-store');
+      reply.header('X-Content-Type-Options', 'nosniff');
 
       return reply.sendFile(sanitized, uploadsRoot);
     });
@@ -376,6 +425,12 @@ signals.forEach((signal) => {
       await fastify.close();
     } catch (err) {
       logger.error({ err }, 'Error closing Fastify');
+    }
+    // PATCH-089: Disconnect Prisma before process.exit (beforeExit doesn't fire with explicit exit)
+    try {
+      await prisma.$disconnect();
+    } catch (err) {
+      logger.error({ err }, 'Error disconnecting Prisma');
     }
     process.exit(0);
   });

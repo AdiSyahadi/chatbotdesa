@@ -58,19 +58,24 @@ export const authenticateApiKey = async (
     throw new AppError(result.error || 'Invalid API key', 401, 'INVALID_API_KEY');
   }
 
+  // PATCH-088: Explicit null check instead of non-null assertions
+  if (!result.key_id || !result.organization_id || !result.permissions) {
+    throw new AppError('API key validation returned incomplete data', 500, 'API_KEY_INTERNAL');
+  }
+
   // Attach API key info to request
   (request as ApiKeyAuthenticatedRequest).apiKey = {
-    id: result.key_id!,
-    organization_id: result.organization_id!,
-    permissions: result.permissions!,
-    rate_limit: result.rate_limit!,
+    id: result.key_id,
+    organization_id: result.organization_id,
+    permissions: result.permissions,
+    rate_limit: result.rate_limit ?? 1000,
   };
 
   // Also set user for compatibility with existing routes
   (request as ApiKeyAuthenticatedRequest).user = {
-    id: result.key_id!, // Use key ID as user ID for API key auth
-    organization_id: result.organization_id!,
-    role: 'API_KEY', // Special role for API key auth
+    id: result.key_id,
+    organization_id: result.organization_id,
+    role: 'API_KEY',
   };
 };
 

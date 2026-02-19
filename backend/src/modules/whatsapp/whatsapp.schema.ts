@@ -239,14 +239,7 @@ export const INSTANCE_STATUSES = [
 export type InstanceStatusType = typeof INSTANCE_STATUSES[number];
 
 // ============================================
-// WARMING PHASE CONFIG
+// WARMING PHASE CONFIG (PATCH-108: moved to constants.ts, re-exported here for backward compat)
 // ============================================
 
-export const WARMING_PHASE_LIMITS = {
-  DAY_1_3: { daily_limit: 20, min_delay_ms: 5000, max_messages_per_hour: 5 },
-  DAY_4_7: { daily_limit: 50, min_delay_ms: 3000, max_messages_per_hour: 15 },
-  DAY_8_14: { daily_limit: 100, min_delay_ms: 2000, max_messages_per_hour: 30 },
-  DAY_15_PLUS: { daily_limit: 200, min_delay_ms: 1000, max_messages_per_hour: 60 },
-} as const;
-
-export type WarmingPhaseType = keyof typeof WARMING_PHASE_LIMITS;
+export { WARMING_PHASE_LIMITS, WarmingPhaseType } from '../../config/constants';

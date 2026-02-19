@@ -1,15 +1,15 @@
-import { Boom } from '@hapi/boom';
 import * as fs from 'fs';
+import * as fsp from 'fs/promises';
 import * as path from 'path';
 import {
   AuthenticationCreds,
   AuthenticationState,
   SignalDataTypeMap,
   initAuthCreds,
-  proto,
   BufferJSON,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
+import { AppError } from '../../types';
 
 const logger = pino({ level: 'silent' });
 
@@ -24,6 +24,48 @@ const logger = pino({ level: 'silent' });
 const SESSIONS_BASE_PATH = path.join(process.cwd(), 'storage', 'sessions');
 
 /**
+ * UUID v4 format regex for instanceId validation
+ * Prevents path traversal via malicious instanceId values
+ */
+const UUID_V4_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Validate that instanceId is a safe UUID format.
+ * Throws if instanceId contains path traversal characters.
+ */
+function validateInstanceId(instanceId: string): void {
+  if (!instanceId || !UUID_V4_REGEX.test(instanceId)) {
+    throw new AppError(`Invalid instanceId format: must be UUID v4 (got: ${instanceId?.substring(0, 50)})`, 400, 'INVALID_INSTANCE_ID');
+  }
+}
+
+/**
+ * Sanitize a file name to prevent path traversal.
+ * Strips directory separators and '..' sequences.
+ */
+function sanitizeFileName(fileName: string): string {
+  // Remove any path separators and null bytes
+  const cleaned = fileName.replace(/[\/\\\0]/g, '_').replace(/\.\./g, '_');
+  // Ensure the result is not empty
+  if (!cleaned || cleaned.trim() === '') {
+    throw new AppError(`Invalid file name after sanitization: ${fileName.substring(0, 50)}`, 400, 'INVALID_FILE_NAME');
+  }
+  return cleaned;
+}
+
+/**
+ * Validate that a resolved path is within the expected base directory.
+ * Final safety net against path traversal.
+ */
+function assertPathWithinBase(resolvedPath: string, basePath: string): void {
+  const normalizedResolved = path.resolve(resolvedPath);
+  const normalizedBase = path.resolve(basePath);
+  if (!normalizedResolved.startsWith(normalizedBase + path.sep) && normalizedResolved !== normalizedBase) {
+    throw new AppError(`Path traversal detected: ${normalizedResolved} is outside ${normalizedBase}`, 403, 'PATH_TRAVERSAL');
+  }
+}
+
+/**
  * Ensure sessions directory exists
  */
 export function ensureSessionsDir(): void {
@@ -36,7 +78,10 @@ export function ensureSessionsDir(): void {
  * Get session directory path for an instance
  */
 export function getSessionPath(instanceId: string): string {
-  return path.join(SESSIONS_BASE_PATH, instanceId);
+  validateInstanceId(instanceId);
+  const sessionPath = path.join(SESSIONS_BASE_PATH, instanceId);
+  assertPathWithinBase(sessionPath, SESSIONS_BASE_PATH);
+  return sessionPath;
 }
 
 /**
@@ -59,32 +104,36 @@ export function deleteSession(instanceId: string): void {
 }
 
 /**
- * Read JSON file safely
+ * Read JSON file safely (PATCH-087: async to avoid blocking event loop)
  */
-function readJsonFile<T>(filePath: string): T | null {
+async function readJsonFile<T>(filePath: string): Promise<T | null> {
   try {
-    if (!fs.existsSync(filePath)) {
-      return null;
-    }
-    const content = fs.readFileSync(filePath, 'utf-8');
+    const content = await fsp.readFile(filePath, 'utf-8');
     return JSON.parse(content, BufferJSON.reviver);
-  } catch (error) {
+  } catch (error: any) {
+    if (error.code === 'ENOENT') return null;
     logger.error({ error, filePath }, 'Error reading JSON file');
     return null;
   }
 }
 
 /**
- * Write JSON file safely
+ * Write JSON file safely (PATCH-087: async, PATCH-102: atomic write + ENOSPC detection)
  */
-function writeJsonFile(filePath: string, data: any): void {
+async function writeJsonFile(filePath: string, data: any): Promise<void> {
+  const tmpPath = filePath + '.tmp';
   try {
     const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(tmpPath, JSON.stringify(data, BufferJSON.replacer, 2));
+    await fsp.rename(tmpPath, filePath);
+  } catch (error: any) {
+    // Attempt cleanup of temp file
+    try { await fsp.unlink(tmpPath); } catch { /* ignore */ }
+    if (error?.code === 'ENOSPC' || error?.code === 'EDQUOT') {
+      logger.fatal({ error, filePath }, 'CRITICAL: Disk full — session write failed, data may be lost');
+      throw error; // Re-throw so caller can handle (e.g. stop accepting new sessions)
     }
-    fs.writeFileSync(filePath, JSON.stringify(data, BufferJSON.replacer, 2));
-  } catch (error) {
     logger.error({ error, filePath }, 'Error writing JSON file');
   }
 }
@@ -114,7 +163,7 @@ export async function useMultiFileAuthState(
    * Read credentials or initialize new ones
    */
   const readCreds = async (): Promise<AuthenticationCreds> => {
-    const creds = readJsonFile<AuthenticationCreds>(credsPath);
+    const creds = await readJsonFile<AuthenticationCreds>(credsPath);
     return creds || initAuthCreds();
   };
 
@@ -122,21 +171,21 @@ export async function useMultiFileAuthState(
    * Write credentials to file
    */
   const writeCreds = async (creds: AuthenticationCreds): Promise<void> => {
-    writeJsonFile(credsPath, creds);
+    await writeJsonFile(credsPath, creds);
   };
 
   /**
-   * Read key from file
+   * Read key from file (PATCH-087: now async)
    */
-  const readKey = <T extends keyof SignalDataTypeMap>(
+  const readKey = async <T extends keyof SignalDataTypeMap>(
     type: T,
     ids: string[]
-  ): { [id: string]: SignalDataTypeMap[T] | undefined } => {
+  ): Promise<{ [id: string]: SignalDataTypeMap[T] | undefined }> => {
     const data: { [id: string]: SignalDataTypeMap[T] | undefined } = {};
     
     for (const id of ids) {
       const filePath = path.join(sessionPath, `${type}-${id}.json`);
-      const content = readJsonFile<SignalDataTypeMap[T]>(filePath);
+      const content = await readJsonFile<SignalDataTypeMap[T]>(filePath);
       if (content) {
         data[id] = content;
       }
@@ -146,20 +195,22 @@ export async function useMultiFileAuthState(
   };
 
   /**
-   * Write key to file
+   * Write key to file (PATCH-087: now async)
    */
-  const writeKey = <T extends keyof SignalDataTypeMap>(
+  const writeKey = async <T extends keyof SignalDataTypeMap>(
     type: T,
     data: { [id: string]: SignalDataTypeMap[T] }
-  ): void => {
+  ): Promise<void> => {
     for (const [id, value] of Object.entries(data)) {
       const filePath = path.join(sessionPath, `${type}-${id}.json`);
       if (value) {
-        writeJsonFile(filePath, value);
+        await writeJsonFile(filePath, value);
       } else {
         // Delete file if value is null/undefined
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
+        try {
+          await fsp.unlink(filePath);
+        } catch (e: any) {
+          if (e.code !== 'ENOENT') throw e;
         }
       }
     }
@@ -173,13 +224,13 @@ export async function useMultiFileAuthState(
       creds,
       keys: {
         get: async (type, ids) => {
-          return readKey(type, ids) as any;
+          return await readKey(type, ids) as any;
         },
         set: async (data) => {
           for (const category in data) {
             const categoryData = data[category as keyof SignalDataTypeMap];
             if (categoryData) {
-              writeKey(category as keyof SignalDataTypeMap, categoryData as any);
+              await writeKey(category as keyof SignalDataTypeMap, categoryData as any);
             }
           }
         },
@@ -246,9 +297,11 @@ export async function restoreSession(
       Buffer.from(backupData, 'base64').toString('utf-8')
     ) as Record<string, string>;
 
-    // Write all files
-    for (const [fileName, content] of Object.entries(sessionData)) {
-      const filePath = path.join(sessionPath, fileName);
+    // Write all files — sanitize file names to prevent path traversal
+    for (const [rawFileName, content] of Object.entries(sessionData)) {
+      const safeFileName = sanitizeFileName(rawFileName);
+      const filePath = path.join(sessionPath, safeFileName);
+      assertPathWithinBase(filePath, sessionPath);
       fs.writeFileSync(filePath, content);
     }
 

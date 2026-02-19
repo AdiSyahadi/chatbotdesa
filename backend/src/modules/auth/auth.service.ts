@@ -1,9 +1,10 @@
 import { FastifyInstance } from 'fastify';
 import prisma from '../../config/database';
 import config from '../../config';
+import logger from '../../config/logger';
 import { hashPassword, comparePassword } from '../../utils/crypto';
 import { AppError } from '../../types';
-import { UserRole } from '@prisma/client';
+import { User, UserRole } from '@prisma/client';
 import { randomBytes, createHash } from 'crypto';
 import jwt, { type SignOptions } from 'jsonwebtoken';
 import {
@@ -324,6 +325,7 @@ export class AuthService {
 
     // TODO: Send email with reset link
     // await emailService.sendPasswordReset(user.email, resetToken);
+    logger.warn({ userId: user.id, email: user.email }, 'Password reset token generated but email sending is NOT implemented — token stored in DB only');
 
     return { message: 'If the email exists, a reset link will be sent' };
   }
@@ -369,7 +371,7 @@ export class AuthService {
       .replace(/^-|-$/g, '');
   }
 
-  private generateTokens(user: any, organizationId: string) {
+  private generateTokens(user: Pick<User, 'id' | 'role' | 'email'>, organizationId: string) {
     const accessToken = this.fastify.jwt.sign(
       {
         userId: user.id,
@@ -395,7 +397,7 @@ export class AuthService {
     };
   }
 
-  private sanitizeUser(user: any) {
+  private sanitizeUser(user: User) {
     return {
       id: user.id,
       email: user.email,

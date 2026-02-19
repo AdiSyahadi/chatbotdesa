@@ -4,6 +4,7 @@
  */
 
 import { z } from 'zod';
+import { DEFAULT_COUNTRY_CODE } from '../../config/constants';
 
 // ============================================
 // CONTACT SCHEMAS
@@ -207,9 +208,9 @@ export function formatPhoneToJid(phone: string): string {
   // Remove leading +
   cleaned = cleaned.replace(/^\+/, '');
   
-  // Remove leading 0 and add country code if needed (default: Indonesia 62)
+  // Remove leading 0 and add country code if needed
   if (cleaned.startsWith('0')) {
-    cleaned = '62' + cleaned.substring(1);
+    cleaned = DEFAULT_COUNTRY_CODE + cleaned.substring(1);
   }
   
   return `${cleaned}@s.whatsapp.net`;

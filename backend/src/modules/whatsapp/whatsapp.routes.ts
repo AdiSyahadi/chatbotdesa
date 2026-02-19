@@ -12,7 +12,7 @@ import {
   sendLocationSchema,
   messagesQuerySchema,
 } from './whatsapp.schema';
-import { JWTPayload } from '../../types';
+import { JWTPayload, AuthenticatedRequest } from '../../types';
 import '../../types';
 
 // ============================================
@@ -608,7 +608,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
     // Verify ownership
     const instance = await service.getInstance(body.instance_id, user.organizationId);
     if (!instance) {
-      return reply.status(404).send({ success: false, error: 'Instance not found' });
+      return reply.status(404).send({ success: false, error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' } });
     }
 
     // Send based on type
@@ -640,7 +640,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
   fastify.get<{ Params: { id: string } }>('/instances/:id/sync-status', {
     onRequest: [fastify.authenticate],
     handler: async (request, reply) => {
-      const user = (request as any).user;
+      const user = (request as AuthenticatedRequest).user;
       const { id } = request.params;
 
       const instance = await prisma.whatsAppInstance.findFirst({
@@ -656,7 +656,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       });
 
       if (!instance) {
-        return reply.status(404).send({ success: false, error: 'Instance not found' });
+        return reply.status(404).send({ success: false, error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' } });
       }
 
       // Safety net 1: if instance is CONNECTED and sync is stale (>2 min since last batch),
@@ -772,7 +772,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
   }>('/instances/:id/sync-settings', {
     onRequest: [fastify.authenticate],
     handler: async (request, reply) => {
-      const user = (request as any).user;
+      const user = (request as AuthenticatedRequest).user;
       const { id } = request.params;
       const body = request.body || {};
 
@@ -792,7 +792,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       });
 
       if (!instance) {
-        return reply.status(404).send({ success: false, error: 'Instance not found' });
+        return reply.status(404).send({ success: false, error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' } });
       }
 
       // Check plan allows sync
@@ -800,7 +800,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       if (plan && !plan.allow_history_sync && body.sync_history_on_connect === true) {
         return reply.status(403).send({
           success: false,
-          error: 'Your subscription plan does not allow history sync. Upgrade to enable this feature.',
+          error: { code: 'PLAN_HISTORY_SYNC_DISABLED', message: 'Your subscription plan does not allow history sync. Upgrade to enable this feature.' },
         });
       }
 
@@ -843,7 +843,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
   fastify.post<{ Params: { id: string } }>('/instances/:id/re-pair', {
     onRequest: [fastify.authenticate],
     handler: async (request, reply) => {
-      const user = (request as any).user;
+      const user = (request as AuthenticatedRequest).user;
       const { id } = request.params;
 
       const instance = await prisma.whatsAppInstance.findFirst({
@@ -863,7 +863,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       });
 
       if (!instance) {
-        return reply.status(404).send({ success: false, error: 'Instance not found' });
+        return reply.status(404).send({ success: false, error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' } });
       }
 
       // Check plan
@@ -871,7 +871,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       if (plan && !plan.allow_history_sync) {
         return reply.status(403).send({
           success: false,
-          error: 'Your subscription plan does not allow history sync. Upgrade to enable this feature.',
+          error: { code: 'PLAN_HISTORY_SYNC_DISABLED', message: 'Your subscription plan does not allow history sync. Upgrade to enable this feature.' },
         });
       }
 
@@ -879,7 +879,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       if (instance.history_sync_status === 'SYNCING') {
         return reply.status(409).send({
           success: false,
-          error: 'History sync is currently in progress. Wait for it to complete before re-pairing.',
+          error: { code: 'HISTORY_SYNC_IN_PROGRESS', message: 'History sync is currently in progress. Wait for it to complete before re-pairing.' },
         });
       }
 
@@ -925,7 +925,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       params: { type: 'object', properties: { id: { type: 'string', format: 'uuid' } }, required: ['id'] },
     },
     handler: async (request, reply) => {
-      const user = (request as any).user;
+      const user = (request as AuthenticatedRequest).user;
       const { id } = request.params;
 
       const instance = await prisma.whatsAppInstance.findFirst({
@@ -934,14 +934,14 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       });
 
       if (!instance) {
-        return reply.status(404).send({ success: false, error: 'Instance not found' });
+        return reply.status(404).send({ success: false, error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' } });
       }
 
       // Block if sync is currently running
       if (instance.history_sync_status === 'SYNCING') {
         return reply.status(409).send({
           success: false,
-          error: 'Cannot clear data while sync is in progress. Stop the sync first.',
+          error: { code: 'HISTORY_SYNC_IN_PROGRESS', message: 'Cannot clear data while sync is in progress. Stop the sync first.' },
         });
       }
 
@@ -1010,7 +1010,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       });
 
       if (!instance) {
-        return reply.status(404).send({ success: false, error: 'Instance not found' });
+        return reply.status(404).send({ success: false, error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' } });
       }
 
       const { stopHistorySync, resumeHistorySync } = await import('./baileys.service');
@@ -1053,7 +1053,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
         });
       }
 
-      return reply.status(400).send({ success: false, error: 'Invalid action. Use "stop" or "resume".' });
+      return reply.status(400).send({ success: false, error: { code: 'INVALID_ACTION', message: 'Invalid action. Use "stop" or "resume".' } });
     },
   });
 }

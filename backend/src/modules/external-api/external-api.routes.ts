@@ -48,6 +48,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
    * Permission: instance:read
    */
   fastify.get('/instances', {
+    preHandler: [requireApiKeyPermission('instance:read')],
     schema: {
       description: 'List all WhatsApp instances',
       tags: ['External API - Instances'],
@@ -87,6 +88,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
    * Permission: instance:read
    */
   fastify.get('/instances/:instanceId/status', {
+    preHandler: [requireApiKeyPermission('instance:read')],
     schema: {
       description: 'Get WhatsApp instance connection status',
       tags: ['External API - Instances'],
@@ -140,24 +142,23 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       return reply.status(404).send({ success: false, error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' } });
     }
 
-    // Delete webhook logs first (FK constraint)
+    // PATCH-085: Wrap cascading deletes in transaction for atomicity
     const webhookIds = await prisma.webhook.findMany({
       where: { instance_id: instanceId, organization_id: req.apiKey.organization_id },
       select: { id: true },
     });
-    const deletedLogs = await prisma.webhookLog.deleteMany({
-      where: { webhook_id: { in: webhookIds.map(w => w.id) } },
-    });
 
-    // Delete webhooks
-    const deletedWebhooks = await prisma.webhook.deleteMany({
-      where: { instance_id: instanceId, organization_id: req.apiKey.organization_id },
-    });
-
-    // Delete messages
-    const deletedMessages = await prisma.message.deleteMany({
-      where: { instance_id: instanceId, organization_id: req.apiKey.organization_id },
-    });
+    const [deletedLogs, deletedWebhooks, deletedMessages] = await prisma.$transaction([
+      prisma.webhookLog.deleteMany({
+        where: { webhook_id: { in: webhookIds.map(w => w.id) } },
+      }),
+      prisma.webhook.deleteMany({
+        where: { instance_id: instanceId, organization_id: req.apiKey.organization_id },
+      }),
+      prisma.message.deleteMany({
+        where: { instance_id: instanceId, organization_id: req.apiKey.organization_id },
+      }),
+    ]);
 
     logger.info({ instanceId, messages: deletedMessages.count, webhooks: deletedWebhooks.count, logs: deletedLogs.count }, 'External API: instance data cleaned up');
 
@@ -374,7 +375,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       const data = await request.file();
 
       if (!data) {
-        return reply.status(400).send({ success: false, error: 'No file uploaded. Send file as multipart/form-data with field name "file".' });
+        return reply.status(400).send({ success: false, error: { code: 'FILE_UPLOAD_REQUIRED', message: 'No file uploaded. Send file as multipart/form-data with field name "file".' } });
       }
 
       // Read expected media type from form field or query param
@@ -389,7 +390,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       // Validate file type and size
       const validation = validateFile(data.mimetype, fileBuffer.length, expectedType);
       if (!validation.valid) {
-        return reply.status(400).send({ success: false, error: validation.error });
+        return reply.status(400).send({ success: false, error: { code: 'FILE_VALIDATION_FAILED', message: validation.error || 'File validation failed' } });
       }
 
       // Save file using existing storage service (reuse, no duplication)
@@ -401,7 +402,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       );
 
       if (!result.success) {
-        return reply.status(500).send({ success: false, error: result.error });
+        return reply.status(500).send({ success: false, error: { code: 'FILE_SAVE_FAILED', message: result.error || 'Failed to save file' } });
       }
 
       // Return public URL (/media/ prefix — no auth required, UUID filenames = unguessable)
@@ -421,7 +422,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       });
     } catch (error) {
       logger.error({ error }, 'External API: media upload failed');
-      return reply.status(500).send({ success: false, error: 'Failed to process upload' });
+      return reply.status(500).send({ success: false, error: { code: 'UPLOAD_PROCESSING_FAILED', message: 'Failed to process upload' } });
     }
   });
 
@@ -1065,37 +1066,54 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     }
 
     // Enrich with last message and contact info
-    const enrichedConversations = await Promise.all(
-      paginatedConversations.map(async (conv) => {
-        // Get last message
-        const lastMessage = await prisma.message.findFirst({
-          where: {
-            chat_jid: conv.chat_jid,
-            instance_id: conv.instance_id,
-            organization_id: req.apiKey.organization_id,
-          },
-          orderBy: { created_at: 'desc' },
-          select: {
-            id: true,
-            content: true,
-            message_type: true,
-            direction: true,
-            status: true,
-            created_at: true,
-          },
-        });
+    // PATCH-098: Batch-fetch last messages and unread counts (fixes N+1)
+    const orgId = req.apiKey.organization_id;
 
-        // Get unread count (incoming messages not read)
-        const unreadCount = await prisma.message.count({
-          where: {
-            chat_jid: conv.chat_jid,
-            instance_id: conv.instance_id,
-            organization_id: req.apiKey.organization_id,
-            direction: 'INCOMING',
-            read_at: null,
-          },
-        });
+    // Batch unread counts in a single groupBy query
+    const unreadCounts = await prisma.message.groupBy({
+      by: ['chat_jid', 'instance_id'],
+      where: {
+        organization_id: orgId,
+        direction: 'INCOMING',
+        read_at: null,
+        OR: paginatedConversations.map(c => ({
+          chat_jid: c.chat_jid,
+          instance_id: c.instance_id,
+        })),
+      },
+      _count: { id: true },
+    });
+    const unreadMap = new Map(
+      unreadCounts.map(u => [`${u.chat_jid}__${u.instance_id}`, u._count.id])
+    );
 
+    // Batch-fetch last messages using raw SQL with ROW_NUMBER() for MySQL 8+
+    const chatPairs = paginatedConversations.map(c => `('${c.chat_jid.replace(/'/g, "''")}','${c.instance_id.replace(/'/g, "''")}')`).join(',');
+    let lastMessageMap = new Map<string, any>();
+    if (chatPairs) {
+      const lastMessages: any[] = await prisma.$queryRawUnsafe(`
+        SELECT id, content, message_type, direction, status, created_at, chat_jid, instance_id
+        FROM (
+          SELECT m.*, ROW_NUMBER() OVER (PARTITION BY m.chat_jid, m.instance_id ORDER BY m.created_at DESC) AS rn
+          FROM messages m
+          WHERE m.organization_id = '${orgId.replace(/'/g, "''")}'
+            AND (m.chat_jid, m.instance_id) IN (${chatPairs})
+        ) ranked
+        WHERE rn = 1
+      `);
+      for (const msg of lastMessages) {
+        lastMessageMap.set(`${msg.chat_jid}__${msg.instance_id}`, {
+          id: msg.id,
+          content: msg.content,
+          message_type: msg.message_type,
+          direction: msg.direction,
+          status: msg.status,
+          created_at: msg.created_at,
+        });
+      }
+    }
+
+    const enrichedConversations = paginatedConversations.map((conv) => {
         // Extract phone number from JID
         let phoneNumber = '';
         if (conv.chat_jid.endsWith('@s.whatsapp.net')) {
@@ -1111,6 +1129,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
 
         // Look up contact from batch-fetched map
         const contact = contactMap.get(`${conv.chat_jid}__${conv.instance_id}`) || null;
+        const key = `${conv.chat_jid}__${conv.instance_id}`;
 
         return {
           chat_jid: conv.chat_jid,
@@ -1124,12 +1143,11 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
           contact_id: contact?.id || null,
           contact_tags: contact?.tags || [],
           total_messages: conv.count,
-          unread_count: unreadCount,
-          last_message: lastMessage,
+          unread_count: unreadMap.get(key) || 0,
+          last_message: lastMessageMap.get(key) || null,
           last_message_at: conv.last_at,
         };
-      })
-    );
+    });
 
     return reply.send({
       success: true,
@@ -1261,7 +1279,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     if (!mapping) {
       return reply.status(404).send({
         success: false,
-        error: 'LID mapping not found. This LID has not been resolved to a phone number yet.',
+        error: { code: 'LID_MAPPING_NOT_FOUND', message: 'LID mapping not found. This LID has not been resolved to a phone number yet.' },
       });
     }
 
@@ -1469,6 +1487,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
    * GET /api/v1/instances/:instanceId/auto-reply
    */
   fastify.get('/instances/:instanceId/auto-reply', {
+    preHandler: [requireApiKeyPermission('instance:read')],
     schema: {
       description: 'Get auto-reply settings for a WhatsApp instance',
       tags: ['Instances'],
@@ -1520,6 +1539,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
    * PATCH /api/v1/instances/:instanceId/auto-reply
    */
   fastify.patch('/instances/:instanceId/auto-reply', {
+    preHandler: [requireApiKeyPermission('instance:write')],
     schema: {
       description: 'Enable/disable auto-reply and configure rate limits for a WhatsApp instance',
       tags: ['Instances'],
@@ -1592,9 +1612,9 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
   // HISTORY SYNC ENDPOINTS
   // ============================================
 
-  // GET /api/instances/:instanceId/sync-history/status
-  fastify.get<{ Params: { instanceId: string } }>('/api/instances/:instanceId/sync-history/status', {
-    preHandler: [authenticateApiKey],
+  // GET /instances/:instanceId/sync-history/status
+  fastify.get<{ Params: { instanceId: string } }>('/instances/:instanceId/sync-history/status', {
+    preHandler: [requireApiKeyPermission('instance:read')],
     handler: async (request, reply) => {
       const { instanceId } = request.params;
       const organizationId = (request as ApiKeyAuthenticatedRequest).apiKey.organization_id;
@@ -1612,7 +1632,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       });
 
       if (!instance) {
-        return reply.status(404).send({ success: false, error: 'Instance not found' });
+        return reply.status(404).send({ success: false, error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' } });
       }
 
       // Safety net: if instance is disconnected but DB still says SYNCING,
@@ -1665,12 +1685,12 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     },
   });
 
-  // PATCH /api/instances/:instanceId/sync-history/settings
+  // PATCH /instances/:instanceId/sync-history/settings
   fastify.patch<{
     Params: { instanceId: string };
     Body: { sync_history_on_connect?: boolean };
-  }>('/api/instances/:instanceId/sync-history/settings', {
-    preHandler: [authenticateApiKey],
+  }>('/instances/:instanceId/sync-history/settings', {
+    preHandler: [requireApiKeyPermission('instance:write')],
     handler: async (request, reply) => {
       const { instanceId } = request.params;
       const organizationId = (request as ApiKeyAuthenticatedRequest).apiKey.organization_id;
@@ -1693,7 +1713,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       });
 
       if (!instance) {
-        return reply.status(404).send({ success: false, error: 'Instance not found' });
+        return reply.status(404).send({ success: false, error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' } });
       }
 
       // Check plan allows sync
@@ -1701,7 +1721,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       if (plan && !plan.allow_history_sync && body.sync_history_on_connect === true) {
         return reply.status(403).send({
           success: false,
-          error: 'Your subscription plan does not allow history sync. Upgrade to enable this feature.',
+          error: { code: 'PLAN_HISTORY_SYNC_DISABLED', message: 'Your subscription plan does not allow history sync. Upgrade to enable this feature.' },
         });
       }
 
@@ -1740,9 +1760,9 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     },
   });
 
-  // POST /api/instances/:instanceId/sync-history/re-pair
-  fastify.post<{ Params: { instanceId: string } }>('/api/instances/:instanceId/sync-history/re-pair', {
-    preHandler: [authenticateApiKey],
+  // POST /instances/:instanceId/sync-history/re-pair
+  fastify.post<{ Params: { instanceId: string } }>('/instances/:instanceId/sync-history/re-pair', {
+    preHandler: [requireApiKeyPermission('instance:write')],
     handler: async (request, reply) => {
       const { instanceId } = request.params;
       const organizationId = (request as ApiKeyAuthenticatedRequest).apiKey.organization_id;
@@ -1764,7 +1784,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       });
 
       if (!instance) {
-        return reply.status(404).send({ success: false, error: 'Instance not found' });
+        return reply.status(404).send({ success: false, error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' } });
       }
 
       // Check plan
@@ -1772,7 +1792,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       if (plan && !plan.allow_history_sync) {
         return reply.status(403).send({
           success: false,
-          error: 'Your subscription plan does not allow history sync.',
+          error: { code: 'PLAN_HISTORY_SYNC_DISABLED', message: 'Your subscription plan does not allow history sync.' },
         });
       }
 
@@ -1780,7 +1800,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       if (instance.history_sync_status === 'SYNCING') {
         return reply.status(409).send({
           success: false,
-          error: 'History sync is currently in progress. Wait for it to complete before re-pairing.',
+          error: { code: 'HISTORY_SYNC_IN_PROGRESS', message: 'History sync is currently in progress. Wait for it to complete before re-pairing.' },
         });
       }
 
@@ -1818,15 +1838,15 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
 
   /**
    * Control history sync: stop or resume
-   * POST /api/instances/:instanceId/sync-history/control
+   * POST /instances/:instanceId/sync-history/control
    */
   fastify.route<{
     Params: { instanceId: string };
     Body: { action: 'stop' | 'resume' };
   }>({
     method: 'POST',
-    url: '/api/instances/:instanceId/sync-history/control',
-    preHandler: [authenticateApiKey],
+    url: '/instances/:instanceId/sync-history/control',
+    preHandler: [requireApiKeyPermission('instance:write')],
     schema: {
       params: { type: 'object', properties: { instanceId: { type: 'string', format: 'uuid' } }, required: ['instanceId'] },
       body: {
@@ -1847,7 +1867,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       });
 
       if (!instance) {
-        return reply.status(404).send({ success: false, error: 'Instance not found' });
+        return reply.status(404).send({ success: false, error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' } });
       }
 
       const { stopHistorySync, resumeHistorySync } = await import('../whatsapp/baileys.service');
@@ -1888,7 +1908,7 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
         });
       }
 
-      return reply.status(400).send({ success: false, error: 'Invalid action. Use "stop" or "resume".' });
+      return reply.status(400).send({ success: false, error: { code: 'INVALID_ACTION', message: 'Invalid action. Use "stop" or "resume".' } });
     },
   });
 }

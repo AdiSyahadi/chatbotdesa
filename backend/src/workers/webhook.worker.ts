@@ -14,6 +14,31 @@ import { WEBHOOK_CONFIG } from '../config/constants';
 import redisConnectionOptions from '../config/redis-connection';
 
 // ============================================
+// AUTO-REPLY LOOP DETECTION (PATCH-074)
+// Per-sender cooldown prevents infinite ping-pong between
+// two auto-reply-enabled instances messaging each other.
+// ============================================
+
+/** Key: `${instanceId}:${senderJid}` → last auto-reply timestamp (ms) */
+const autoReplyCooldowns = new Map<string, number>();
+
+/** Minimum gap between auto-replies to the same sender (ms) */
+const AUTO_REPLY_COOLDOWN_MS = 30_000; // 30 seconds
+
+/** Max entries before forced full sweep (memory safety) */
+const AUTO_REPLY_COOLDOWN_MAX_ENTRIES = 10_000;
+
+// Periodic cleanup of stale cooldown entries
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, ts] of autoReplyCooldowns) {
+    if (now - ts > AUTO_REPLY_COOLDOWN_MS * 2) {
+      autoReplyCooldowns.delete(key);
+    }
+  }
+}, 60_000).unref();
+
+// ============================================
 // WEBHOOK JOB DATA TYPE
 // ============================================
 
@@ -152,6 +177,20 @@ async function handleAutoReply(
     // Skip auto-reply for status broadcasts
     if (senderJid === 'status@broadcast') return;
 
+    // ── PATCH-074: Loop detection ──────────────────────────────
+    // Cooldown per (instance, sender) pair. Prevents infinite loops
+    // when two auto-reply-enabled numbers message each other.
+    const cooldownKey = `${instanceId}:${senderJid}`;
+    const lastReplyTs = autoReplyCooldowns.get(cooldownKey);
+    if (lastReplyTs && Date.now() - lastReplyTs < AUTO_REPLY_COOLDOWN_MS) {
+      logger.warn(
+        { instanceId, senderJid, msSinceLastReply: Date.now() - lastReplyTs },
+        'Auto-reply loop detected — cooldown active, skipping'
+      );
+      return;
+    }
+    // ── End loop detection ─────────────────────────────────────
+
     // Parse response body to extract reply message
     let replyText: string | null = null;
 
@@ -200,9 +239,21 @@ async function handleAutoReply(
       return;
     }
 
+    // Skip auto-reply to self (own JID)
+    if (senderJid === socket.user.id) {
+      return;
+    }
+
     // Send the reply directly via socket (supports both DM and group JIDs)
     const sentMsg = await socket.sendMessage(senderJid, { text: replyText });
     const waMessageId = sentMsg?.key?.id || '';
+
+    // PATCH-074: Record cooldown timestamp after successful send
+    autoReplyCooldowns.set(cooldownKey, Date.now());
+    // Memory safety: evict all if map grows beyond limit (shouldn't normally occur)
+    if (autoReplyCooldowns.size > AUTO_REPLY_COOLDOWN_MAX_ENTRIES) {
+      autoReplyCooldowns.clear();
+    }
 
     const now = new Date();
 

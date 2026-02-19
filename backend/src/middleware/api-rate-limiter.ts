@@ -47,26 +47,49 @@ async function checkRateLimit(
   try {
     const r = getRedis();
 
-    // Sliding window using sorted set
-    const pipeline = r.pipeline();
-    pipeline.zremrangebyscore(key, 0, windowStart);       // Remove expired entries
-    pipeline.zadd(key, now.toString(), `${now}:${Math.random().toString(36).slice(2)}`);
-    pipeline.zcard(key);                                   // Count requests in window
-    pipeline.pexpire(key, windowMs);                       // Set TTL
+    // PATCH-091: Atomic sliding window via Lua script
+    // 1. Remove expired entries
+    // 2. Count current entries
+    // 3. If under limit, add this request
+    // 4. Set TTL
+    // Returns: count after operation (-1 means denied)
+    const luaScript = `
+      redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, ARGV[1])
+      local count = redis.call('ZCARD', KEYS[1])
+      if count < tonumber(ARGV[2]) then
+        redis.call('ZADD', KEYS[1], ARGV[3], ARGV[4])
+        redis.call('PEXPIRE', KEYS[1], ARGV[5])
+        return count + 1
+      end
+      redis.call('PEXPIRE', KEYS[1], ARGV[5])
+      return -1
+    `;
 
-    const results = await pipeline.exec();
-    const count = (results?.[2]?.[1] as number) || 0;
+    const member = `${now}:${Math.random().toString(36).slice(2)}`;
+    const result = await r.eval(
+      luaScript,
+      1,
+      key,
+      windowStart.toString(),
+      limit.toString(),
+      now.toString(),
+      member,
+      windowMs.toString()
+    ) as number;
+
+    const allowed = result !== -1;
+    const count = allowed ? result : limit;
 
     return {
-      allowed: count <= limit,
+      allowed,
       limit,
       remaining: Math.max(0, limit - count),
       resetAt,
     };
   } catch (error) {
-    // If Redis is down, allow the request (fail-open)
-    logger.warn({ apiKeyId, error }, 'Rate limiter Redis error — failing open');
-    return { allowed: true, limit, remaining: limit - 1, resetAt };
+    // If Redis is down, DENY the request (fail-closed) to prevent abuse during outages
+    logger.error({ apiKeyId, error }, 'Rate limiter Redis error — failing closed');
+    return { allowed: false, limit, remaining: 0, resetAt };
   }
 }
 
@@ -113,4 +136,11 @@ export async function closeRateLimiter(): Promise<void> {
     await redis.quit();
     redis = null;
   }
+}
+
+/**
+ * PATCH-099: Expose Redis instance for health check (read-only)
+ */
+export function getRedisForHealthCheck(): Redis | null {
+  return redis;
 }

@@ -44,11 +44,11 @@ function getWebhookQueue(): Queue {
           delay: WEBHOOK_CONFIG.INITIAL_DELAY_MS,
         },
         removeOnComplete: {
-          count: 1000,
-          age: 24 * 60 * 60, // 24 hours
+          count: WEBHOOK_CONFIG.REMOVE_ON_COMPLETE_COUNT,
+          age: WEBHOOK_CONFIG.REMOVE_ON_COMPLETE_AGE_S,
         },
         removeOnFail: {
-          count: 5000,
+          count: WEBHOOK_CONFIG.REMOVE_ON_FAIL_COUNT,
         },
       },
     });
@@ -519,7 +519,7 @@ export class WebhookService {
 
     try {
       const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 30000); // 30 second timeout
+      const timeout = setTimeout(() => controller.abort(), WEBHOOK_CONFIG.TIMEOUT_MS);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -536,7 +536,7 @@ export class WebhookService {
       return {
         success: response.ok,
         responseStatus: response.status,
-        responseBody: responseBody.substring(0, 5000), // Truncate response
+        responseBody: responseBody.substring(0, WEBHOOK_CONFIG.RESPONSE_TRUNCATE_LENGTH),
         durationMs,
       };
     } catch (error: any) {
@@ -620,7 +620,8 @@ export class WebhookService {
           response_status: result.responseStatus,
           response_body: result.responseBody,
           error_message: result.error,
-          next_retry_at: isMaxAttempts ? null : new Date(now.getTime() + Math.pow(2, attemptNumber) * 5000),
+          // PATCH-101: Add jitter (±25%) to prevent thundering herd on mass webhook failure
+          next_retry_at: isMaxAttempts ? null : new Date(now.getTime() + Math.pow(2, attemptNumber) * WEBHOOK_CONFIG.BACKOFF_BASE_MS * (0.75 + Math.random() * 0.5)),
         },
       });
     }

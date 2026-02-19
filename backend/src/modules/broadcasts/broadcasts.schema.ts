@@ -4,6 +4,8 @@
  */
 
 import { z } from 'zod';
+import { DEFAULT_COUNTRY_CODE } from '../../config/constants';
+import logger from '../../config/logger';
 
 // ============================================
 // ENUMS
@@ -40,7 +42,7 @@ export const createBroadcastSchema = z.object({
   recipient_filter: z.object({
     tags: z.array(z.string()).optional(),
     contact_ids: z.array(z.string().uuid()).optional(),
-    phone_numbers: z.array(z.string()).optional(),
+    phone_numbers: z.array(z.string().regex(/^\+?[0-9]+$/, 'Phone number must contain only digits')).optional(),
   }).optional(),
   
   // Scheduling
@@ -85,9 +87,9 @@ export type UpdateBroadcastInput = z.infer<typeof updateBroadcastSchema>;
  */
 export const addRecipientsSchema = z.object({
   recipients: z.array(z.object({
-    phone_number: z.string().min(10).max(20),
+    phone_number: z.string().min(10).max(20).regex(/^\+?[0-9]+$/, 'Phone number must contain only digits'),
     contact_name: z.string().max(255).optional(),
-    variables: z.record(z.string(), z.any()).optional(),
+    variables: z.record(z.string(), z.union([z.string(), z.number()])).optional(),
   })).min(1, 'At least one recipient is required').max(10000, 'Maximum 10000 recipients per request'),
 });
 
@@ -248,16 +250,31 @@ export interface BroadcastMessageJobData {
 /**
  * Replace variables in message content
  * Supports {{variable_name}} syntax
+ * PATCH-103: Warns on unresolved placeholders
  */
 export function replaceVariables(
   content: string,
   variables: Record<string, any> | null
 ): string {
   if (!variables) return content;
-  
-  return content.replace(/\{\{(\w+)\}\}/g, (match, key) => {
-    return variables[key] !== undefined ? String(variables[key]) : match;
+
+  let hasUnresolved = false;
+  const result = content.replace(/\{\{(\w+)\}\}/g, (match, key) => {
+    if (variables[key] !== undefined) return String(variables[key]);
+    hasUnresolved = true;
+    return match;
   });
+
+  if (hasUnresolved) {
+    // Extract expected vs provided keys for debugging
+    const expected = (content.match(/\{\{(\w+)\}\}/g) || []).map(m => m.slice(2, -2));
+    const provided = Object.keys(variables);
+    const missing = expected.filter(k => variables[k] === undefined);
+    // Log at warn level — callers can decide whether to reject
+    logger.warn({ missing, provided }, '[replaceVariables] Unresolved placeholders');
+  }
+
+  return result;
 }
 
 /**
@@ -276,7 +293,7 @@ export function formatPhoneNumber(phone: string): string {
   
   // Remove leading 0 and add country code if needed
   if (cleaned.startsWith('0')) {
-    cleaned = '62' + cleaned.substring(1); // Default Indonesia
+    cleaned = DEFAULT_COUNTRY_CODE + cleaned.substring(1);
   }
   
   return cleaned;

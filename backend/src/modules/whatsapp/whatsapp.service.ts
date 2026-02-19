@@ -34,35 +34,9 @@ import {
 } from './baileys.service';
 import { deleteSession, sessionExists, getSessionInfo } from './session.service';
 import { v4 as uuidv4 } from 'uuid';
+import { safeMessageUpsert } from '../../utils/safe-upsert';
 
-/**
- * Race-safe message upsert: Prisma upsert does SELECT then INSERT/UPDATE,
- * so two concurrent upserts for the same key can both SELECT "not found"
- * and then both try INSERT, causing P2002 unique constraint violation.
- * This wrapper catches P2002 and retries as a plain update.
- */
-async function safeMessageUpsert(args: Prisma.MessageUpsertArgs): Promise<void> {
-  try {
-    await prisma.message.upsert(args);
-  } catch (err: any) {
-    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
-      // Race condition: the other concurrent operation already inserted.
-      // Retry as update only.
-      logger.debug({ where: args.where }, '🔄 [MSG] Upsert race detected (P2002), retrying as update');
-      try {
-        await prisma.message.update({
-          where: args.where,
-          data: args.update,
-        });
-      } catch (updateErr: any) {
-        // If update also fails (e.g. record deleted between), log and move on
-        logger.warn({ where: args.where, err: updateErr.message }, '⚠️ [MSG] Update after P2002 also failed');
-      }
-    } else {
-      throw err; // Re-throw non-P2002 errors
-    }
-  }
-}
+// PATCH-093: safeMessageUpsert moved to ../../utils/safe-upsert.ts
 
 // ============================================
 // WHATSAPP SERVICE
@@ -214,62 +188,66 @@ export class WhatsAppService {
     organizationId: string,
     data: CreateInstanceInput
   ): Promise<any> {
-    // Check organization limits
-    const organization = await prisma.organization.findUnique({
-      where: { id: organizationId },
-      select: {
-        max_instances: true,
-        _count: {
-          select: {
-            whatsapp_instances: {
-              where: { deleted_at: null },
-            },
-          },
-        },
-      },
-    });
-
-    if (!organization) {
-      throw new AppError('Organization not found', 404, 'ORG_001');
-    }
-
-    const currentCount = organization._count.whatsapp_instances;
-    if (currentCount >= organization.max_instances) {
-      throw new AppError(
-        `Instance limit reached (${organization.max_instances})`,
-        403,
-        'INSTANCE_002'
-      );
-    }
-
     // Generate webhook secret if webhook_url provided
     const webhookSecret = data.webhook_url
       ? data.webhook_secret || uuidv4().replace(/-/g, '')
       : null;
 
-    // Create instance
-    const instance = await prisma.whatsAppInstance.create({
-      data: {
-        organization_id: organizationId,
-        name: data.name,
-        webhook_url: data.webhook_url || null,
-        webhook_events: data.webhook_events || ['message', 'status', 'connection'],
-        webhook_secret: webhookSecret,
-        status: 'DISCONNECTED',
-        warming_phase: 'DAY_1_3',
-        daily_limit: WARMING_PHASE_LIMITS.DAY_1_3.daily_limit,
-      },
-      select: {
-        id: true,
-        name: true,
-        status: true,
-        webhook_url: true,
-        webhook_events: true,
-        webhook_secret: true,
-        warming_phase: true,
-        daily_limit: true,
-        created_at: true,
-      },
+    // Use interactive transaction to prevent TOCTOU race on instance limit
+    // (concurrent requests both passing the count check before either inserts)
+    const instance = await prisma.$transaction(async (tx) => {
+      // Check organization limits inside transaction
+      const organization = await tx.organization.findUnique({
+        where: { id: organizationId },
+        select: {
+          max_instances: true,
+          _count: {
+            select: {
+              whatsapp_instances: {
+                where: { deleted_at: null },
+              },
+            },
+          },
+        },
+      });
+
+      if (!organization) {
+        throw new AppError('Organization not found', 404, 'ORG_001');
+      }
+
+      const currentCount = organization._count.whatsapp_instances;
+      if (currentCount >= organization.max_instances) {
+        throw new AppError(
+          `Instance limit reached (${organization.max_instances})`,
+          403,
+          'INSTANCE_002'
+        );
+      }
+
+      // Create instance — within the same transaction
+      return tx.whatsAppInstance.create({
+        data: {
+          organization_id: organizationId,
+          name: data.name,
+          webhook_url: data.webhook_url || null,
+          webhook_events: data.webhook_events || ['message', 'status', 'connection'],
+          webhook_secret: webhookSecret,
+          status: 'DISCONNECTED',
+          warming_phase: 'DAY_1_3',
+          daily_limit: WARMING_PHASE_LIMITS.DAY_1_3.daily_limit,
+        },
+        select: {
+          id: true,
+          name: true,
+          status: true,
+          webhook_url: true,
+          webhook_events: true,
+          webhook_secret: true,
+          warming_phase: true,
+          daily_limit: true,
+          created_at: true,
+        },
+      });
     });
 
     return instance;
@@ -322,41 +300,44 @@ export class WhatsAppService {
 
   /**
    * Delete instance (soft delete)
+   * PATCH-082: Soft-delete in DB first (atomic), then perform side effects
    */
   async deleteInstance(
     instanceId: string,
     organizationId: string
   ): Promise<void> {
-    // Verify ownership
-    const existing = await prisma.whatsAppInstance.findFirst({
+    // Atomically verify ownership + soft delete in one query
+    const { count } = await prisma.whatsAppInstance.updateMany({
       where: {
         id: instanceId,
         organization_id: organizationId,
         deleted_at: null,
       },
-    });
-
-    if (!existing) {
-      throw new AppError('Instance not found', 404, 'INSTANCE_001');
-    }
-
-    // Disconnect if connected
-    if (isConnected(instanceId)) {
-      await disconnectInstance(instanceId);
-    }
-
-    // Delete session files
-    deleteSession(instanceId);
-
-    // Soft delete
-    await prisma.whatsAppInstance.update({
-      where: { id: instanceId },
       data: {
         deleted_at: new Date(),
         is_active: false,
         status: 'DISCONNECTED',
       },
     });
+
+    if (count === 0) {
+      throw new AppError('Instance not found', 404, 'INSTANCE_001');
+    }
+
+    // Side effects after successful DB update (idempotent)
+    try {
+      if (isConnected(instanceId)) {
+        await disconnectInstance(instanceId);
+      }
+    } catch (e: any) {
+      logger.warn({ instanceId, err: e.message }, '⚠️ [DELETE] Disconnect failed during delete (non-critical)');
+    }
+
+    try {
+      deleteSession(instanceId);
+    } catch (e: any) {
+      logger.warn({ instanceId, err: e.message }, '⚠️ [DELETE] Session file cleanup failed (non-critical)');
+    }
   }
 
   // ============================================
@@ -1049,7 +1030,7 @@ export class WhatsAppService {
     }
 
     const page = query.page || 1;
-    const limit = query.limit || 50;
+    const limit = Math.min(query.limit || 50, 100); // PATCH-084: Cap at 100
     const skip = (page - 1) * limit;
 
     const where: any = {
@@ -1124,7 +1105,7 @@ export class WhatsAppService {
     };
   }> {
     const page = query.page || 1;
-    const limit = query.limit || 20;
+    const limit = Math.min(query.limit || 20, 100); // PATCH-084: Cap at 100
     const skip = (page - 1) * limit;
 
     const where: any = {
@@ -1200,10 +1181,11 @@ export class WhatsAppService {
 
   /**
    * Update warming phase based on account age
+   * PATCH-075: Added organizationId for tenant isolation
    */
-  async updateWarmingPhase(instanceId: string): Promise<void> {
-    const instance = await prisma.whatsAppInstance.findUnique({
-      where: { id: instanceId },
+  async updateWarmingPhase(instanceId: string, organizationId: string): Promise<void> {
+    const instance = await prisma.whatsAppInstance.findFirst({
+      where: { id: instanceId, organization_id: organizationId, deleted_at: null },
       select: { account_age_days: true, warming_phase: true },
     });
 
