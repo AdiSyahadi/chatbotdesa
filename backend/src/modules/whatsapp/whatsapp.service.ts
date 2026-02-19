@@ -25,6 +25,8 @@ import {
   sendTextMessage,
   sendMediaMessage,
   sendLocationMessage,
+  deleteMessageForInstance,
+  editMessageForInstance,
   isConnected,
   QRCodeData,
   baileysEvents,
@@ -840,6 +842,142 @@ export class WhatsAppService {
       success: true,
       message_id: result.message_id,
     };
+  }
+
+  /**
+   * Delete / revoke a WhatsApp message
+   *
+   * @param deleteFor "everyone" revokes the message for all participants,
+   *                  "me" removes it from the local device only.
+   */
+  async deleteMessage(
+    instanceId: string,
+    organizationId: string,
+    data: {
+      message_id: string;   // wa_message_id
+      chat_jid: string;     // e.g. 628xxx@s.whatsapp.net or 12xxxxx@g.us
+      from_me?: boolean;    // default true
+      participant?: string; // required for group messages not sent by self
+      delete_for?: 'everyone' | 'me'; // default everyone
+    }
+  ): Promise<{ success: boolean }> {
+    // Verify ownership and connection
+    await this.verifyInstanceForMessaging(instanceId, organizationId);
+
+    const fromMe = data.from_me !== undefined ? data.from_me : true;
+    const deleteFor = data.delete_for || 'everyone';
+
+    const result = await deleteMessageForInstance(
+      instanceId,
+      data.chat_jid,
+      data.message_id,
+      fromMe,
+      data.participant,
+      deleteFor
+    );
+
+    if (!result.success) {
+      throw new AppError(result.error || 'Failed to delete message', 400, 'MSG_010');
+    }
+
+    // Update the message status in DB to DELETED (if it exists)
+    try {
+      await prisma.message.updateMany({
+        where: {
+          instance_id: instanceId,
+          wa_message_id: data.message_id,
+          organization_id: organizationId,
+        },
+        data: {
+          status: 'DELETED',
+        },
+      });
+    } catch (dbErr) {
+      // Non-fatal: the message may not exist in our DB (e.g. old message)
+      logger.warn({ err: dbErr, messageId: data.message_id }, '⚠️ Could not update message status to DELETED');
+    }
+
+    // Emit webhook event for message.deleted
+    baileysEvents.emit('message', {
+      instanceId,
+      type: 'outgoing',
+      message: {
+        id: data.message_id,
+        chat_jid: data.chat_jid,
+        phone_number: extractPhoneFromJid(data.chat_jid),
+        direction: 'OUTGOING',
+        type: 'revoke',
+        content: deleteFor === 'everyone' ? 'Message deleted for everyone' : 'Message deleted for me',
+        timestamp: Math.floor(Date.now() / 1000),
+      },
+    });
+
+    return { success: true };
+  }
+
+  /**
+   * Edit a WhatsApp message (text body or media caption).
+   *
+   * Only works for messages sent by this account (fromMe) and within ~15
+   * minutes of the original send time (enforced by WhatsApp server).
+   */
+  async editMessage(
+    instanceId: string,
+    organizationId: string,
+    data: {
+      message_id: string;  // wa_message_id
+      chat_jid: string;    // e.g. 628xxx@s.whatsapp.net
+      new_text: string;    // replacement text / caption
+    }
+  ): Promise<{ success: boolean }> {
+    // Verify ownership and connection
+    await this.verifyInstanceForMessaging(instanceId, organizationId);
+
+    const result = await editMessageForInstance(
+      instanceId,
+      data.chat_jid,
+      data.message_id,
+      data.new_text
+    );
+
+    if (!result.success) {
+      throw new AppError(result.error || 'Failed to edit message', 400, 'MSG_011');
+    }
+
+    // Update content in DB (if the message exists)
+    try {
+      await prisma.message.updateMany({
+        where: {
+          instance_id: instanceId,
+          wa_message_id: data.message_id,
+          organization_id: organizationId,
+        },
+        data: {
+          content: data.new_text,
+          edited_at: new Date(),
+        },
+      });
+    } catch (dbErr) {
+      // Non-fatal: the message may not exist in our DB
+      logger.warn({ err: dbErr, messageId: data.message_id }, '⚠️ Could not update edited message content');
+    }
+
+    // Emit webhook event for message.edited
+    baileysEvents.emit('message', {
+      instanceId,
+      type: 'outgoing',
+      message: {
+        id: data.message_id,
+        chat_jid: data.chat_jid,
+        phone_number: extractPhoneFromJid(data.chat_jid),
+        direction: 'OUTGOING',
+        type: 'edit',
+        content: data.new_text,
+        timestamp: Math.floor(Date.now() / 1000),
+      },
+    });
+
+    return { success: true };
   }
 
   // ============================================

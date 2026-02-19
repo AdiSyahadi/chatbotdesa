@@ -1640,6 +1640,132 @@ export async function sendLocationMessage(
   }
 }
 
+/**
+ * Delete/revoke a WhatsApp message.
+ * 
+ * delete_for="everyone" — sends a protocol revoke message so all participants
+ *   see "This message was deleted". Works only within ~2 days of the original
+ *   message and only for messages sent by this account (fromMe: true) or by
+ *   any participant in a group if the instance is an admin.
+ *
+ * delete_for="me" — removes the message from the local device only using
+ *   chatModify({ deleteForMe }).
+ */
+export async function deleteMessageForInstance(
+  instanceId: string,
+  chatJid: string,
+  messageId: string,
+  fromMe: boolean,
+  participant: string | undefined,
+  deleteFor: 'everyone' | 'me'
+): Promise<{ success: boolean; error?: string }> {
+  const socket = activeSockets.get(instanceId);
+
+  if (!socket?.user) {
+    return { success: false, error: 'Instance not connected' };
+  }
+
+  try {
+    if (deleteFor === 'everyone') {
+      // Revoke for everyone — Baileys sends a protocolMessage with type REVOKE
+      const messageKey = {
+        remoteJid: chatJid,
+        id: messageId,
+        fromMe,
+        ...(participant ? { participant } : {}),
+      };
+
+      await socket.sendMessage(chatJid, { delete: messageKey });
+    } else {
+      // Delete for me only — uses chatModify
+      await socket.chatModify(
+        {
+          deleteForMe: {
+            deleteMedia: true,
+            key: {
+              remoteJid: chatJid,
+              id: messageId,
+              fromMe,
+              ...(participant ? { participant } : {}),
+            },
+            timestamp: Math.floor(Date.now() / 1000),
+          },
+        },
+        chatJid
+      );
+    }
+
+    return { success: true };
+  } catch (error) {
+    logger.error({ error, instanceId, chatJid, messageId, deleteFor }, 'Error deleting message');
+
+    // Decrease health score on error
+    await prisma.whatsAppInstance.update({
+      where: { id: instanceId },
+      data: { health_score: { decrement: 5 } },
+    });
+
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to delete message',
+    };
+  }
+}
+
+/**
+ * Edit a WhatsApp message.
+ *
+ * Sends the edited content with the original message key so WhatsApp replaces
+ * the old message bubble with "(edited)" indicator.  Only works for messages
+ * sent by this account (fromMe: true) and within ~15 minutes of the original
+ * send time (enforced by WhatsApp server, not by us).
+ *
+ * For text messages: replaces the entire text body.
+ * For media messages: replaces the caption only (media file stays the same).
+ */
+export async function editMessageForInstance(
+  instanceId: string,
+  chatJid: string,
+  messageId: string,
+  newText: string
+): Promise<{ success: boolean; error?: string }> {
+  const socket = activeSockets.get(instanceId);
+
+  if (!socket?.user) {
+    return { success: false, error: 'Instance not connected' };
+  }
+
+  try {
+    const messageKey = {
+      remoteJid: chatJid,
+      id: messageId,
+      fromMe: true,  // can only edit own messages
+    };
+
+    // Baileys edit: pass new content + edit key
+    // Works for both text messages and media captions
+    await socket.sendMessage(chatJid, {
+      text: newText,
+      edit: messageKey,
+    });
+
+    return { success: true };
+  } catch (error) {
+    logger.error({ error, instanceId, chatJid, messageId }, 'Error editing message');
+
+    // Decrease health score on error
+    await prisma.whatsAppInstance.update({
+      where: { id: instanceId },
+      data: { health_score: { decrement: 5 } },
+    });
+
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to edit message',
+    };
+  }
+}
+
 // ============================================
 // HELPER FUNCTIONS
 // ============================================

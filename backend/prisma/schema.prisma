@@ -203,6 +203,7 @@ model Message {
   delivered_at      DateTime?
   read_at           DateTime?
   failed_at         DateTime?
+  edited_at         DateTime?
   
   // Error tracking
   error_message     String?  @db.Text
@@ -922,6 +923,7 @@ enum MessageStatus {
   DELIVERED
   READ
   FAILED
+  DELETED
 }
 
 enum WebhookStatus {

@@ -8,7 +8,7 @@ import prisma from '../config/database';
 import logger from '../config/logger';
 import { WebhookService } from '../modules/webhooks/webhooks.service';
 import { WebhookPayload } from '../modules/webhooks/webhooks.schema';
-import { getSocket, extractPhoneFromJid, canSendMessage } from '../modules/whatsapp/baileys.service';
+import { getSocket, extractPhoneFromJid, canSendMessage, baileysEvents } from '../modules/whatsapp/baileys.service';
 import { WEBHOOK_CONFIG } from '../config/constants';
 
 import redisConnectionOptions from '../config/redis-connection';
@@ -201,7 +201,10 @@ async function handleAutoReply(
     }
 
     // Send the reply directly via socket (supports both DM and group JIDs)
-    await socket.sendMessage(senderJid, { text: replyText });
+    const sentMsg = await socket.sendMessage(senderJid, { text: replyText });
+    const waMessageId = sentMsg?.key?.id || '';
+
+    const now = new Date();
 
     // Update message count in database
     try {
@@ -209,34 +212,82 @@ async function handleAutoReply(
         where: { id: instanceId },
         data: {
           daily_message_count: { increment: 1 },
-          last_message_at: new Date(),
+          last_message_at: now,
         },
       });
     } catch (e) {
       // Non-critical, don't fail the whole flow
     }
 
-    // Save the outgoing message to database
+    // Save the outgoing message to database (upsert to avoid duplicates if Baileys also fires event)
     try {
       const organizationId = payload.organization_id;
-      await prisma.message.create({
-        data: {
-          organization_id: organizationId,
-          instance_id: instanceId,
-          chat_jid: senderJid,
-          sender_jid: socket.user.id || '',
-          message_type: 'TEXT',
-          content: replyText,
-          direction: 'OUTGOING',
-          status: 'SENT',
-        },
-      });
+      if (waMessageId) {
+        await prisma.message.upsert({
+          where: {
+            unique_wa_message_per_instance: {
+              wa_message_id: waMessageId,
+              instance_id: instanceId,
+            },
+          },
+          create: {
+            organization_id: organizationId,
+            instance_id: instanceId,
+            wa_message_id: waMessageId,
+            chat_jid: senderJid,
+            sender_jid: socket.user.id || '',
+            message_type: 'TEXT',
+            content: replyText,
+            direction: 'OUTGOING',
+            status: 'SENT',
+            source: 'REALTIME',
+            sent_at: now,
+          },
+          update: {
+            direction: 'OUTGOING',
+            status: 'SENT',
+            sent_at: now,
+          },
+        });
+      } else {
+        await prisma.message.create({
+          data: {
+            organization_id: organizationId,
+            instance_id: instanceId,
+            chat_jid: senderJid,
+            sender_jid: socket.user.id || '',
+            message_type: 'TEXT',
+            content: replyText,
+            direction: 'OUTGOING',
+            status: 'SENT',
+            source: 'REALTIME',
+            sent_at: now,
+          },
+        });
+      }
     } catch (e) {
       // Non-critical
     }
 
+    // Emit message.sent webhook so n8n/CRM knows about the auto-reply
+    const phoneNumber = extractPhoneFromJid(senderJid);
+    baileysEvents.emit('message', {
+      instanceId,
+      type: 'outgoing',
+      message: {
+        id: waMessageId,
+        from: senderJid,
+        chat_jid: senderJid,
+        phone_number: phoneNumber,
+        direction: 'OUTGOING',
+        type: 'text',
+        content: replyText,
+        timestamp: Math.floor(now.getTime() / 1000),
+      },
+    });
+
     logger.info(
-      { webhookId, instanceId, to: senderJid, replyLength: replyText.length },
+      { webhookId, instanceId, to: senderJid, waMessageId, replyLength: replyText.length },
       '🤖 Auto-reply sent from webhook response'
     );
   } catch (error: any) {

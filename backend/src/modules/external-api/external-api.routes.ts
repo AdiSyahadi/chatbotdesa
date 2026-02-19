@@ -528,6 +528,127 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
   });
 
   /**
+   * Delete / revoke a WhatsApp message
+   * POST /api/v1/messages/delete
+   * Permission: message:send
+   *
+   * delete_for "everyone" — revokes the message so all chat participants
+   *   see "This message was deleted" (works ~2 days after sending).
+   * delete_for "me" — removes the message from the local device.
+   */
+  fastify.post('/messages/delete', {
+    preHandler: [requireApiKeyPermission('message:send')],
+    schema: {
+      description: 'Delete / revoke a WhatsApp message',
+      tags: ['External API - Messages'],
+      security: [{ apiKeyAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['instance_id', 'message_id', 'chat_jid'],
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'WhatsApp instance ID' },
+          message_id: { type: 'string', description: 'WhatsApp message ID (wa_message_id)' },
+          chat_jid: { type: 'string', description: 'Chat JID (e.g. 628xxx@s.whatsapp.net or xxx@g.us)' },
+          from_me: { type: 'boolean', description: 'Whether the message was sent by this account (default: true)' },
+          participant: { type: 'string', description: 'Sender JID in group (required when from_me=false in group chats)' },
+          delete_for: { type: 'string', enum: ['everyone', 'me'], description: 'Delete for everyone or only for me (default: everyone)' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const body = request.body as {
+      instance_id: string;
+      message_id: string;
+      chat_jid: string;
+      from_me?: boolean;
+      participant?: string;
+      delete_for?: 'everyone' | 'me';
+    };
+
+    const result = await whatsappService.deleteMessage(
+      body.instance_id,
+      req.apiKey.organization_id,
+      {
+        message_id: body.message_id,
+        chat_jid: body.chat_jid,
+        from_me: body.from_me,
+        participant: body.participant,
+        delete_for: body.delete_for,
+      }
+    );
+
+    logger.info({
+      instanceId: body.instance_id,
+      messageId: body.message_id,
+      deleteFor: body.delete_for || 'everyone',
+      apiKeyId: req.apiKey.id,
+    }, 'External API: message deleted');
+
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Edit a WhatsApp message (text body or media caption)
+   * POST /api/v1/messages/edit
+   * Permission: message:send
+   *
+   * Only works for messages sent by this account and within ~15 minutes
+   * of the original send time (enforced by WhatsApp server).
+   */
+  fastify.post('/messages/edit', {
+    preHandler: [requireApiKeyPermission('message:send')],
+    schema: {
+      description: 'Edit a WhatsApp message (text or media caption). Only own messages within ~15 min.',
+      tags: ['External API - Messages'],
+      security: [{ apiKeyAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['instance_id', 'message_id', 'chat_jid', 'new_text'],
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'WhatsApp instance ID' },
+          message_id: { type: 'string', description: 'WhatsApp message ID (wa_message_id)' },
+          chat_jid: { type: 'string', description: 'Chat JID (e.g. 628xxx@s.whatsapp.net or xxx@g.us)' },
+          new_text: { type: 'string', maxLength: 4096, description: 'New message text or caption' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const body = request.body as {
+      instance_id: string;
+      message_id: string;
+      chat_jid: string;
+      new_text: string;
+    };
+
+    if (!body.new_text || body.new_text.trim().length === 0) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: 'VALIDATION', message: 'new_text cannot be empty' },
+      });
+    }
+
+    const result = await whatsappService.editMessage(
+      body.instance_id,
+      req.apiKey.organization_id,
+      {
+        message_id: body.message_id,
+        chat_jid: body.chat_jid,
+        new_text: body.new_text,
+      }
+    );
+
+    logger.info({
+      instanceId: body.instance_id,
+      messageId: body.message_id,
+      apiKeyId: req.apiKey.id,
+    }, 'External API: message edited');
+
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
    * Get messages
    * GET /api/v1/messages
    * Permission: message:read
