@@ -316,95 +316,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
   });
 
   // ============================================
-  // INVOICES (proxy to existing admin endpoints)
+  // INVOICES — Handled by /api/invoices/admin/* (invoices.routes.ts)
+  // No duplicate routes here. Frontend calls /api/invoices/admin/all
+  // and /api/invoices/admin/:invoiceId/verify directly.
   // ============================================
-
-  /**
-   * GET /admin/invoices — List all invoices
-   */
-  fastify.get('/invoices', async (request: FastifyRequest<{
-    Querystring: { page?: string; limit?: string; status?: string };
-  }>, reply) => {
-    const { page = '1', limit = '20', status } = request.query;
-    const skip = (parseInt(page) - 1) * parseInt(limit);
-    const take = parseInt(limit);
-
-    const where: any = {};
-    if (status) {
-      where.status = status;
-    }
-
-    const [invoices, total] = await Promise.all([
-      prisma.invoice.findMany({
-        where,
-        skip,
-        take,
-        include: {
-          organization: { select: { id: true, name: true, slug: true } },
-        },
-        orderBy: { created_at: 'desc' },
-      }),
-      prisma.invoice.count({ where }),
-    ]);
-
-    return {
-      success: true,
-      data: invoices,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        totalPages: Math.ceil(total / take),
-      },
-    };
-  });
-
-  /**
-   * POST /admin/invoices/:id/verify — Verify/approve manual payment
-   */
-  fastify.post('/invoices/:id/verify', async (request: FastifyRequest<{
-    Params: { id: string };
-    Body: { status: string; notes?: string };
-  }>, reply) => {
-    const { id } = request.params;
-    const { status: newStatus, notes } = request.body || {} as any;
-
-    const invoice = await prisma.invoice.findUnique({ where: { id } });
-    if (!invoice) {
-      return reply.status(404).send({ success: false, error: { code: 'NOT_FOUND', message: 'Invoice not found' } });
-    }
-
-    if (invoice.status !== InvoiceStatus.PENDING) {
-      return reply.status(400).send({ success: false, error: { code: 'INVALID_STATUS', message: `Cannot verify invoice with status ${invoice.status}` } });
-    }
-
-    const validStatuses = ['PAID', 'FAILED', 'CANCELED'];
-    if (!validStatuses.includes(newStatus)) {
-      return reply.status(400).send({ success: false, error: { code: 'INVALID_STATUS', message: `Status must be one of: ${validStatuses.join(', ')}` } });
-    }
-
-    const updateData: any = {
-      status: newStatus as InvoiceStatus,
-      payment_notes: notes || null,
-    };
-
-    if (newStatus === 'PAID') {
-      updateData.paid_at = new Date();
-
-      // Activate subscription if invoice is paid
-      if (invoice.organization_id) {
-        await prisma.organization.update({
-          where: { id: invoice.organization_id },
-          data: { subscription_status: 'ACTIVE' },
-        });
-      }
-    }
-
-    const updated = await prisma.invoice.update({ where: { id }, data: updateData });
-
-    logger.info({ invoiceId: id, newStatus, notes }, 'Admin verified invoice');
-    return { success: true, data: updated };
-  });
 
   // ============================================
   // SYSTEM HEALTH

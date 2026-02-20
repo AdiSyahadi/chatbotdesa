@@ -10,15 +10,15 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { adminApi } from "@/lib/api";
 import { toast } from "sonner";
-import { CheckCircle, XCircle, Clock, Search, FileText, Eye, AlertTriangle } from "lucide-react";
+import { CheckCircle, XCircle, Clock, Search, FileText, Eye, AlertTriangle, DollarSign, Receipt, TrendingUp } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 
 interface Invoice {
   id: string;
   invoice_number: string;
-  amount: string;
-  total_amount: string;
+  amount: number;
+  total_amount: number;
   currency: string;
   status: string;
   payment_method: string;
@@ -27,7 +27,8 @@ interface Invoice {
   due_date: string;
   paid_at?: string;
   created_at: string;
-  organization?: { id: string; name: string; slug: string };
+  organization?: { id: string; name: string; email?: string };
+  subscription?: { id: string; plan_id: string; plan?: { id: string; name: string } };
 }
 
 const statusColors: Record<string, string> = {
@@ -60,11 +61,19 @@ export default function AdminInvoicesPage() {
       }),
   });
 
+  const { data: statsData } = useQuery({
+    queryKey: ["admin-invoice-stats"],
+    queryFn: () => adminApi.getInvoiceStats(),
+  });
+
+  const stats = statsData?.data;
+
   const verifyMutation = useMutation({
-    mutationFn: ({ id, status }: { id: string; status: string }) =>
-      adminApi.verifyInvoice(id, status),
+    mutationFn: ({ id, status, notes }: { id: string; status: string; notes?: string }) =>
+      adminApi.verifyInvoice(id, status, notes),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["admin-invoices"] });
+      queryClient.invalidateQueries({ queryKey: ["admin-invoice-stats"] });
       toast.success("Invoice berhasil diupdate");
       setVerifyDialog({ open: false, invoice: null, action: "" });
       setVerifyNotes("");
@@ -74,8 +83,8 @@ export default function AdminInvoicesPage() {
     },
   });
 
-  const invoices: Invoice[] = data?.data || [];
-  const pagination = data?.pagination;
+  const invoices: Invoice[] = data?.data?.invoices || data?.data || [];
+  const pagination = data?.data?.pagination || data?.pagination;
 
   const filteredInvoices = search
     ? invoices.filter(
@@ -95,6 +104,7 @@ export default function AdminInvoicesPage() {
     verifyMutation.mutate({
       id: verifyDialog.invoice.id,
       status: verifyDialog.action,
+      notes: verifyNotes || undefined,
     });
   };
 
@@ -106,6 +116,61 @@ export default function AdminInvoicesPage() {
         <h1 className="text-2xl font-bold">Invoice Management</h1>
         <p className="text-muted-foreground">Kelola invoice dan approve pembayaran manual</p>
       </div>
+
+      {/* Stats Summary */}
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <Receipt className="h-8 w-8 text-blue-500" />
+                <div>
+                  <p className="text-sm text-muted-foreground">Total Invoice</p>
+                  <p className="text-2xl font-bold">{stats.total_invoices ?? 0}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <TrendingUp className="h-8 w-8 text-green-500" />
+                <div>
+                  <p className="text-sm text-muted-foreground">Total Revenue</p>
+                  <p className="text-2xl font-bold">
+                    {(stats.currency || "IDR")} {Number(stats.total_revenue || 0).toLocaleString("id-ID")}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <Clock className="h-8 w-8 text-yellow-500" />
+                <div>
+                  <p className="text-sm text-muted-foreground">Pending</p>
+                  <p className="text-2xl font-bold">{stats.pending_count ?? 0}</p>
+                  <p className="text-xs text-muted-foreground">
+                    {(stats.currency || "IDR")} {Number(stats.pending_amount || 0).toLocaleString("id-ID")}
+                  </p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <CheckCircle className="h-8 w-8 text-emerald-500" />
+                <div>
+                  <p className="text-sm text-muted-foreground">Paid</p>
+                  <p className="text-2xl font-bold">{stats.paid_count ?? 0}</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
 
       {pendingCount > 0 && (
         <Card className="border-yellow-200 bg-yellow-50">
@@ -163,7 +228,8 @@ export default function AdminInvoicesPage() {
                 <thead>
                   <tr className="border-b bg-muted/50">
                     <th className="text-left p-4 font-medium">Invoice</th>
-                    <th className="text-left p-4 font-medium">Organisation</th>
+                    <th className="text-left p-4 font-medium">Organisasi</th>
+                    <th className="text-left p-4 font-medium">Plan</th>
                     <th className="text-left p-4 font-medium">Amount</th>
                     <th className="text-left p-4 font-medium">Method</th>
                     <th className="text-left p-4 font-medium">Status</th>
@@ -182,7 +248,11 @@ export default function AdminInvoicesPage() {
                       </td>
                       <td className="p-4">
                         <div>{invoice.organization?.name || "-"}</div>
-                        <div className="text-xs text-muted-foreground">{invoice.organization?.slug}</div>
+                      </td>
+                      <td className="p-4 text-sm">
+                        {invoice.subscription?.plan?.name || (
+                          <span className="text-muted-foreground">-</span>
+                        )}
                       </td>
                       <td className="p-4 font-medium">
                         {invoice.currency} {Number(invoice.total_amount).toLocaleString("id-ID")}
@@ -244,7 +314,7 @@ export default function AdminInvoicesPage() {
       </Card>
 
       {/* Pagination */}
-      {pagination && pagination.totalPages > 1 && (
+      {pagination && (pagination.totalPages > 1 || pagination.total_pages > 1) && (
         <div className="flex justify-center gap-2">
           <Button
             variant="outline"
@@ -255,12 +325,12 @@ export default function AdminInvoicesPage() {
             Previous
           </Button>
           <span className="flex items-center px-4 text-sm text-muted-foreground">
-            Page {page} of {pagination.totalPages}
+            Page {page} of {pagination.totalPages || pagination.total_pages}
           </span>
           <Button
             variant="outline"
             size="sm"
-            disabled={page >= pagination.totalPages}
+            disabled={page >= (pagination.totalPages || pagination.total_pages)}
             onClick={() => setPage(page + 1)}
           >
             Next
@@ -277,9 +347,12 @@ export default function AdminInvoicesPage() {
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4">
-            <div className="text-sm">
+            <div className="text-sm space-y-1">
               <p>Invoice: <strong>{verifyDialog.invoice?.invoice_number}</strong></p>
               <p>Organisasi: <strong>{verifyDialog.invoice?.organization?.name}</strong></p>
+              {verifyDialog.invoice?.subscription?.plan?.name && (
+                <p>Plan: <strong>{verifyDialog.invoice.subscription.plan.name}</strong></p>
+              )}
               <p>Amount: <strong>{verifyDialog.invoice?.currency} {Number(verifyDialog.invoice?.total_amount || 0).toLocaleString("id-ID")}</strong></p>
             </div>
             <div>

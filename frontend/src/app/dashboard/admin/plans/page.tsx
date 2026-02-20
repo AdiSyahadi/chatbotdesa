@@ -87,7 +87,7 @@ export default function AdminPlansPage() {
     onError: () => toast.error("Gagal hapus plan"),
   });
 
-  const plans: Plan[] = data?.data || [];
+  const plans: Plan[] = data?.data?.plans || data?.data || [];
 
   const openCreate = () => {
     setFormData({
@@ -123,9 +123,21 @@ export default function AdminPlansPage() {
     setEditDialog({ open: true, plan });
   };
 
+  const generateSlug = (name: string) =>
+    name
+      .toLowerCase()
+      .trim()
+      .replace(/[^a-z0-9\s-]/g, "")
+      .replace(/\s+/g, "-")
+      .replace(/-+/g, "-");
+
   const handleSave = () => {
+    const slug = editDialog.plan
+      ? editDialog.plan.slug
+      : generateSlug(formData.name);
     const payload = {
       ...formData,
+      slug,
       price: parseFloat(formData.price) || 0,
     };
     if (editDialog.plan) {
@@ -253,6 +265,7 @@ export default function AdminPlansPage() {
                   onChange={(e) => setFormData({ ...formData, billing_period: e.target.value })}
                 >
                   <option value="MONTHLY">Monthly</option>
+                  <option value="QUARTERLY">Quarterly</option>
                   <option value="YEARLY">Yearly</option>
                 </select>
               </div>

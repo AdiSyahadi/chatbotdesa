@@ -87,6 +87,13 @@ export const createPlanSchema = z.object({
     .max(50, 'Max 50 features')
     .optional()
     .default(DEFAULT_FEATURES),
+  allow_history_sync: z.boolean().default(false),
+  max_sync_messages: z
+    .number()
+    .int('Must be integer')
+    .min(0, 'Must be non-negative')
+    .max(100000, 'Max 100k messages')
+    .default(1000),
   trial_days: z
     .number()
     .int('Must be integer')

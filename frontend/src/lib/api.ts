@@ -514,12 +514,22 @@ export const adminApi = {
   },
 
   getAllInvoices: async (params?: { page?: number; limit?: number; status?: string }) => {
-    const response = await api.get("/admin/invoices", { params });
+    const response = await api.get("/invoices/admin/all", { params });
     return response.data;
   },
 
-  verifyInvoice: async (id: string, status: string) => {
-    const response = await api.post(`/admin/invoices/${id}/verify`, { status });
+  getInvoiceStats: async () => {
+    const response = await api.get("/invoices/admin/stats");
+    return response.data;
+  },
+
+  getPendingVerification: async () => {
+    const response = await api.get("/invoices/admin/pending-verification");
+    return response.data;
+  },
+
+  verifyInvoice: async (id: string, status: string, payment_notes?: string) => {
+    const response = await api.post(`/invoices/admin/${id}/verify`, { status, payment_notes });
     return response.data;
   },
 

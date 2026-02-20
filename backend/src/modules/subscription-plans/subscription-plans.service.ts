@@ -54,6 +54,8 @@ export async function createPlan(data: CreatePlanInput): Promise<PlanResponse> {
       max_contacts: data.max_contacts,
       max_messages_per_day: data.max_messages_per_day,
       features: data.features,
+      allow_history_sync: data.allow_history_sync,
+      max_sync_messages: data.max_sync_messages,
       trial_days: data.trial_days,
       is_active: data.is_active,
       is_public: data.is_public,
@@ -176,6 +178,8 @@ export async function updatePlan(planId: string, data: UpdatePlanInput): Promise
   if (data.max_contacts !== undefined) updateData.max_contacts = data.max_contacts;
   if (data.max_messages_per_day !== undefined) updateData.max_messages_per_day = data.max_messages_per_day;
   if (data.features !== undefined) updateData.features = data.features;
+  if (data.allow_history_sync !== undefined) updateData.allow_history_sync = data.allow_history_sync;
+  if (data.max_sync_messages !== undefined) updateData.max_sync_messages = data.max_sync_messages;
   if (data.trial_days !== undefined) updateData.trial_days = data.trial_days;
   if (data.is_active !== undefined) updateData.is_active = data.is_active;
   if (data.is_public !== undefined) updateData.is_public = data.is_public;
