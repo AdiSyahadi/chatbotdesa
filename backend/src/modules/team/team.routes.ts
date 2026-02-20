@@ -26,25 +26,8 @@ import {
   ROLE_DESCRIPTIONS,
 } from './team.schema';
 import { AppError } from '../../types';
-
-// ============================================
-// ROLE CHECK MIDDLEWARE
-// ============================================
-
-function requireRole(allowedRoles: string[]) {
-  return async (request: FastifyRequest, reply: FastifyReply) => {
-    const user = request.user as { role: string };
-    if (!allowedRoles.includes(user.role)) {
-      return reply.status(403).send({
-        success: false,
-        error: {
-          code: 'TEAM_003',
-          message: 'You do not have permission to perform this action',
-        },
-      });
-    }
-  };
-}
+import { requireRole } from '../../middleware/rbac';
+import { UserRole } from '@prisma/client';
 
 // ============================================
 // ROUTES REGISTRATION
@@ -208,7 +191,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
   // INVITE TEAM MEMBER
   // =====================
   fastify.post('/invite', {
-    preHandler: [requireRole(['ORG_OWNER', 'ORG_ADMIN'])],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       summary: 'Invite a new team member',
       tags: ['Team'],
@@ -307,7 +290,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
   // LIST INVITATIONS
   // =====================
   fastify.get('/invitations', {
-    preHandler: [requireRole(['ORG_OWNER', 'ORG_ADMIN'])],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       summary: 'List pending invitations',
       tags: ['Team'],
@@ -387,7 +370,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
   // RESEND INVITATION
   // =====================
   fastify.post('/invitations/:id/resend', {
-    preHandler: [requireRole(['ORG_OWNER', 'ORG_ADMIN'])],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       summary: 'Resend an invitation',
       tags: ['Team'],
@@ -432,7 +415,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
   // CANCEL INVITATION
   // =====================
   fastify.delete('/invitations/:id', {
-    preHandler: [requireRole(['ORG_OWNER', 'ORG_ADMIN'])],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       summary: 'Cancel an invitation',
       tags: ['Team'],
@@ -525,7 +508,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
   // UPDATE MEMBER ROLE
   // =====================
   fastify.put('/members/:id/role', {
-    preHandler: [requireRole(['ORG_OWNER', 'ORG_ADMIN'])],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       summary: 'Update team member role',
       tags: ['Team'],
@@ -585,7 +568,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
   // DEACTIVATE MEMBER
   // =====================
   fastify.post('/members/:id/deactivate', {
-    preHandler: [requireRole(['ORG_OWNER', 'ORG_ADMIN'])],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       summary: 'Deactivate a team member',
       tags: ['Team'],
@@ -636,7 +619,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
   // REACTIVATE MEMBER
   // =====================
   fastify.post('/members/:id/reactivate', {
-    preHandler: [requireRole(['ORG_OWNER', 'ORG_ADMIN'])],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       summary: 'Reactivate a team member',
       tags: ['Team'],
@@ -683,7 +666,7 @@ export async function teamRoutes(fastify: FastifyInstance) {
   // REMOVE MEMBER
   // =====================
   fastify.delete('/members/:id', {
-    preHandler: [requireRole(['ORG_OWNER'])],
+    preHandler: [requireRole(UserRole.ORG_OWNER)],
     schema: {
       summary: 'Remove a team member',
       tags: ['Team'],

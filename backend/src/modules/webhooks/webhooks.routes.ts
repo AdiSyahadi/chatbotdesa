@@ -17,6 +17,8 @@ import {
 } from './webhooks.schema';
 import { AppError } from '../../types';
 import logger from '../../config/logger';
+import { requireRole } from '../../middleware/rbac';
+import { UserRole } from '@prisma/client';
 
 // ============================================
 // ROUTE HANDLER
@@ -75,7 +77,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   fastify.post(
     '/',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
       schema: {
         description: 'Create webhook configuration for an instance',
         tags: ['Webhooks'],
@@ -112,7 +114,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   }>(
     '/:id',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
       schema: {
         description: 'Update webhook configuration',
         tags: ['Webhooks'],
@@ -156,7 +158,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   }>(
     '/:id',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
       schema: {
         description: 'Delete webhook configuration',
         tags: ['Webhooks'],
@@ -191,7 +193,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   }>(
     '/:id/test',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
       schema: {
         description: 'Test webhook configuration',
         tags: ['Webhooks'],
@@ -265,7 +267,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   }>(
     '/config',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
       schema: {
         description: 'Configure webhook for an instance',
         tags: ['Webhooks'],
@@ -311,7 +313,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   }>(
     '/test/:instanceId',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
       schema: {
         description: 'Test webhook configuration by sending a test event',
         tags: ['Webhooks'],
@@ -472,7 +474,7 @@ export async function webhookRoutes(fastify: FastifyInstance) {
   }>(
     '/history/:id/retry',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
       schema: {
         description: 'Retry a failed webhook delivery',
         tags: ['Webhooks'],

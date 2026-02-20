@@ -19,6 +19,8 @@ import {
 } from './payments.schema';
 import { AppError } from '../../types';
 import logger from '../../config/logger';
+import { requireRole } from '../../middleware/rbac';
+import { UserRole } from '@prisma/client';
 
 // ============================================
 // ROUTE REGISTRATION
@@ -117,23 +119,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
     }
   };
 
-  /**
-   * Middleware to require SUPER_ADMIN role
-   */
-  const requireSuperAdmin = async (request: FastifyRequest, reply: FastifyReply) => {
-    await requireAuth(request, reply);
-    const user = request.user as { role: string };
 
-    if (user.role !== 'SUPER_ADMIN') {
-      return reply.status(403).send({
-        success: false,
-        error: {
-          code: 'AUTH_002',
-          message: 'Super admin access required',
-        },
-      });
-    }
-  };
 
   // ============================================
   // USER PAYMENT ROUTES
@@ -237,7 +223,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/admin/methods/all',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const methods = await paymentsService.getAllPaymentMethodConfigs();
@@ -260,7 +246,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/admin/methods/:method',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { method } = request.params as { method: string };
@@ -286,7 +272,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
    */
   fastify.put(
     '/admin/methods/:method',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { method } = request.params as { method: string };
@@ -320,7 +306,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
    */
   fastify.post(
     '/admin/methods/initialize',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         await paymentsService.initializePaymentMethodConfigs();
@@ -340,7 +326,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/admin/midtrans/config',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const config = await paymentsService.getMidtransConfig();
@@ -380,7 +366,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/admin/midtrans/status/:orderId',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { orderId } = request.params as { orderId: string };
@@ -401,7 +387,7 @@ export async function paymentsRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/admin/status/:invoiceId',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { invoiceId } = request.params as { invoiceId: string };

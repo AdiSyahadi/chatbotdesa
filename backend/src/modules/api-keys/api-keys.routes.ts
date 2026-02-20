@@ -16,6 +16,8 @@ import {
 } from './api-keys.schema';
 import { AppError } from '../../types';
 import logger from '../../config/logger';
+import { requireRole } from '../../middleware/rbac';
+import { UserRole } from '@prisma/client';
 
 // ============================================
 // ROUTE HANDLER
@@ -36,7 +38,7 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
   }>(
     '/',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
       schema: {
         description: 'Create a new API key',
         tags: ['API Keys'],
@@ -207,7 +209,7 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
   }>(
     '/:id',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
       schema: {
         description: 'Update API key settings',
         tags: ['API Keys'],
@@ -266,7 +268,7 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
   }>(
     '/:id',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
       schema: {
         description: 'Delete (revoke) an API key',
         tags: ['API Keys'],
@@ -310,7 +312,7 @@ export async function apiKeyRoutes(fastify: FastifyInstance) {
   }>(
     '/:id/regenerate',
     {
-      preHandler: [fastify.authenticate],
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
       schema: {
         description: 'Regenerate API key (creates new key, invalidates old one)',
         tags: ['API Keys'],

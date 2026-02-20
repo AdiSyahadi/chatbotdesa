@@ -23,6 +23,8 @@ import {
 } from './subscription-plans.schema';
 import logger from '../../config/logger';
 import { AppError } from '../../types';
+import { requireRole } from '../../middleware/rbac';
+import { UserRole } from '@prisma/client';
 
 // ============================================
 // ROUTE REGISTRATION
@@ -87,23 +89,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
     }
   };
 
-  /**
-   * Middleware to require SUPER_ADMIN role
-   */
-  const requireSuperAdmin = async (request: FastifyRequest, reply: FastifyReply) => {
-    await requireAuth(request, reply);
-    const user = request.user as { role: string };
-    
-    if (user.role !== 'SUPER_ADMIN') {
-      return reply.status(403).send({
-        success: false,
-        error: {
-          code: 'AUTH_002',
-          message: 'Super admin access required',
-        },
-      });
-    }
-  };
+
 
   // ============================================
   // ADMIN PLAN MANAGEMENT ROUTES
@@ -114,7 +100,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
    */
   fastify.post(
     '/plans',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const body = createPlanSchema.parse(request.body);
@@ -139,7 +125,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/plans',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const query = listPlansQuerySchema.parse(request.query);
@@ -161,7 +147,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/plans/stats',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const stats = await subscriptionPlansService.getPlanStats();
@@ -181,7 +167,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/plans/:planId',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { planId } = request.params as { planId: string };
@@ -206,7 +192,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
    */
   fastify.put(
     '/plans/:planId',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { planId } = request.params as { planId: string };
@@ -232,7 +218,7 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
    */
   fastify.delete(
     '/plans/:planId',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { planId } = request.params as { planId: string };

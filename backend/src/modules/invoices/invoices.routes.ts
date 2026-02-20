@@ -25,6 +25,8 @@ import {
 } from './invoices.schema';
 import logger from '../../config/logger';
 import { AppError } from '../../types';
+import { requireRole } from '../../middleware/rbac';
+import { UserRole } from '@prisma/client';
 
 // ============================================
 // ROUTE REGISTRATION
@@ -82,23 +84,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
     }
   };
 
-  /**
-   * Middleware to require SUPER_ADMIN role
-   */
-  const requireSuperAdmin = async (request: FastifyRequest, reply: FastifyReply) => {
-    await requireAuth(request, reply);
-    const user = request.user as { role: string };
 
-    if (user.role !== 'SUPER_ADMIN') {
-      return reply.status(403).send({
-        success: false,
-        error: {
-          code: 'AUTH_002',
-          message: 'Super admin access required',
-        },
-      });
-    }
-  };
 
   // ============================================
   // USER INVOICE ROUTES
@@ -244,7 +230,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/admin/all',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const query = adminListInvoicesQuerySchema.parse(request.query);
@@ -266,7 +252,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/admin/stats',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const stats = await invoicesService.getInvoiceStats();
@@ -286,7 +272,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/admin/pending-verification',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const invoices = await invoicesService.getPendingVerification();
@@ -309,7 +295,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/admin/overdue',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const invoices = await invoicesService.getOverdueInvoices();
@@ -332,7 +318,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
    */
   fastify.post(
     '/admin/create',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const body = request.body as CreateInvoiceInput & { organization_id: string };
@@ -370,7 +356,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
    */
   fastify.get(
     '/admin/:invoiceId',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { invoiceId } = request.params as { invoiceId: string };
@@ -395,7 +381,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
    */
   fastify.put(
     '/admin/:invoiceId',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { invoiceId } = request.params as { invoiceId: string };
@@ -421,7 +407,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
    */
   fastify.post(
     '/admin/:invoiceId/verify',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { invoiceId } = request.params as { invoiceId: string };
@@ -450,7 +436,7 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
    */
   fastify.post(
     '/admin/:invoiceId/cancel',
-    { preHandler: [requireSuperAdmin] },
+    { preHandler: [requireAuth, requireRole(UserRole.SUPER_ADMIN)] },
     async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         const { invoiceId } = request.params as { invoiceId: string };

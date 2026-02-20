@@ -16,6 +16,7 @@ import {
   UserCog,
   CreditCard,
   Settings,
+  Shield,
   ChevronLeft,
   ChevronRight,
   LogOut,
@@ -74,18 +75,28 @@ const navItems: NavItem[] = [
     icon: UserCog,
     label: "Team",
     href: "/dashboard/team",
-    roles: ["ORG_OWNER"],
+    roles: ["SUPER_ADMIN", "ORG_OWNER", "ORG_ADMIN"],
   },
   {
     icon: CreditCard,
     label: "Billing",
     href: "/dashboard/billing",
-    roles: ["ORG_OWNER"],
+    roles: ["SUPER_ADMIN", "ORG_OWNER"],
   },
   {
     icon: Settings,
     label: "Settings",
     href: "/dashboard/settings",
+  },
+  {
+    icon: Shield,
+    label: "Admin",
+    href: "/dashboard/admin",
+    roles: ["SUPER_ADMIN"],
+    children: [
+      { label: "Users", href: "/dashboard/admin/users" },
+      { label: "Organizations", href: "/dashboard/admin/organizations" },
+    ],
   },
 ];
 

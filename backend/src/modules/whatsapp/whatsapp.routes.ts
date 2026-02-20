@@ -2,6 +2,7 @@ import { FastifyInstance } from 'fastify';
 import { WhatsAppService } from './whatsapp.service';
 import prisma from '../../config/database';
 import { Prisma } from '@prisma/client';
+import { UserRole } from '@prisma/client';
 import {
   createInstanceSchema,
   updateInstanceSchema,
@@ -14,6 +15,7 @@ import {
 } from './whatsapp.schema';
 import { JWTPayload, AuthenticatedRequest } from '../../types';
 import '../../types';
+import { requireRole } from '../../middleware/rbac';
 
 // ============================================
 // WHATSAPP ROUTES
@@ -64,6 +66,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
    */
   fastify.post('/instances', {
     onRequest: [fastify.authenticate],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       description: 'Create new WhatsApp instance',
       tags: ['WhatsApp Instances'],
@@ -123,6 +126,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
    */
   fastify.patch('/instances/:id', {
     onRequest: [fastify.authenticate],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       description: 'Update WhatsApp instance settings',
       tags: ['WhatsApp Instances'],
@@ -199,6 +203,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
    */
   fastify.delete('/instances/:id', {
     onRequest: [fastify.authenticate],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       description: 'Delete WhatsApp instance',
       tags: ['WhatsApp Instances'],
@@ -230,6 +235,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
    */
   fastify.post('/instances/:id/connect', {
     onRequest: [fastify.authenticate],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       description: 'Start WhatsApp connection and generate QR code',
       tags: ['WhatsApp Connection'],
@@ -257,6 +263,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
    */
   fastify.post('/instances/:id/disconnect', {
     onRequest: [fastify.authenticate],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       description: 'Disconnect WhatsApp instance',
       tags: ['WhatsApp Connection'],
@@ -338,6 +345,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
    */
   fastify.post('/instances/:id/restart', {
     onRequest: [fastify.authenticate],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       description: 'Restart WhatsApp instance connection',
       tags: ['WhatsApp Connection'],
@@ -771,6 +779,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
     Body: { sync_history_on_connect?: boolean };
   }>('/instances/:id/sync-settings', {
     onRequest: [fastify.authenticate],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     handler: async (request, reply) => {
       const user = (request as AuthenticatedRequest).user;
       const { id } = request.params;
@@ -842,6 +851,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
   // POST /api/whatsapp/instances/:id/re-pair
   fastify.post<{ Params: { id: string } }>('/instances/:id/re-pair', {
     onRequest: [fastify.authenticate],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     handler: async (request, reply) => {
       const user = (request as AuthenticatedRequest).user;
       const { id } = request.params;
@@ -921,6 +931,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
    */
   fastify.delete<{ Params: { id: string } }>('/instances/:id/sync-data', {
     onRequest: [fastify.authenticate],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       params: { type: 'object', properties: { id: { type: 'string', format: 'uuid' } }, required: ['id'] },
     },
@@ -990,6 +1001,7 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
     method: 'POST',
     url: '/instances/:id/sync-control',
     onRequest: [fastify.authenticate],
+    preHandler: [requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
     schema: {
       params: { type: 'object', properties: { id: { type: 'string', format: 'uuid' } }, required: ['id'] },
       body: {
