@@ -15,11 +15,21 @@ import {
   FileText,
 } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect } from "react";
 
 export default function DashboardPage() {
+  const router = useRouter();
   const { user, organization } = useAuthStore();
   const { data: usageData, isLoading: usageLoading } = useUsage();
   const { data: instancesData, isLoading: instancesLoading } = useInstances();
+
+  // SUPER_ADMIN → redirect ke admin dashboard
+  useEffect(() => {
+    if (user?.role === "SUPER_ADMIN") {
+      router.replace("/dashboard/admin");
+    }
+  }, [user, router]);
 
   const usage = usageData?.data?.usage;
   const instances = instancesData?.data || [];

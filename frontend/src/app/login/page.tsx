@@ -40,7 +40,14 @@ function LoginPageInner() {
     try {
       await login(email, password);
       toast.success("Login berhasil!");
-      router.push(searchParams.get('redirect') || '/dashboard');
+      
+      // SUPER_ADMIN → redirect ke admin dashboard
+      const currentUser = useAuthStore.getState().user;
+      if (currentUser?.role === "SUPER_ADMIN") {
+        router.push('/dashboard/admin');
+      } else {
+        router.push(searchParams.get('redirect') || '/dashboard');
+      }
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : "Login gagal. Periksa email dan password Anda.";
       toast.error(message);

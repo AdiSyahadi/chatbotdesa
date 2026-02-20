@@ -17,6 +17,9 @@ import {
   CreditCard,
   Settings,
   Shield,
+  Building2,
+  MonitorSmartphone,
+  Receipt,
   ChevronLeft,
   ChevronRight,
   LogOut,
@@ -35,7 +38,8 @@ interface NavItem {
   roles?: string[];
 }
 
-const navItems: NavItem[] = [
+/** Nav items untuk tenant (ORG_OWNER / ORG_ADMIN / ORG_MEMBER) */
+const tenantNavItems: NavItem[] = [
   {
     icon: LayoutDashboard,
     label: "Dashboard",
@@ -75,28 +79,62 @@ const navItems: NavItem[] = [
     icon: UserCog,
     label: "Team",
     href: "/dashboard/team",
-    roles: ["SUPER_ADMIN", "ORG_OWNER", "ORG_ADMIN"],
+    roles: ["ORG_OWNER", "ORG_ADMIN"],
   },
   {
     icon: CreditCard,
     label: "Billing",
     href: "/dashboard/billing",
-    roles: ["SUPER_ADMIN", "ORG_OWNER"],
+    roles: ["ORG_OWNER"],
   },
   {
     icon: Settings,
     label: "Settings",
     href: "/dashboard/settings",
   },
+];
+
+/** Nav items untuk SUPER_ADMIN (pemilik SaaS) */
+const adminNavItems: NavItem[] = [
+  {
+    icon: LayoutDashboard,
+    label: "Dashboard",
+    href: "/dashboard/admin",
+  },
+  {
+    icon: Building2,
+    label: "Organizations",
+    href: "/dashboard/admin/organizations",
+  },
+  {
+    icon: Users,
+    label: "Users",
+    href: "/dashboard/admin/users",
+  },
+  {
+    icon: MonitorSmartphone,
+    label: "Instances",
+    href: "/dashboard/admin/instances",
+  },
   {
     icon: Shield,
-    label: "Admin",
-    href: "/dashboard/admin",
-    roles: ["SUPER_ADMIN"],
-    children: [
-      { label: "Users", href: "/dashboard/admin/users" },
-      { label: "Organizations", href: "/dashboard/admin/organizations" },
-    ],
+    label: "Plans",
+    href: "/dashboard/admin/plans",
+  },
+  {
+    icon: Receipt,
+    label: "Invoices",
+    href: "/dashboard/admin/invoices",
+  },
+  {
+    icon: CreditCard,
+    label: "Payments",
+    href: "/dashboard/admin/payments",
+  },
+  {
+    icon: Settings,
+    label: "Settings",
+    href: "/dashboard/admin/settings",
   },
 ];
 
@@ -104,7 +142,10 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
 
-  const filteredNavItems = navItems.filter((item) => {
+  const isSuperAdmin = user?.role === "SUPER_ADMIN";
+  const baseNavItems = isSuperAdmin ? adminNavItems : tenantNavItems;
+
+  const filteredNavItems = baseNavItems.filter((item) => {
     if (!item.roles) return true;
     return item.roles.includes(user?.role || "");
   });
@@ -125,13 +166,13 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {/* Logo */}
         <div className="flex h-16 items-center justify-between border-b px-4">
           {!collapsed && (
-            <Link href="/dashboard" className="flex items-center gap-2">
+            <Link href={isSuperAdmin ? "/dashboard/admin" : "/dashboard"} className="flex items-center gap-2">
               <MessageSquare className="h-6 w-6 text-primary" />
-              <span className="text-lg font-bold">WA SaaS</span>
+              <span className="text-lg font-bold">{isSuperAdmin ? "WA Admin" : "WA SaaS"}</span>
             </Link>
           )}
           {collapsed && (
-            <Link href="/dashboard" className="mx-auto">
+            <Link href={isSuperAdmin ? "/dashboard/admin" : "/dashboard"} className="mx-auto">
               <MessageSquare className="h-6 w-6 text-primary" />
             </Link>
           )}

@@ -356,12 +356,12 @@ export default function AdminDashboardPage() {
             </CardContent>
           </Card>
         </Link>
-        <Link href="/dashboard/admin/billing">
+        <Link href="/dashboard/admin/invoices">
           <Card className="hover:bg-muted/50 transition-colors cursor-pointer">
             <CardContent className="flex items-center gap-4 py-6">
               <DollarSign className="h-8 w-8 text-primary" />
               <div>
-                <p className="font-medium">Billing</p>
+                <p className="font-medium">Invoices</p>
                 <p className="text-sm text-muted-foreground">Revenue & invoices</p>
               </div>
             </CardContent>

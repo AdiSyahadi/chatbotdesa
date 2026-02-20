@@ -532,6 +532,43 @@ export const adminApi = {
     const response = await api.get("/admin/audit-logs", { params });
     return response.data;
   },
+
+  // Plans management (proxy to /billing/plans)
+  getPlans: async () => {
+    const response = await api.get("/billing/plans");
+    return response.data;
+  },
+
+  createPlan: async (data: Record<string, unknown>) => {
+    const response = await api.post("/billing/plans", data);
+    return response.data;
+  },
+
+  updatePlan: async (id: string, data: Record<string, unknown>) => {
+    const response = await api.put(`/billing/plans/${id}`, data);
+    return response.data;
+  },
+
+  deletePlan: async (id: string) => {
+    const response = await api.delete(`/billing/plans/${id}`);
+    return response.data;
+  },
+
+  // Payment methods config (proxy to /payments/admin)
+  getPaymentMethods: async () => {
+    const response = await api.get("/payments/admin/methods/all");
+    return response.data;
+  },
+
+  updatePaymentMethod: async (method: string, data: Record<string, unknown>) => {
+    const response = await api.put(`/payments/admin/methods/${method}`, data);
+    return response.data;
+  },
+
+  initializePaymentMethods: async () => {
+    const response = await api.post("/payments/admin/methods/initialize");
+    return response.data;
+  },
 };
 
 // Uploads API

@@ -26,6 +26,7 @@ import { invoicesRoutes } from './modules/invoices';
 import { paymentsRoutes } from './modules/payments';
 import uploadRoutes from './modules/uploads/uploads.routes';
 import { externalApiRoutes } from './modules/external-api/external-api.routes';
+import { adminRoutes } from './modules/admin/admin.routes';
 import { initializeActiveInstances, baileysEvents } from './modules/whatsapp/baileys.service';
 import { initializeWorkers, shutdownWorkers } from './workers';
 import { createWebhookService } from './modules/webhooks/webhooks.service';
@@ -199,6 +200,7 @@ async function start() {
     await fastify.register(invoicesRoutes, { prefix: '/api/invoices' });
     await fastify.register(paymentsRoutes, { prefix: '/api/payments' });
     await fastify.register(uploadRoutes, { prefix: '/api/uploads' });
+    await fastify.register(adminRoutes, { prefix: '/api/admin' });
 
     // External API routes (API Key authentication for n8n, Make, Zapier, etc.)
     await fastify.register(externalApiRoutes, { prefix: '/api/v1' });
