@@ -579,6 +579,32 @@ export const adminApi = {
     const response = await api.post("/payments/admin/methods/initialize");
     return response.data;
   },
+
+  // System settings CRUD
+  getSettings: async (prefix?: string) => {
+    const response = await api.get("/admin/settings", { params: prefix ? { prefix } : {} });
+    return response.data;
+  },
+
+  getSetting: async (key: string) => {
+    const response = await api.get(`/admin/settings/${key}`);
+    return response.data;
+  },
+
+  upsertSetting: async (key: string, value: unknown, description?: string) => {
+    const response = await api.put(`/admin/settings/${key}`, { value, description });
+    return response.data;
+  },
+
+  bulkUpsertSettings: async (settings: Array<{ key: string; value: unknown; description?: string }>) => {
+    const response = await api.put("/admin/settings", { settings });
+    return response.data;
+  },
+
+  deleteSetting: async (key: string) => {
+    const response = await api.delete(`/admin/settings/${key}`);
+    return response.data;
+  },
 };
 
 // Uploads API

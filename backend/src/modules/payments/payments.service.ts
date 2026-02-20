@@ -217,42 +217,47 @@ export async function getManualTransferDetails(): Promise<{
 // ============================================
 
 /**
- * Get Midtrans config
+ * Get Midtrans config — reads from SystemSetting (key prefix: midtrans.)
+ * Falls back to env vars if SystemSetting not configured
  */
 export async function getMidtransConfig(): Promise<MidtransConfig | null> {
-  // Check any Midtrans payment method for config
-  const config = await prisma.paymentMethodConfig.findFirst({
-    where: {
-      method: {
-        in: [
-          'MIDTRANS_BANK_TRANSFER',
-          'MIDTRANS_CREDIT_CARD',
-          'MIDTRANS_GOPAY',
-          'MIDTRANS_OVO',
-          'MIDTRANS_QRIS',
-        ],
-      },
-      is_enabled: true,
-    },
+  // 1. Try SystemSetting first
+  const settings = await prisma.systemSetting.findMany({
+    where: { key: { startsWith: 'midtrans.' } },
   });
 
-  if (!config || !config.config_data) {
-    return null;
+  if (settings.length > 0) {
+    const map: Record<string, unknown> = {};
+    for (const s of settings) {
+      map[s.key.replace('midtrans.', '')] = s.value;
+    }
+
+    const serverKey = map.server_key as string | undefined;
+    const clientKey = map.client_key as string | undefined;
+
+    if (serverKey && clientKey) {
+      return {
+        server_key: serverKey,
+        client_key: clientKey,
+        is_production: (map.is_production as boolean) || false,
+        merchant_id: (map.merchant_id as string) || undefined,
+        enabled_payment_types: (map.enabled_payment_types as string[]) || ['bank_transfer', 'gopay', 'qris'],
+      };
+    }
   }
 
-  const configData = config.config_data as Record<string, any>;
-
-  if (!configData.server_key || !configData.client_key) {
-    return null;
+  // 2. Fallback to env vars
+  const envConfig = (await import('../../config')).default;
+  if (envConfig.midtrans.serverKey && envConfig.midtrans.clientKey) {
+    return {
+      server_key: envConfig.midtrans.serverKey,
+      client_key: envConfig.midtrans.clientKey,
+      is_production: envConfig.midtrans.isProduction,
+      enabled_payment_types: ['bank_transfer', 'gopay', 'qris'],
+    };
   }
 
-  return {
-    server_key: configData.server_key,
-    client_key: configData.client_key,
-    is_production: configData.is_production || false,
-    merchant_id: configData.merchant_id,
-    enabled_payment_types: configData.enabled_payment_types || ['bank_transfer', 'gopay', 'qris'],
-  };
+  return null;
 }
 
 /**

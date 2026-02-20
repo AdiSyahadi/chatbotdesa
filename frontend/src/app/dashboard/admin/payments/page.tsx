@@ -2,7 +2,6 @@
 
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,7 +9,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { adminApi } from "@/lib/api";
 import { toast } from "sonner";
-import { CreditCard, Building, Wallet, QrCode, Banknote, RefreshCw, AlertCircle } from "lucide-react";
+import { CreditCard, Building, Wallet, QrCode, Banknote, RefreshCw, Settings } from "lucide-react";
+import Link from "next/link";
 import { useState } from "react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 
@@ -20,7 +20,6 @@ interface PaymentMethodConfig {
   is_enabled: boolean;
   display_name: string;
   description?: string;
-  config_data?: Record<string, unknown>;
   bank_name?: string;
   account_number?: string;
   account_holder?: string;
@@ -42,11 +41,6 @@ export default function AdminPaymentsPage() {
     method: null,
   });
   const [formData, setFormData] = useState<Record<string, string>>({});
-  const [midtransConfig, setMidtransConfig] = useState<{ server_key: string; client_key: string; is_production: boolean }>({
-    server_key: "",
-    client_key: "",
-    is_production: false,
-  });
 
   const { data, isLoading } = useQuery({
     queryKey: ["admin-payment-methods"],
@@ -75,8 +69,6 @@ export default function AdminPaymentsPage() {
 
   const methods: PaymentMethodConfig[] = data?.data?.methods || [];
 
-  const isMidtrans = (m: string) => m.startsWith("MIDTRANS_");
-
   const openEdit = (method: PaymentMethodConfig) => {
     setFormData({
       display_name: method.display_name || "",
@@ -85,33 +77,17 @@ export default function AdminPaymentsPage() {
       account_number: method.account_number || "",
       account_holder: method.account_holder || "",
     });
-    if (isMidtrans(method.method)) {
-      const cd = (method.config_data || {}) as Record<string, unknown>;
-      setMidtransConfig({
-        server_key: (cd.server_key as string) || "",
-        client_key: (cd.client_key as string) || "",
-        is_production: (cd.is_production as boolean) || false,
-      });
-    }
     setEditDialog({ open: true, method });
   };
 
   const handleSave = () => {
     if (!editDialog.method) return;
-    const payload: Record<string, unknown> = {
-      ...formData,
-      is_enabled: editDialog.method.is_enabled,
-    };
-    if (isMidtrans(editDialog.method.method)) {
-      payload.config_data = {
-        server_key: midtransConfig.server_key || undefined,
-        client_key: midtransConfig.client_key || undefined,
-        is_production: midtransConfig.is_production,
-      };
-    }
     updateMutation.mutate({
       method: editDialog.method.method,
-      data: payload,
+      data: {
+        ...formData,
+        is_enabled: editDialog.method.is_enabled,
+      },
     });
   };
 
@@ -183,18 +159,11 @@ export default function AdminPaymentsPage() {
                       <div>Atas Nama: <strong>{method.account_holder}</strong></div>
                     </div>
                   )}
-                  {isMidtrans(method.method) && (
-                    <div className="mb-1">
-                      {(method.config_data as Record<string, unknown> | undefined)?.server_key ? (
-                        <Badge variant="outline" className="text-green-600 border-green-300 bg-green-50 text-xs">
-                          ✓ Configured
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="text-yellow-600 border-yellow-300 bg-yellow-50 text-xs">
-                          ⚠ Belum Dikonfigurasi
-                        </Badge>
-                      )}
-                    </div>
+                  {method.method.startsWith("MIDTRANS_") && (
+                    <Link href="/dashboard/admin/settings" className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-primary mt-1">
+                      <Settings className="h-3 w-3" />
+                      Konfigurasi API key di Settings
+                    </Link>
                   )}
                   <Button size="sm" variant="outline" className="mt-3" onClick={() => openEdit(method)}>
                     Edit Konfigurasi
@@ -237,44 +206,11 @@ export default function AdminPaymentsPage() {
                 </div>
               </>
             )}
-            {editDialog.method && isMidtrans(editDialog.method.method) && (
-              <>
-                <div className="border-t pt-4">
-                  <p className="text-sm font-medium mb-3">Midtrans Configuration</p>
-                  <div className="space-y-3">
-                    <div>
-                      <Label>Server Key</Label>
-                      <Input
-                        type="password"
-                        value={midtransConfig.server_key}
-                        onChange={(e) => setMidtransConfig({ ...midtransConfig, server_key: e.target.value })}
-                        placeholder="SB-Mid-server-..."
-                      />
-                    </div>
-                    <div>
-                      <Label>Client Key</Label>
-                      <Input
-                        value={midtransConfig.client_key}
-                        onChange={(e) => setMidtransConfig({ ...midtransConfig, client_key: e.target.value })}
-                        placeholder="SB-Mid-client-..."
-                      />
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <Label>Production Mode</Label>
-                      <Switch
-                        checked={midtransConfig.is_production}
-                        onCheckedChange={(v) => setMidtransConfig({ ...midtransConfig, is_production: v })}
-                      />
-                    </div>
-                    {!midtransConfig.server_key && (
-                      <div className="flex items-center gap-2 text-xs text-yellow-600 bg-yellow-50 p-2 rounded">
-                        <AlertCircle className="h-3 w-3" />
-                        <span>Server key belum dikonfigurasi. Payment Midtrans tidak akan berfungsi.</span>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </>
+            {editDialog.method?.method.startsWith("MIDTRANS_") && (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground bg-muted p-3 rounded-lg">
+                <Settings className="h-3 w-3" />
+                <span>Konfigurasi API key Midtrans ada di <Link href="/dashboard/admin/settings" className="text-primary underline">Settings</Link></span>
+              </div>
             )}
           </div>
           <DialogFooter>
