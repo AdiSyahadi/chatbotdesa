@@ -96,6 +96,34 @@ async function processBroadcast(job: Job<BroadcastJobData>): Promise<void> {
           return;
         }
 
+        // Enforce daily outgoing message limit before each send
+        const startOfDay = new Date();
+        startOfDay.setHours(0, 0, 0, 0);
+        const [org, messagesSentToday] = await Promise.all([
+          prisma.organization.findUnique({
+            where: { id: organization_id },
+            select: { max_messages_per_day: true },
+          }),
+          prisma.message.count({
+            where: {
+              organization_id,
+              direction: 'OUTGOING',
+              sent_at: { gte: startOfDay },
+            },
+          }),
+        ]);
+        if (org && messagesSentToday >= org.max_messages_per_day) {
+          logger.warn(
+            { broadcastId: broadcast_id, sentToday: messagesSentToday, limit: org.max_messages_per_day },
+            'Daily message limit reached — pausing broadcast'
+          );
+          await prisma.broadcast.update({
+            where: { id: broadcast_id },
+            data: { status: 'PAUSED' },
+          });
+          return;
+        }
+
         try {
           // Format phone number to JID
           const jid = `${recipient.phone_number}@s.whatsapp.net`;

@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { useAdminOrganizations } from "@/hooks/use-queries";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -30,20 +31,30 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   RefreshCw,
   Building2,
   Filter,
   Search,
   MoreVertical,
   Eye,
-  Edit,
   Ban,
   CheckCircle,
   Users,
   Smartphone,
   CreditCard,
+  Package,
 } from "lucide-react";
 import { cn, formatDate, formatCurrency } from "@/lib/utils";
+import { adminApi } from "@/lib/api";
+import { toast } from "sonner";
 import Link from "next/link";
 
 interface Organization {
@@ -51,7 +62,9 @@ interface Organization {
   name: string;
   slug: string;
   status: string;
+  is_active?: boolean;
   plan?: {
+    id?: string;
     name: string;
     price: number;
   };
@@ -70,15 +83,35 @@ interface Organization {
 
 const statusConfig: Record<string, { label: string; color: string; bgColor: string }> = {
   ACTIVE: { label: "Active", color: "text-green-700", bgColor: "bg-green-100" },
+  TRIAL: { label: "Trial", color: "text-blue-700", bgColor: "bg-blue-100" },
   INACTIVE: { label: "Inactive", color: "text-gray-700", bgColor: "bg-gray-100" },
   SUSPENDED: { label: "Suspended", color: "text-red-700", bgColor: "bg-red-100" },
+  EXPIRED: { label: "Expired", color: "text-orange-700", bgColor: "bg-orange-100" },
+  CANCELED: { label: "Canceled", color: "text-gray-700", bgColor: "bg-gray-100" },
+  PAST_DUE: { label: "Past Due", color: "text-yellow-700", bgColor: "bg-yellow-100" },
   PENDING: { label: "Pending", color: "text-yellow-700", bgColor: "bg-yellow-100" },
 };
 
+interface Plan {
+  id: string;
+  name: string;
+  price: string;
+  billing_period: string;
+  max_instances: number;
+  max_contacts: number;
+  max_messages_per_day: number;
+}
+
 export default function AdminOrganizationsPage() {
+  const queryClient = useQueryClient();
   const [filterStatus, setFilterStatus] = useState("__all__");
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
+  const [assignPlanDialog, setAssignPlanDialog] = useState<{ open: boolean; org: Organization | null }>({
+    open: false,
+    org: null,
+  });
+  const [selectedPlanId, setSelectedPlanId] = useState("");
 
   const { data, isLoading, refetch } = useAdminOrganizations({
     page,
@@ -86,8 +119,51 @@ export default function AdminOrganizationsPage() {
     status: filterStatus === "__all__" ? undefined : filterStatus,
   });
 
-  const organizations: Organization[] = data?.data?.organizations || [];
+  const organizations: Organization[] = data?.data?.organizations || data?.data || [];
   const pagination = data?.data?.pagination;
+
+  // Fetch plans for the assign-plan dialog (admin endpoint — all plans)
+  const { data: plansData } = useQuery({
+    queryKey: ["admin-plans-select"],
+    queryFn: () => adminApi.getPlans(),
+    enabled: assignPlanDialog.open,
+  });
+  const plans: Plan[] = plansData?.data?.plans || plansData?.data || [];
+
+  const assignPlanMutation = useMutation({
+    mutationFn: ({ orgId, planId }: { orgId: string; planId: string }) =>
+      adminApi.assignPlanToOrg(orgId, planId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-organizations"] });
+      toast.success("Plan berhasil di-assign ke organisasi");
+      setAssignPlanDialog({ open: false, org: null });
+      setSelectedPlanId("");
+    },
+    onError: () => toast.error("Gagal assign plan"),
+  });
+
+  const suspendMutation = useMutation({
+    mutationFn: (orgId: string) => adminApi.updateOrganization(orgId, { is_active: false }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-organizations"] });
+      toast.success("Organisasi berhasil disuspend");
+    },
+    onError: () => toast.error("Gagal suspend organisasi"),
+  });
+
+  const activateMutation = useMutation({
+    mutationFn: (orgId: string) => adminApi.updateOrganization(orgId, { is_active: true }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin-organizations"] });
+      toast.success("Organisasi berhasil diaktifkan");
+    },
+    onError: () => toast.error("Gagal aktifkan organisasi"),
+  });
+
+  const openAssignPlan = (org: Organization) => {
+    setAssignPlanDialog({ open: true, org });
+    setSelectedPlanId(org.plan?.id ?? "");
+  };
 
   // Filter by search query client-side
   const filteredOrganizations = organizations.filter(
@@ -262,22 +338,24 @@ export default function AdminOrganizationsPage() {
                                 View Details
                               </Link>
                             </DropdownMenuItem>
-                            <DropdownMenuItem>
-                              <Edit className="mr-2 h-4 w-4" />
-                              Edit
-                            </DropdownMenuItem>
-                            <DropdownMenuItem>
-                              <CreditCard className="mr-2 h-4 w-4" />
-                              Billing
+                            <DropdownMenuItem onClick={() => openAssignPlan(org)}>
+                              <Package className="mr-2 h-4 w-4" />
+                              Assign Plan
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
-                            {org.status === "ACTIVE" ? (
-                              <DropdownMenuItem className="text-red-600">
+                            {org.is_active !== false ? (
+                              <DropdownMenuItem
+                                className="text-red-600"
+                                onClick={() => suspendMutation.mutate(org.id)}
+                              >
                                 <Ban className="mr-2 h-4 w-4" />
                                 Suspend
                               </DropdownMenuItem>
                             ) : (
-                              <DropdownMenuItem className="text-green-600">
+                              <DropdownMenuItem
+                                className="text-green-600"
+                                onClick={() => activateMutation.mutate(org.id)}
+                              >
                                 <CheckCircle className="mr-2 h-4 w-4" />
                                 Activate
                               </DropdownMenuItem>
@@ -322,6 +400,105 @@ export default function AdminOrganizationsPage() {
           )}
         </Card>
       )}
+
+      {/* Assign Plan Dialog */}
+      <Dialog
+        open={assignPlanDialog.open}
+        onOpenChange={(open) => {
+          if (!open) {
+            setAssignPlanDialog({ open: false, org: null });
+            setSelectedPlanId("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Assign Plan</DialogTitle>
+            <DialogDescription>
+              Assign a subscription plan to{" "}
+              <span className="font-semibold">{assignPlanDialog.org?.name}</span>. This will
+              immediately update the organization&apos;s resource limits.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="py-4 space-y-4">
+            <div className="space-y-2">
+              <label className="text-sm font-medium">Select Plan</label>
+              <Select value={selectedPlanId} onValueChange={setSelectedPlanId}>
+                <SelectTrigger>
+                  <SelectValue placeholder="Choose a plan…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {plans.map((plan) => (
+                    <SelectItem key={plan.id} value={plan.id}>
+                      <span className="flex items-center gap-2">
+                        <Package className="h-4 w-4" />
+                        {plan.name} —{" "}
+                        {plan.price === "0" || plan.price === "0.00"
+                          ? "Free"
+                          : formatCurrency(Number(plan.price))}
+                        /{plan.billing_period?.toLowerCase() ?? "month"}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {selectedPlanId && (() => {
+              const plan = plans.find((p) => p.id === selectedPlanId);
+              if (!plan) return null;
+              return (
+                <div className="rounded-lg border bg-muted/40 p-3 text-sm space-y-1">
+                  <p className="font-medium text-muted-foreground mb-2">Plan Limits</p>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Instances</span>
+                    <span className="font-medium">{plan.max_instances}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Contacts</span>
+                    <span className="font-medium">{plan.max_contacts.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-muted-foreground">Messages/day</span>
+                    <span className="font-medium">{plan.max_messages_per_day.toLocaleString()}</span>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => {
+                setAssignPlanDialog({ open: false, org: null });
+                setSelectedPlanId("");
+              }}
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={!selectedPlanId || assignPlanMutation.isPending}
+              onClick={() => {
+                if (assignPlanDialog.org && selectedPlanId) {
+                  assignPlanMutation.mutate({
+                    orgId: assignPlanDialog.org.id,
+                    planId: selectedPlanId,
+                  });
+                }
+              }}
+            >
+              {assignPlanMutation.isPending ? (
+                <RefreshCw className="mr-2 h-4 w-4 animate-spin" />
+              ) : (
+                <CreditCard className="mr-2 h-4 w-4" />
+              )}
+              Assign Plan
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

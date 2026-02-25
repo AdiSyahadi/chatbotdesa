@@ -85,6 +85,23 @@ export async function resetDailyCounts(): Promise<void> {
 }
 
 /**
+ * Reset ONLY daily_message_count to 0 — safe to run on startup as a catch-up.
+ * Does NOT increment account_age_days or change warming phase.
+ * Idempotent: resetting a counter that is already 0 has no effect.
+ */
+async function resetDailyCountsOnly(): Promise<void> {
+  try {
+    const result = await prisma.whatsAppInstance.updateMany({
+      where: { deleted_at: null },
+      data: { daily_message_count: 0 },
+    });
+    logger.info(`🔄 [STARTUP-RESET] Catch-up reset: daily_message_count cleared for ${result.count} instances`);
+  } catch (error) {
+    logger.error({ error }, '❌ [STARTUP-RESET] Failed to run catch-up daily reset');
+  }
+}
+
+/**
  * Start the daily reset worker using BullMQ repeatable job
  * Drift-free, restart-resilient, automatically deduplicated
  */
@@ -116,6 +133,32 @@ export async function startDailyResetWorker(): Promise<void> {
       },
       { connection: redisConnectionOptions, concurrency: 1 }
     );
+
+    // PATCH-152: Startup catch-up for missed midnight resets.
+    // BullMQ cron only fires at exactly 00:00 — if Docker/Redis was offline at midnight,
+    // the reset job is simply skipped. On restart, check the last completed job.
+    // If it ran before today's midnight UTC, clear daily_message_count immediately.
+    // We intentionally do NOT increment account_age_days in the catch-up to keep it idempotent.
+    try {
+      const todayMidnightUtc = new Date();
+      todayMidnightUtc.setUTCHours(0, 0, 0, 0);
+
+      const completedJobs = await dailyResetQueue!.getJobs(['completed'], 0, 1, true);
+      const lastRunMs = completedJobs[0]?.finishedOn ?? 0;
+
+      if (lastRunMs < todayMidnightUtc.getTime()) {
+        logger.warn(
+          { lastRunAt: lastRunMs ? new Date(lastRunMs).toISOString() : 'never', todayMidnight: todayMidnightUtc.toISOString() },
+          '⚠️ [STARTUP-RESET] Missed midnight daily reset — running catch-up now'
+        );
+        await resetDailyCountsOnly();
+      } else {
+        logger.info({ lastRunAt: new Date(lastRunMs).toISOString() }, '✅ [STARTUP-RESET] Daily reset already ran today, no catch-up needed');
+      }
+    } catch (catchUpErr) {
+      // Non-fatal — log and continue. Worst case: counts stay stale until next midnight.
+      logger.error({ error: catchUpErr }, '⚠️ [STARTUP-RESET] Could not check for missed daily reset');
+    }
 
     dailyResetWorker.on('completed', (job) => {
       logger.info(`[DAILY-RESET] Job completed: ${job?.id}`);

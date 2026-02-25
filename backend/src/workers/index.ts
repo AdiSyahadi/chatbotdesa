@@ -10,6 +10,7 @@ import { createBroadcastWorker } from './broadcast.worker';
 import { createWebhookWorker, stopWebhookWorker } from './webhook.worker';
 import { startMediaCleanupWorker, stopMediaCleanupWorker } from './media-cleanup.worker';
 import { startDailyResetWorker, stopDailyResetWorker } from './daily-reset.worker';
+import { startSubscriptionExpiryWorker, stopSubscriptionExpiryWorker } from './subscription-expiry.worker';
 import logger from '../config/logger';
 
 // Track active workers
@@ -34,6 +35,9 @@ export async function initializeWorkers(): Promise<void> {
 
     // Start daily reset worker (resets message counts & updates warming phases at midnight)
     await startDailyResetWorker();
+
+    // Start subscription expiry worker (expires TRIAL/ACTIVE subscriptions past their end date at 01:00 UTC)
+    await startSubscriptionExpiryWorker();
     
     logger.info('All workers initialized');
   } catch (error) {
@@ -57,6 +61,7 @@ export async function shutdownWorkers(): Promise<void> {
 
   stopMediaCleanupWorker();
   await stopDailyResetWorker();
+  await stopSubscriptionExpiryWorker();
 
   logger.info('All workers stopped');
 }

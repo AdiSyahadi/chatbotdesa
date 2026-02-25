@@ -535,6 +535,37 @@ export class WhatsAppService {
   // ============================================
 
   /**
+   * Enforce daily outgoing message limit for the organization.
+   * Throws 429 AppError if today's outgoing count >= org.max_messages_per_day.
+   */
+  private async checkDailyMessageLimit(organizationId: string): Promise<void> {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const [org, messagesSentToday] = await Promise.all([
+      prisma.organization.findUnique({
+        where: { id: organizationId },
+        select: { max_messages_per_day: true },
+      }),
+      prisma.message.count({
+        where: {
+          organization_id: organizationId,
+          direction: 'OUTGOING',
+          sent_at: { gte: startOfDay },
+        },
+      }),
+    ]);
+
+    if (org && messagesSentToday >= org.max_messages_per_day) {
+      throw new AppError(
+        `Daily message limit reached (${org.max_messages_per_day}). Limit resets at midnight.`,
+        429,
+        'MSG_LIMIT_001'
+      );
+    }
+  }
+
+  /**
    * Send text message
    */
   async sendText(
@@ -548,6 +579,9 @@ export class WhatsAppService {
   }> {
     // Verify ownership and connection
     const instance = await this.verifyInstanceForMessaging(instanceId, organizationId);
+
+    // Enforce daily message limit
+    await this.checkDailyMessageLimit(organizationId);
 
     const result = await sendTextMessage(instanceId, data.to, data.message);
 
@@ -638,6 +672,9 @@ export class WhatsAppService {
     message_id?: string;
   }> {
     await this.verifyInstanceForMessaging(instanceId, organizationId);
+
+    // Enforce daily message limit
+    await this.checkDailyMessageLimit(organizationId);
 
     const result = await sendMediaMessage(
       instanceId,
@@ -741,6 +778,9 @@ export class WhatsAppService {
     message_id?: string;
   }> {
     await this.verifyInstanceForMessaging(instanceId, organizationId);
+
+    // Enforce daily message limit
+    await this.checkDailyMessageLimit(organizationId);
 
     const result = await sendLocationMessage(
       instanceId,

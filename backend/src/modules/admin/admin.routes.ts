@@ -12,6 +12,7 @@ import logger from '../../config/logger';
 import os from 'os';
 import redis, { isRedisAvailable } from '../../config/redis';
 import config from '../../config';
+import { createAuditLog } from '../../utils/audit';
 
 export async function adminRoutes(fastify: FastifyInstance) {
   // All admin routes require SUPER_ADMIN
@@ -101,7 +102,10 @@ export async function adminRoutes(fastify: FastifyInstance) {
         skip,
         take,
         include: {
-          users: { select: { id: true, role: true }, where: { deleted_at: null } },
+          users: {
+            select: { id: true, role: true, full_name: true, email: true },
+            where: { deleted_at: null },
+          },
           whatsapp_instances: { select: { id: true, status: true }, where: { deleted_at: null } },
           subscription_plan: { select: { id: true, name: true, price: true } },
         },
@@ -110,24 +114,38 @@ export async function adminRoutes(fastify: FastifyInstance) {
       prisma.organization.count({ where }),
     ]);
 
-    const data = organizations.map((org) => ({
-      id: org.id,
-      name: org.name,
-      slug: org.slug,
-      email: org.email,
-      subscription_status: org.subscription_status,
-      is_active: org.is_active,
-      plan: org.subscription_plan ? {
-        name: org.subscription_plan.name,
-        price: org.subscription_plan.price?.toString(),
-      } : null,
-      stats: {
-        users: org.users.length,
-        instances: org.whatsapp_instances.length,
-      },
-      owner: org.users.find((u) => u.role === UserRole.ORG_OWNER),
-      created_at: org.created_at,
-    }));
+    const data = organizations.map((org) => {
+      const ownerUser = org.users.find((u) => u.role === UserRole.ORG_OWNER);
+      return {
+        id: org.id,
+        name: org.name,
+        slug: org.slug,
+        email: org.email,
+        // Expose as both 'status' and 'subscription_status' for full compatibility
+        status: org.subscription_status,
+        subscription_status: org.subscription_status,
+        is_active: org.is_active,
+        plan: org.subscription_plan ? {
+          id: org.subscription_plan.id,
+          name: org.subscription_plan.name,
+          // Return as number so formatCurrency() on FE works without coercion
+          price: org.subscription_plan.price ? Number(org.subscription_plan.price) : 0,
+        } : null,
+        stats: {
+          users_count: org.users.length,
+          instances_count: org.whatsapp_instances.length,
+          // users/instances aliases kept for backward compatibility
+          users: org.users.length,
+          instances: org.whatsapp_instances.length,
+        },
+        owner: {
+          id: ownerUser?.id ?? null,
+          name: ownerUser?.full_name ?? 'Unknown',
+          email: ownerUser?.email ?? '',
+        },
+        created_at: org.created_at,
+      };
+    });
 
     return {
       success: true,
@@ -195,10 +213,129 @@ export async function adminRoutes(fastify: FastifyInstance) {
     if (body.max_contacts !== undefined) updateData.max_contacts = body.max_contacts;
     if (body.max_messages_per_day !== undefined) updateData.max_messages_per_day = body.max_messages_per_day;
 
+    const old_values = Object.fromEntries(Object.keys(updateData).map((k) => [k, (org as Record<string, unknown>)[k]]));
+
     const updated = await prisma.organization.update({ where: { id }, data: updateData });
 
     logger.info({ orgId: id, changes: updateData }, 'Admin updated organization');
+
+    // Audit log — fire-and-warn, never blocks the main response
+    const adminUser = (request as any).user;
+    void createAuditLog({
+      organization_id: id,
+      user_id: adminUser?.userId ?? null,
+      action: 'org.update',
+      resource_type: 'organization',
+      resource_id: id,
+      old_values,
+      new_values: updateData,
+      ip_address: request.ip,
+      user_agent: request.headers?.['user-agent'] as string | undefined,
+    });
+
     return { success: true, data: updated };
+  });
+
+  /**
+   * POST /admin/organizations/:id/assign-plan — Assign a subscription plan directly
+   * Handles: subscription_plan_id sync, org limit fields, subscription_status = ACTIVE.
+   * Creates/replaces the Subscription record so billing history is preserved.
+   */
+  fastify.post('/organizations/:id/assign-plan', async (request: FastifyRequest<{
+    Params: { id: string };
+    Body: { plan_id: string };
+  }>, reply) => {
+    const { id } = request.params;
+    const { plan_id } = request.body || {};
+
+    if (!plan_id) {
+      return reply.status(400).send({ success: false, error: { code: 'VALIDATION_ERROR', message: 'plan_id is required' } });
+    }
+
+    const [org, plan] = await Promise.all([
+      prisma.organization.findFirst({ where: { id, deleted_at: null } }),
+      prisma.subscriptionPlan.findUnique({ where: { id: plan_id } }),
+    ]);
+
+    if (!org) {
+      return reply.status(404).send({ success: false, error: { code: 'NOT_FOUND', message: 'Organization not found' } });
+    }
+    if (!plan) {
+      return reply.status(404).send({ success: false, error: { code: 'NOT_FOUND', message: 'Subscription plan not found' } });
+    }
+    if (!plan.is_active) {
+      return reply.status(400).send({ success: false, error: { code: 'PLAN_INACTIVE', message: 'Subscription plan is not active' } });
+    }
+
+    // Cancel any existing active subscriptions then create a new one
+    const now = new Date();
+    const periodEnd = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate()); // 1 month
+
+    await prisma.$transaction(async (tx) => {
+      // Mark any existing ACTIVE/TRIAL subscriptions as CANCELED
+      await tx.subscription.updateMany({
+        where: {
+          organization_id: id,
+          status: { in: ['ACTIVE', 'TRIAL', 'PAST_DUE'] },
+        },
+        data: { status: 'CANCELED', canceled_at: now },
+      });
+
+      // Create new Subscription record for billing history
+      await tx.subscription.create({
+        data: {
+          organization_id: id,
+          plan_id: plan.id,
+          status: 'ACTIVE',
+          current_period_start: now,
+          current_period_end: periodEnd,
+          price: plan.price,
+          currency: plan.currency,
+          billing_period: plan.billing_period,
+        },
+      });
+
+      // Update organization with new plan and synced limits
+      await tx.organization.update({
+        where: { id },
+        data: {
+          subscription_plan_id: plan.id,
+          subscription_status: 'ACTIVE',
+          max_instances: plan.max_instances,
+          max_contacts: plan.max_contacts,
+          max_messages_per_day: plan.max_messages_per_day,
+        },
+      });
+    });
+
+    logger.info({ orgId: id, planId: plan_id, planName: plan.name }, 'Admin assigned plan to organization');
+
+    // Audit log — fire-and-warn
+    const adminUser = (request as any).user;
+    void createAuditLog({
+      organization_id: id,
+      user_id: adminUser?.userId ?? null,
+      action: 'org.assign_plan',
+      resource_type: 'organization',
+      resource_id: id,
+      old_values: {
+        subscription_plan_id: org.subscription_plan_id,
+        subscription_status: org.subscription_status,
+      },
+      new_values: {
+        subscription_plan_id: plan.id,
+        plan_name: plan.name,
+        subscription_status: 'ACTIVE',
+      },
+      ip_address: request.ip,
+      user_agent: request.headers?.['user-agent'] as string | undefined,
+    });
+
+    return {
+      success: true,
+      data: { plan_id: plan.id, plan_name: plan.name },
+      message: `Plan "${plan.name}" assigned successfully`,
+    };
   });
 
   // ============================================
@@ -373,23 +510,53 @@ export async function adminRoutes(fastify: FastifyInstance) {
   });
 
   // ============================================
-  // AUDIT LOGS (placeholder — returns empty for now)
+  // AUDIT LOGS
   // ============================================
 
   /**
-   * GET /admin/audit-logs — Placeholder for future audit trail
+   * GET /admin/audit-logs — Real audit trail with pagination + filters
    */
   fastify.get('/audit-logs', async (request: FastifyRequest<{
-    Querystring: { page?: string; limit?: string };
+    Querystring: {
+      page?: string;
+      limit?: string;
+      organization_id?: string;
+      action?: string;
+      resource_type?: string;
+    };
   }>, reply) => {
+    const { page = '1', limit = '20', organization_id, action, resource_type } = request.query;
+    const pageNum = Math.max(1, parseInt(page, 10));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
+    const skip = (pageNum - 1) * limitNum;
+
+    const where: Record<string, unknown> = {};
+    if (organization_id) where.organization_id = organization_id;
+    if (action) where.action = { contains: action };
+    if (resource_type) where.resource_type = resource_type;
+
+    const [logs, total] = await prisma.$transaction([
+      prisma.auditLog.findMany({
+        where,
+        orderBy: { created_at: 'desc' },
+        skip,
+        take: limitNum,
+        include: {
+          user: { select: { id: true, full_name: true, email: true } },
+          organization: { select: { id: true, name: true, slug: true } },
+        },
+      }),
+      prisma.auditLog.count({ where }),
+    ]);
+
     return {
       success: true,
-      data: [],
+      data: { logs },
       pagination: {
-        page: 1,
-        limit: 20,
-        total: 0,
-        totalPages: 0,
+        page: pageNum,
+        limit: limitNum,
+        total,
+        totalPages: Math.ceil(total / limitNum),
       },
     };
   });

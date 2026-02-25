@@ -15,9 +15,9 @@ export default function AdminLayout({
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      router.push("/login");
+      router.push("/admin/login");
     } else if (!isLoading && user?.role !== "SUPER_ADMIN") {
-      router.push("/dashboard");
+      router.push("/admin/login");
     }
   }, [isLoading, isAuthenticated, user, router]);
 

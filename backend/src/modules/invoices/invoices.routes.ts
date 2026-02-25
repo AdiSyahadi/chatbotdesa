@@ -27,6 +27,7 @@ import logger from '../../config/logger';
 import { AppError } from '../../types';
 import { requireRole } from '../../middleware/rbac';
 import { UserRole } from '@prisma/client';
+import { createAuditLog } from '../../utils/audit';
 
 // ============================================
 // ROUTE REGISTRATION
@@ -416,6 +417,20 @@ export async function invoicesRoutes(fastify: FastifyInstance) {
         const invoice = await invoicesService.verifyPayment(invoiceId, body);
 
         logger.info(`Payment verified for invoice ${invoiceId}: ${body.status}`);
+
+        // Audit log — fire-and-warn
+        const adminUser = (request as any).user;
+        void createAuditLog({
+          organization_id: invoice.organization_id,
+          user_id: adminUser?.userId ?? null,
+          action: 'invoice.verify',
+          resource_type: 'invoice',
+          resource_id: invoiceId,
+          old_values: { status: 'PENDING_VERIFICATION' },
+          new_values: { status: body.status, payment_notes: body.payment_notes ?? null },
+          ip_address: request.ip,
+          user_agent: request.headers?.['user-agent'] as string | undefined,
+        });
 
         return reply.status(200).send({
           success: true,

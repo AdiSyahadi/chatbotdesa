@@ -189,6 +189,34 @@ export async function updatePlan(planId: string, data: UpdatePlanInput): Promise
     data: updateData,
   });
 
+  // Propagate limit changes to all active organizations on this plan.
+  // Organization.max_* fields are the ACTUAL enforced runtime limits — the plan table is
+  // only the source of truth for definition. When a plan changes, subscriber orgs must be
+  // updated so the new limits take effect immediately without requiring a re-subscribe.
+  // Only propagate limit fields (not price/name/billing metadata — those are per-subscription).
+  const limitsChanged =
+    data.max_instances !== undefined ||
+    data.max_contacts !== undefined ||
+    data.max_messages_per_day !== undefined;
+
+  if (limitsChanged) {
+    const orgLimitUpdate: Prisma.OrganizationUpdateManyMutationInput = {};
+    if (data.max_instances !== undefined) orgLimitUpdate.max_instances = data.max_instances;
+    if (data.max_contacts !== undefined) orgLimitUpdate.max_contacts = data.max_contacts;
+    if (data.max_messages_per_day !== undefined) orgLimitUpdate.max_messages_per_day = data.max_messages_per_day;
+
+    await prisma.organization.updateMany({
+      where: {
+        subscription_plan_id: planId,
+        subscription_status: {
+          notIn: [SubscriptionStatus.CANCELED, SubscriptionStatus.EXPIRED],
+        },
+        deleted_at: null,
+      },
+      data: orgLimitUpdate,
+    });
+  }
+
   return transformPlanResponse(plan);
 }
 
@@ -370,7 +398,10 @@ export async function createSubscription(
 }
 
 /**
- * Get organization's current subscription
+ * Get organization's current subscription.
+ * Primary source: Subscription table (created via checkout flow).
+ * Fallback: when no Subscription record exists (e.g. admin-upgraded directly),
+ * build a synthetic response from Organization.subscription_plan_id.
  */
 export async function getSubscription(organizationId: string): Promise<SubscriptionResponse | null> {
   const subscription = await prisma.subscription.findFirst({
@@ -386,11 +417,36 @@ export async function getSubscription(organizationId: string): Promise<Subscript
     },
   });
 
-  if (!subscription) {
+  if (subscription) {
+    return transformSubscriptionResponse(subscription);
+  }
+
+  // Fallback: use Organization.subscription_plan_id (admin-set or seeded)
+  const org = await prisma.organization.findUnique({
+    where: { id: organizationId },
+    include: { subscription_plan: true },
+  });
+
+  if (!org || !org.subscription_plan) {
     return null;
   }
 
-  return transformSubscriptionResponse(subscription);
+  return {
+    id: `org-direct-${org.id}`,
+    organization_id: org.id,
+    plan_id: org.subscription_plan.id,
+    status: org.subscription_status as SubscriptionStatusValue,
+    current_period_start: org.created_at,
+    current_period_end: null,
+    cancel_at_period_end: false,
+    canceled_at: null,
+    price: Number(org.subscription_plan.price),
+    currency: org.subscription_plan.currency,
+    billing_period: org.subscription_plan.billing_period as BillingPeriodValue,
+    created_at: org.created_at,
+    updated_at: org.updated_at,
+    plan: transformPlanResponse(org.subscription_plan),
+  };
 }
 
 /**

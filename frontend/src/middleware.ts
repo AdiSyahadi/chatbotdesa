@@ -4,15 +4,22 @@ import type { NextRequest } from 'next/server';
 /**
  * Next.js Middleware — Server-side route protection.
  *
- * - `/dashboard/**` requires an `accessToken` cookie; redirects to `/login` if missing.
+ * - `/dashboard/admin/**` requires an `accessToken` cookie; redirects to `/admin/login` if missing.
+ * - `/dashboard/**` (non-admin) requires an `accessToken` cookie; redirects to `/login` if missing.
  * - `/login` and `/register` redirect to `/dashboard` when already authenticated.
- *
- * This is a first-pass guard. The client-side DashboardLayout still validates
- * the token against the backend (`/auth/profile`) and handles refresh/expiry.
+ * - `/admin/login` is always publicly accessible (client-side handles already-authed redirect).
  */
 export function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
   const accessToken = request.cookies.get('accessToken')?.value;
+
+  // Admin routes — require auth, redirect to dedicated admin login
+  if (pathname.startsWith('/dashboard/admin')) {
+    if (!accessToken) {
+      return NextResponse.redirect(new URL('/admin/login', request.url));
+    }
+    return NextResponse.next();
+  }
 
   // Protected routes — require auth
   if (pathname.startsWith('/dashboard')) {
@@ -36,5 +43,5 @@ export function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/login', '/register'],
+  matcher: ['/dashboard/:path*', '/login', '/register', '/admin/:path*'],
 };

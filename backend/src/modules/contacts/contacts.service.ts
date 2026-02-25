@@ -167,6 +167,22 @@ export class ContactService {
       throw new AppError('WhatsApp instance not found', 404, 'CONTACT_003');
     }
 
+    // Enforce max_contacts plan limit
+    const [org, currentContactCount] = await Promise.all([
+      prisma.organization.findUnique({
+        where: { id: organizationId },
+        select: { max_contacts: true },
+      }),
+      prisma.contact.count({ where: { organization_id: organizationId } }),
+    ]);
+    if (org && currentContactCount >= org.max_contacts) {
+      throw new AppError(
+        `Contact limit reached (${org.max_contacts}). Upgrade your plan to add more contacts.`,
+        403,
+        'CONTACT_004'
+      );
+    }
+
     // Format phone to JID
     const jid = formatPhoneToJid(phone_number);
 
@@ -334,6 +350,42 @@ export class ContactService {
       });
 
       existingJids.add(jid); // Prevent duplicates within batch
+    }
+
+    // Enforce max_contacts plan limit — check remaining capacity before inserting
+    if (contactsToCreate.length > 0) {
+      const [org, currentContactCount] = await Promise.all([
+        prisma.organization.findUnique({
+          where: { id: organizationId },
+          select: { max_contacts: true },
+        }),
+        prisma.contact.count({ where: { organization_id: organizationId } }),
+      ]);
+
+      if (org) {
+        const available = Math.max(0, org.max_contacts - currentContactCount);
+        if (available <= 0) {
+          // No room at all
+          result.failed += contactsToCreate.length;
+          for (const c of contactsToCreate) {
+            result.errors.push({
+              phone_number: c.phone_number as string,
+              error: `Contact limit reached (${org.max_contacts})`,
+            });
+          }
+          contactsToCreate.length = 0;
+        } else if (contactsToCreate.length > available) {
+          // Partial: trim excess to available slots
+          const excess = contactsToCreate.splice(available);
+          result.failed += excess.length;
+          for (const c of excess) {
+            result.errors.push({
+              phone_number: c.phone_number as string,
+              error: `Contact limit reached (${org.max_contacts})`,
+            });
+          }
+        }
+      }
     }
 
     // Bulk insert

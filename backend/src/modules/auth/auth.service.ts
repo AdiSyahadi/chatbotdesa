@@ -185,6 +185,21 @@ export class AuthService {
         throw new AppError('Account is disabled', 403, 'AUTH_006');
       }
 
+      // Check organization-level access — must match login() checks
+      if (!user.organization.is_active) {
+        throw new AppError('Organization is suspended', 403, 'ORG_003');
+      }
+
+      // Block token refresh for orgs with non-operational subscription status
+      const BLOCKED_SUB_STATUSES = ['EXPIRED', 'CANCELED', 'SUSPENDED'];
+      if (BLOCKED_SUB_STATUSES.includes(user.organization.subscription_status)) {
+        throw new AppError(
+          `Subscription is ${user.organization.subscription_status.toLowerCase()}. Please renew your subscription.`,
+          403,
+          'SUB_001'
+        );
+      }
+
       // Generate new access token
       const accessToken = this.fastify.jwt.sign(
         {

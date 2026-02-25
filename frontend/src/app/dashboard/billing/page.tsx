@@ -41,20 +41,18 @@ import { cn, formatCurrency } from "@/lib/utils";
 interface Plan {
   id: string;
   name: string;
-  description: string;
+  slug: string;
+  description: string | null;
   price: number;
+  currency: string;
   billing_period: "MONTHLY" | "YEARLY";
-  features: {
-    max_instances: number;
-    max_messages_per_month: number;
-    max_contacts: number;
-    max_team_members?: number;
-    webhook_support: boolean;
-    api_access: boolean;
-    priority_support: boolean;
-    custom_branding: boolean;
-  };
+  max_instances: number;
+  max_contacts: number;
+  max_messages_per_day: number;
+  features: string[]; // array of feature label strings from backend
+  trial_days: number;
   is_active: boolean;
+  is_public: boolean;
   is_popular?: boolean;
 }
 
@@ -72,8 +70,10 @@ export default function BillingPage() {
   const plans: Plan[] = plansData?.data?.plans?.filter(
     (p: Plan) => p.billing_period === billingPeriod
   ) || [];
-  const subscription = subscriptionData?.data;
-  const usage = usageData?.data;
+  // Backend response: { success, data: { subscription: {...} } }
+  const subscription = subscriptionData?.data?.subscription;
+  // Backend response: { success, data: { usage: {...} } }
+  const usage = usageData?.data?.usage;
 
   const handleStartCheckout = async (planId: string) => {
     try {
@@ -95,6 +95,10 @@ export default function BillingPage() {
       // Error handled by mutation
     }
   };
+
+  // Calculate usage percentage (capped at 100%)
+  const pct = (used: number, max: number) =>
+    max > 0 ? Math.min(100, Math.round((used / max) * 100)) : 0;
 
   const isLoading = plansLoading || subscriptionLoading || usageLoading;
 
@@ -203,39 +207,60 @@ export default function BillingPage() {
                   )}
 
                   <div className="grid gap-4 md:grid-cols-4">
-                    <div className="flex items-center gap-3 p-3 border rounded-lg">
-                      <Smartphone className="h-5 w-5 text-primary" />
-                      <div>
+                    <div className="flex flex-col gap-2 p-3 border rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <Smartphone className="h-4 w-4 text-primary" />
                         <p className="text-sm text-muted-foreground">Instances</p>
-                        <p className="font-medium">
-                          {usage?.instances_used || 0} / {subscription.plan?.features?.max_instances || 0}
-                        </p>
                       </div>
+                      <p className="font-semibold">
+                        {usage?.instances?.used || 0} / {subscription.plan?.max_instances || 0}
+                      </p>
+                      <Progress
+                        value={pct(usage?.instances?.used || 0, subscription.plan?.max_instances || 0)}
+                        className="h-1.5"
+                      />
+                      <p className="text-xs text-muted-foreground text-right">
+                        {pct(usage?.instances?.used || 0, subscription.plan?.max_instances || 0)}% used
+                      </p>
                     </div>
-                    <div className="flex items-center gap-3 p-3 border rounded-lg">
-                      <MessageSquare className="h-5 w-5 text-primary" />
-                      <div>
-                        <p className="text-sm text-muted-foreground">Messages</p>
-                        <p className="font-medium">
-                          {usage?.messages_this_month || 0} / {subscription.plan?.features?.max_messages_per_month || 0}
-                        </p>
+                    <div className="flex flex-col gap-2 p-3 border rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <MessageSquare className="h-4 w-4 text-primary" />
+                        <p className="text-sm text-muted-foreground">Messages Today</p>
                       </div>
+                      <p className="font-semibold">
+                        {usage?.messages_today?.used || 0} / {subscription.plan?.max_messages_per_day || 0}
+                      </p>
+                      <Progress
+                        value={pct(usage?.messages_today?.used || 0, subscription.plan?.max_messages_per_day || 0)}
+                        className="h-1.5"
+                      />
+                      <p className="text-xs text-muted-foreground text-right">
+                        {pct(usage?.messages_today?.used || 0, subscription.plan?.max_messages_per_day || 0)}% used
+                      </p>
                     </div>
-                    <div className="flex items-center gap-3 p-3 border rounded-lg">
-                      <Users className="h-5 w-5 text-primary" />
-                      <div>
+                    <div className="flex flex-col gap-2 p-3 border rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <Users className="h-4 w-4 text-primary" />
                         <p className="text-sm text-muted-foreground">Contacts</p>
-                        <p className="font-medium">
-                          {usage?.contacts_count || 0} / {subscription.plan?.features?.max_contacts || 0}
-                        </p>
                       </div>
+                      <p className="font-semibold">
+                        {(usage?.contacts?.used || 0).toLocaleString()} / {(subscription.plan?.max_contacts || 0).toLocaleString()}
+                      </p>
+                      <Progress
+                        value={pct(usage?.contacts?.used || 0, subscription.plan?.max_contacts || 0)}
+                        className="h-1.5"
+                      />
+                      <p className="text-xs text-muted-foreground text-right">
+                        {pct(usage?.contacts?.used || 0, subscription.plan?.max_contacts || 0)}% used
+                      </p>
                     </div>
-                    <div className="flex items-center gap-3 p-3 border rounded-lg">
-                      <Zap className="h-5 w-5 text-primary" />
-                      <div>
+                    <div className="flex flex-col gap-2 p-3 border rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <Zap className="h-4 w-4 text-primary" />
                         <p className="text-sm text-muted-foreground">API Calls</p>
-                        <p className="font-medium">{usage?.api_calls_today || 0} today</p>
                       </div>
+                      <p className="font-semibold">{usage?.messages_today?.used || 0} today</p>
                     </div>
                   </div>
                 </CardContent>
@@ -330,55 +355,27 @@ export default function BillingPage() {
                   </div>
                 </CardHeader>
                 <CardContent>
-                  <ul className="space-y-3">
+  <ul className="space-y-2">
+                    {/* Core limits */}
                     <li className="flex items-center gap-2">
                       <Check className="h-4 w-4 text-green-500" />
-                      <span>{plan.features.max_instances} WhatsApp instances</span>
+                      <span>{plan.max_instances} WhatsApp Instances</span>
                     </li>
                     <li className="flex items-center gap-2">
                       <Check className="h-4 w-4 text-green-500" />
-                      <span>{plan.features.max_messages_per_month.toLocaleString()} messages/month</span>
+                      <span>{plan.max_messages_per_day.toLocaleString()} Messages/day</span>
                     </li>
                     <li className="flex items-center gap-2">
                       <Check className="h-4 w-4 text-green-500" />
-                      <span>{plan.features.max_contacts.toLocaleString()} contacts</span>
+                      <span>{plan.max_contacts.toLocaleString()} Contacts</span>
                     </li>
-                    {plan.features.max_team_members && (
-                      <li className="flex items-center gap-2">
+                    {/* Feature labels from backend */}
+                    {(plan.features as string[]).slice(3).map((feat, i) => (
+                      <li key={i} className="flex items-center gap-2">
                         <Check className="h-4 w-4 text-green-500" />
-                        <span>{plan.features.max_team_members} team members</span>
+                        <span>{feat}</span>
                       </li>
-                    )}
-                    <li className="flex items-center gap-2">
-                      {plan.features.webhook_support ? (
-                        <Check className="h-4 w-4 text-green-500" />
-                      ) : (
-                        <span className="h-4 w-4" />
-                      )}
-                      <span className={!plan.features.webhook_support ? "text-muted-foreground line-through" : ""}>
-                        Webhook support
-                      </span>
-                    </li>
-                    <li className="flex items-center gap-2">
-                      {plan.features.api_access ? (
-                        <Check className="h-4 w-4 text-green-500" />
-                      ) : (
-                        <span className="h-4 w-4" />
-                      )}
-                      <span className={!plan.features.api_access ? "text-muted-foreground line-through" : ""}>
-                        Full API access
-                      </span>
-                    </li>
-                    <li className="flex items-center gap-2">
-                      {plan.features.priority_support ? (
-                        <Check className="h-4 w-4 text-green-500" />
-                      ) : (
-                        <span className="h-4 w-4" />
-                      )}
-                      <span className={!plan.features.priority_support ? "text-muted-foreground line-through" : ""}>
-                        Priority support
-                      </span>
-                    </li>
+                    ))}
                   </ul>
                 </CardContent>
                 <CardFooter>
@@ -391,13 +388,13 @@ export default function BillingPage() {
                     }}
                     disabled={
                       startCheckoutMutation.isPending ||
-                      subscription?.plan_id === plan.id
+                      subscription?.plan?.id === plan.id
                     }
                   >
                     {startCheckoutMutation.isPending && selectedPlanId === plan.id ? (
                       <Spinner size="sm" className="mr-2" />
                     ) : null}
-                    {subscription?.plan_id === plan.id ? "Current Plan" : "Get Started"}
+                    {subscription?.plan?.id === plan.id ? "Current Plan" : "Get Started"}
                   </Button>
                 </CardFooter>
               </Card>
@@ -421,13 +418,13 @@ export default function BillingPage() {
                   <div className="flex justify-between text-sm">
                     <span>Used</span>
                     <span className="font-medium">
-                      {(usage?.messages_this_month || 0).toLocaleString()} / {(subscription?.plan?.features?.max_messages_per_month || 0).toLocaleString()}
+                      {(usage?.messages_today?.used || 0).toLocaleString()} / {(subscription?.plan?.max_messages_per_day || 0).toLocaleString()}
                     </span>
                   </div>
                   <Progress
                     value={
-                      subscription?.plan?.features?.max_messages_per_month
-                        ? ((usage?.messages_this_month || 0) / subscription.plan.features.max_messages_per_month) * 100
+                      subscription?.plan?.max_messages_per_day
+                        ? ((usage?.messages_today?.used || 0) / subscription.plan.max_messages_per_day) * 100
                         : 0
                     }
                   />
@@ -435,11 +432,11 @@ export default function BillingPage() {
                 <div className="grid grid-cols-2 gap-4 pt-4">
                   <div>
                     <p className="text-sm text-muted-foreground">Sent Today</p>
-                    <p className="text-xl font-bold">{usage?.messages_today || 0}</p>
+                    <p className="text-xl font-bold">{usage?.messages_today?.used || 0}</p>
                   </div>
                   <div>
-                    <p className="text-sm text-muted-foreground">Received Today</p>
-                    <p className="text-xl font-bold">{usage?.messages_received_today || 0}</p>
+                    <p className="text-sm text-muted-foreground">Remaining Today</p>
+                    <p className="text-xl font-bold">{usage?.messages_today?.remaining || 0}</p>
                   </div>
                 </div>
               </CardContent>
@@ -458,25 +455,25 @@ export default function BillingPage() {
                   <div className="flex justify-between text-sm">
                     <span>Active</span>
                     <span className="font-medium">
-                      {usage?.instances_used || 0} / {subscription?.plan?.features?.max_instances || 0}
+                      {usage?.instances?.used || 0} / {subscription?.plan?.max_instances || 0}
                     </span>
                   </div>
                   <Progress
                     value={
-                      subscription?.plan?.features?.max_instances
-                        ? ((usage?.instances_used || 0) / subscription.plan.features.max_instances) * 100
+                      subscription?.plan?.max_instances
+                        ? ((usage?.instances?.used || 0) / subscription.plan.max_instances) * 100
                         : 0
                     }
                   />
                 </div>
                 <div className="grid grid-cols-2 gap-4 pt-4">
                   <div>
-                    <p className="text-sm text-muted-foreground">Connected</p>
-                    <p className="text-xl font-bold">{usage?.instances_connected || 0}</p>
+                    <p className="text-sm text-muted-foreground">Used</p>
+                    <p className="text-xl font-bold">{usage?.instances?.used || 0}</p>
                   </div>
                   <div>
-                    <p className="text-sm text-muted-foreground">Disconnected</p>
-                    <p className="text-xl font-bold">{usage?.instances_disconnected || 0}</p>
+                    <p className="text-sm text-muted-foreground">Remaining</p>
+                    <p className="text-xl font-bold">{usage?.instances?.remaining || 0}</p>
                   </div>
                 </div>
               </CardContent>
@@ -495,13 +492,13 @@ export default function BillingPage() {
                   <div className="flex justify-between text-sm">
                     <span>Total</span>
                     <span className="font-medium">
-                      {(usage?.contacts_count || 0).toLocaleString()} / {(subscription?.plan?.features?.max_contacts || 0).toLocaleString()}
+                      {(usage?.contacts?.used || 0).toLocaleString()} / {(subscription?.plan?.max_contacts || 0).toLocaleString()}
                     </span>
                   </div>
                   <Progress
                     value={
-                      subscription?.plan?.features?.max_contacts
-                        ? ((usage?.contacts_count || 0) / subscription.plan.features.max_contacts) * 100
+                      subscription?.plan?.max_contacts
+                        ? ((usage?.contacts?.used || 0) / subscription.plan.max_contacts) * 100
                         : 0
                     }
                   />
@@ -518,9 +515,9 @@ export default function BillingPage() {
                 <CardDescription>API calls today</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="text-3xl font-bold">{usage?.api_calls_today || 0}</div>
+                <div className="text-3xl font-bold">{usage?.messages_today?.used || 0}</div>
                 <p className="text-sm text-muted-foreground">
-                  API calls made in the last 24 hours
+                  Messages sent today
                 </p>
               </CardContent>
             </Card>

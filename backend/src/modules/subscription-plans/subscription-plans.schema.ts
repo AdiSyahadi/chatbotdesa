@@ -202,7 +202,7 @@ export interface SubscriptionResponse {
   plan_id: string;
   status: SubscriptionStatusValue;
   current_period_start: Date;
-  current_period_end: Date;
+  current_period_end: Date | null;
   cancel_at_period_end: boolean;
   canceled_at: Date | null;
   price: number;

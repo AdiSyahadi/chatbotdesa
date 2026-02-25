@@ -1043,10 +1043,40 @@ export async function initializeConnection(
           // If so, recover: reset to SYNCING so incoming history events aren't blocked.
           const currentInstance = await prisma.whatsAppInstance.findUnique({
             where: { id: instanceId },
-            select: { history_sync_status: true, history_sync_progress: true, sync_history_on_connect: true },
+            select: { history_sync_status: true, history_sync_progress: true, sync_history_on_connect: true, phone_number: true },
           });
+
+          // PATCH-150: Detect phone number change (user rescanned with a different number).
+          // Reset instance warming counters so new number starts from day-1 anti-ban protection.
+          // Only triggers when BOTH old and new phone numbers are known — not on first-ever scan.
+          const isNewPhone =
+            phoneNumber !== null &&
+            currentInstance?.phone_number !== null &&
+            currentInstance?.phone_number !== undefined &&
+            phoneNumber !== currentInstance.phone_number;
+
+          const phoneChangeData: Record<string, unknown> = {};
+          if (isNewPhone) {
+            phoneChangeData.daily_message_count = 0;
+            phoneChangeData.account_age_days = 0;
+            phoneChangeData.warming_phase = 'DAY_1_3';
+            phoneChangeData.daily_limit = WARMING_PHASE_LIMITS.DAY_1_3.daily_limit;
+            // PATCH-151: Reset sync state — new phone needs a fresh history sync
+            phoneChangeData.sync_history_on_connect = true;
+            phoneChangeData.history_sync_status = 'SYNCING';
+            phoneChangeData.history_sync_progress = {};
+            syncPausedInstances.delete(instanceId);
+            logger.info(
+              { instanceId, oldPhone: currentInstance?.phone_number, newPhone: phoneNumber },
+              '📱 [PHONE-CHANGE] New phone number — resetting warming counters to day-0 and triggering fresh history sync'
+            );
+          }
+
+          // Sync recovery: only applies for same-phone reconnects (temporary disconnects).
+          // If phone changed (isNewPhone), phoneChangeData already sets the correct sync state.
           const syncRecoveryData: Record<string, unknown> = {};
           if (
+            !isNewPhone &&
             currentInstance?.history_sync_status === 'STOPPED' &&
             currentInstance?.sync_history_on_connect === true
           ) {
@@ -1072,6 +1102,7 @@ export async function initializeConnection(
               connected_at: new Date(),
               qr_code: null,
               health_score: 100,
+              ...phoneChangeData,
               ...syncRecoveryData,
             },
           });

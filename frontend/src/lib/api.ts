@@ -396,7 +396,8 @@ export const apiKeysApi = {
 // Billing API
 export const billingApi = {
   getPlans: async () => {
-    const response = await api.get("/billing/plans");
+    // Use public endpoint — /billing/plans requires SUPER_ADMIN (403 for regular users)
+    const response = await api.get("/billing/plans/public");
     return response.data;
   },
 
@@ -493,8 +494,13 @@ export const adminApi = {
     return response.data;
   },
 
-  updateOrganization: async (id: string, data: { is_active?: boolean }) => {
+  updateOrganization: async (id: string, data: { is_active?: boolean; subscription_status?: string; max_instances?: number; max_contacts?: number; max_messages_per_day?: number }) => {
     const response = await api.patch(`/admin/organizations/${id}`, data);
+    return response.data;
+  },
+
+  assignPlanToOrg: async (id: string, plan_id: string) => {
+    const response = await api.post(`/admin/organizations/${id}/assign-plan`, { plan_id });
     return response.data;
   },
 
