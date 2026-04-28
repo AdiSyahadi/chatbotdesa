@@ -33,9 +33,12 @@ type TransactionClient = Omit<PrismaClient, '$connect' | '$disconnect' | '$on' |
  * Create a new subscription plan
  */
 export async function createPlan(data: CreatePlanInput): Promise<PlanResponse> {
+  // Auto-generate slug from name if not provided
+  const slug = data.slug || data.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
   // Check if slug already exists
   const existingPlan = await prisma.subscriptionPlan.findUnique({
-    where: { slug: data.slug },
+    where: { slug },
   });
 
   if (existingPlan) {
@@ -45,7 +48,7 @@ export async function createPlan(data: CreatePlanInput): Promise<PlanResponse> {
   const plan = await prisma.subscriptionPlan.create({
     data: {
       name: data.name,
-      slug: data.slug,
+      slug,
       description: data.description || null,
       price: data.price,
       currency: data.currency,

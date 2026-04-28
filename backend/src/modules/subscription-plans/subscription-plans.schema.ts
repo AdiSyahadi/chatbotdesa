@@ -47,9 +47,9 @@ export const createPlanSchema = z.object({
     .max(100, 'Name must not exceed 100 characters'),
   slug: z
     .string()
-    .min(1, 'Slug is required')
     .max(50, 'Slug must not exceed 50 characters')
-    .regex(/^[a-z0-9-]+$/, 'Slug can only contain lowercase letters, numbers, and hyphens'),
+    .regex(/^[a-z0-9-]+$/, 'Slug can only contain lowercase letters, numbers, and hyphens')
+    .optional(),
   description: z
     .string()
     .max(1000, 'Description must not exceed 1000 characters')
@@ -68,7 +68,7 @@ export const createPlanSchema = z.object({
     .number()
     .int('Must be integer')
     .min(1, 'Must have at least 1 instance')
-    .max(100, 'Max 100 instances')
+    .max(1000, 'Max 1000 instances')
     .default(1),
   max_contacts: z
     .number()
@@ -92,7 +92,7 @@ export const createPlanSchema = z.object({
     .number()
     .int('Must be integer')
     .min(0, 'Must be non-negative')
-    .max(100000, 'Max 100k messages')
+    .max(10000000, 'Max 10M messages')
     .default(1000),
   trial_days: z
     .number()
@@ -123,11 +123,11 @@ export const listPlansQuerySchema = z.object({
   is_active: z
     .string()
     .optional()
-    .transform((val) => val === 'true'),
+    .transform((val) => val === undefined ? undefined : val === 'true'),
   is_public: z
     .string()
     .optional()
-    .transform((val) => val === 'true'),
+    .transform((val) => val === undefined ? undefined : val === 'true'),
   billing_period: z.enum(BILLING_PERIODS).optional(),
   sort_by: z
     .enum(['price', 'name', 'created_at', 'max_instances'])
