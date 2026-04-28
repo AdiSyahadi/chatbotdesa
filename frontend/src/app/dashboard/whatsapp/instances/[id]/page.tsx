@@ -53,7 +53,7 @@ import {
   Square,
   Play,
 } from "lucide-react";
-import { cn, formatDate } from "@/lib/utils";
+import { cn, formatDate, copyToClipboard } from "@/lib/utils";
 import { toast } from "sonner";
 import type { HistorySyncStatus } from "@/types";
 
@@ -139,8 +139,8 @@ export default function InstanceDetailPage() {
     }
   };
 
-  const handleCopyId = () => {
-    navigator.clipboard.writeText(instanceId);
+  const handleCopyId = async () => {
+    await copyToClipboard(instanceId);
     setCopied(true);
     toast.success("Instance ID copied");
     setTimeout(() => setCopied(false), 2000);

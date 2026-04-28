@@ -45,7 +45,7 @@ import {
   Shield,
   Eye,
 } from "lucide-react";
-import { cn, formatDate } from "@/lib/utils";
+import { cn, formatDate, copyToClipboard } from "@/lib/utils";
 import { toast } from "sonner";
 
 interface ApiKeyType {
@@ -123,8 +123,8 @@ export default function ApiKeysPage() {
     }
   };
 
-  const copyKey = (key: string) => {
-    navigator.clipboard.writeText(key);
+  const copyKey = async (key: string) => {
+    await copyToClipboard(key);
     toast.success("API key disalin ke clipboard");
   };
 
@@ -371,8 +371,8 @@ export default function ApiKeysPage() {
                         variant="ghost"
                         size="icon"
                         className="h-7 w-7"
-                        onClick={() => {
-                          navigator.clipboard.writeText(apiKey.key_prefix);
+                        onClick={async () => {
+                          await copyToClipboard(apiKey.key_prefix);
                           toast.info("Prefix API key disalin (bukan key lengkap)");
                         }}
                         title="Copy Prefix"

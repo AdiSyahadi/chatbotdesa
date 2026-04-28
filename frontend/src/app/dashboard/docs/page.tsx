@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { API_BASE_URL } from "@/lib/constants";
+import { copyToClipboard } from "@/lib/utils";
 
 interface CodeBlockProps {
   code: string;
@@ -29,8 +30,8 @@ interface CodeBlockProps {
 function CodeBlock({ code, language = "bash" }: CodeBlockProps) {
   const [copied, setCopied] = useState(false);
 
-  const copyCode = () => {
-    navigator.clipboard.writeText(code);
+  const copyCode = async () => {
+    await copyToClipboard(code);
     setCopied(true);
     toast.success("Kode disalin ke clipboard");
     setTimeout(() => setCopied(false), 2000);

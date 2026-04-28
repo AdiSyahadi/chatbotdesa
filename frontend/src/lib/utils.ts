@@ -38,6 +38,21 @@ export function truncate(str: string, length: number): string {
   return str.slice(0, length) + "...";
 }
 
+export async function copyToClipboard(text: string): Promise<void> {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+  } else {
+    const el = document.createElement('textarea');
+    el.value = text;
+    el.style.position = 'fixed';
+    el.style.opacity = '0';
+    document.body.appendChild(el);
+    el.select();
+    document.execCommand('copy');
+    document.body.removeChild(el);
+  }
+}
+
 export function getInitials(name: string): string {
   if (!name) return "?";
   return name
