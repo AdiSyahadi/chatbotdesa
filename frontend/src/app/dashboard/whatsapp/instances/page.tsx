@@ -25,6 +25,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
+import { Progress } from "@/components/ui/progress";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -56,9 +57,19 @@ interface Instance {
   wa_display_name?: string;
   status: string;
   health_score?: number;
-  messages_today?: number;
+  daily_message_count?: number;
+  daily_limit?: number;
+  warming_phase?: string;
+  account_age_days?: number;
   created_at: string;
 }
+
+const warmingPhaseLabel: Record<string, string> = {
+  DAY_1_3: 'Hari 1-3',
+  DAY_4_7: 'Hari 4-7',
+  DAY_8_14: 'Hari 8-14',
+  DAY_15_PLUS: 'Matang',
+};
 
 const statusConfig: Record<string, { label: string; color: string; bgColor: string }> = {
   CONNECTED: { label: "Connected", color: "text-green-700", bgColor: "bg-green-100" },
@@ -378,7 +389,7 @@ function InstanceCard({ instance, onConnect, onDisconnect, onDelete }: InstanceC
           </DropdownMenuContent>
         </DropdownMenu>
       </CardHeader>
-      <CardContent>
+      <CardContent className="space-y-3">
         <div className="flex items-center justify-between">
           <Badge className={cn(status.bgColor, status.color, "border-0")}>
             <span
@@ -393,6 +404,11 @@ function InstanceCard({ instance, onConnect, onDisconnect, onDelete }: InstanceC
             />
             {status.label}
           </Badge>
+          {instance.warming_phase && (
+            <span className="text-xs text-muted-foreground">
+              {warmingPhaseLabel[instance.warming_phase] ?? instance.warming_phase}
+            </span>
+          )}
           {instance.status === "QR_READY" && (
             <Link href={`/dashboard/whatsapp/instances/${instance.id}`}>
               <Button size="sm">
@@ -402,6 +418,41 @@ function InstanceCard({ instance, onConnect, onDisconnect, onDelete }: InstanceC
             </Link>
           )}
         </div>
+
+        {/* Health score bar */}
+        {instance.health_score !== undefined && (
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span>Health</span>
+              <span
+                className={cn(
+                  instance.health_score >= 70 ? 'text-green-600' :
+                  instance.health_score >= 40 ? 'text-yellow-600' : 'text-red-600'
+                )}
+              >
+                {instance.health_score}/100
+              </span>
+            </div>
+            <Progress
+              value={instance.health_score}
+              className={cn(
+                'h-1.5',
+                instance.health_score >= 70 ? '[&>div]:bg-green-500' :
+                instance.health_score >= 40 ? '[&>div]:bg-yellow-500' : '[&>div]:bg-red-500'
+              )}
+            />
+          </div>
+        )}
+
+        {/* Daily message usage */}
+        {instance.daily_limit !== undefined && (
+          <p className="text-xs text-muted-foreground">
+            Pesan hari ini:{' '}
+            <span className="font-medium text-foreground">
+              {instance.daily_message_count ?? 0} / {instance.daily_limit}
+            </span>
+          </p>
+        )}
       </CardContent>
     </Card>
   );
@@ -435,6 +486,22 @@ function InstanceRow({ instance, onConnect, onDisconnect, onDelete }: InstanceCa
         <Badge className={cn(status.bgColor, status.color, "border-0")}>
           {status.label}
         </Badge>
+        {instance.health_score !== undefined && (
+          <span
+            className={cn(
+              'text-xs font-medium',
+              instance.health_score >= 70 ? 'text-green-600' :
+              instance.health_score >= 40 ? 'text-yellow-600' : 'text-red-600'
+            )}
+          >
+            ♥ {instance.health_score}
+          </span>
+        )}
+        {instance.daily_limit !== undefined && (
+          <span className="text-xs text-muted-foreground">
+            {instance.daily_message_count ?? 0}/{instance.daily_limit} msg
+          </span>
+        )}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="ghost" size="icon" className="h-8 w-8">

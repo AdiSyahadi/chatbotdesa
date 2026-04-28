@@ -12,6 +12,8 @@ import {
   SendTextMessageInput,
   SendMediaMessageInput,
   SendLocationInput,
+  SendButtonsInput,
+  SendListInput,
   WARMING_PHASE_LIMITS,
   WarmingPhaseType,
 } from './whatsapp.schema';
@@ -25,6 +27,8 @@ import {
   sendTextMessage,
   sendMediaMessage,
   sendLocationMessage,
+  sendButtonsMessage,
+  sendListMessage,
   deleteMessageForInstance,
   editMessageForInstance,
   isConnected,
@@ -377,8 +381,8 @@ export class WhatsAppService {
       return { status: 'CONNECTED' };
     }
 
-    // Initialize connection
-    const result = await initializeConnection(instanceId, organizationId);
+    // Initialize connection — user-triggered, reset attempt counter for fresh retries
+    const result = await initializeConnection(instanceId, organizationId, { resetAttempts: true });
 
     if (!result.success) {
       throw new AppError(
@@ -862,6 +866,173 @@ export class WhatsAppService {
     return {
       success: true,
       message_id: result.message_id,
+    };
+  }
+
+  /**
+   * Send interactive buttons message
+   */
+  async sendButtons(
+    instanceId: string,
+    organizationId: string,
+    data: SendButtonsInput
+  ): Promise<{
+    success: boolean;
+    message_id?: string;
+    used_fallback?: boolean;
+  }> {
+    await this.verifyInstanceForMessaging(instanceId, organizationId);
+
+    await this.checkDailyMessageLimit(organizationId);
+
+    const result = await sendButtonsMessage(
+      instanceId,
+      data.to,
+      data.text,
+      data.buttons,
+      data.footer,
+      data.fallback_text
+    );
+
+    if (!result.success) {
+      throw new AppError(result.error || 'Failed to send buttons message', 400, 'MSG_004');
+    }
+
+    const chatJid = data.to.includes('@') ? data.to : `${data.to}@s.whatsapp.net`;
+    const now = new Date();
+
+    if (result.message_id) {
+      await safeMessageUpsert({
+        where: {
+          unique_wa_message_per_instance: {
+            wa_message_id: result.message_id,
+            instance_id: instanceId,
+          },
+        },
+        create: {
+          organization_id: organizationId,
+          instance_id: instanceId,
+          wa_message_id: result.message_id,
+          chat_jid: chatJid,
+          message_type: 'TEXT',
+          content: data.text,
+          direction: 'OUTGOING',
+          status: 'SENT',
+          source: 'REALTIME',
+          sent_at: now,
+        },
+        update: {
+          direction: 'OUTGOING',
+          status: 'SENT',
+          sent_at: now,
+        },
+      });
+    }
+
+    const phoneNumber = extractPhoneFromJid(chatJid);
+    baileysEvents.emit('message', {
+      instanceId,
+      type: 'outgoing',
+      message: {
+        id: result.message_id,
+        from: chatJid,
+        chat_jid: chatJid,
+        phone_number: phoneNumber,
+        direction: 'OUTGOING',
+        type: 'buttons',
+        content: data.text,
+        timestamp: Math.floor(now.getTime() / 1000),
+      },
+    });
+
+    return {
+      success: true,
+      message_id: result.message_id,
+      used_fallback: result.used_fallback,
+    };
+  }
+
+  /**
+   * Send interactive list message
+   */
+  async sendList(
+    instanceId: string,
+    organizationId: string,
+    data: SendListInput
+  ): Promise<{
+    success: boolean;
+    message_id?: string;
+    used_fallback?: boolean;
+  }> {
+    await this.verifyInstanceForMessaging(instanceId, organizationId);
+
+    await this.checkDailyMessageLimit(organizationId);
+
+    const result = await sendListMessage(
+      instanceId,
+      data.to,
+      data.text,
+      data.button_text,
+      data.sections,
+      data.footer,
+      data.fallback_text
+    );
+
+    if (!result.success) {
+      throw new AppError(result.error || 'Failed to send list message', 400, 'MSG_005');
+    }
+
+    const chatJid = data.to.includes('@') ? data.to : `${data.to}@s.whatsapp.net`;
+    const now = new Date();
+
+    if (result.message_id) {
+      await safeMessageUpsert({
+        where: {
+          unique_wa_message_per_instance: {
+            wa_message_id: result.message_id,
+            instance_id: instanceId,
+          },
+        },
+        create: {
+          organization_id: organizationId,
+          instance_id: instanceId,
+          wa_message_id: result.message_id,
+          chat_jid: chatJid,
+          message_type: 'TEXT',
+          content: data.text,
+          direction: 'OUTGOING',
+          status: 'SENT',
+          source: 'REALTIME',
+          sent_at: now,
+        },
+        update: {
+          direction: 'OUTGOING',
+          status: 'SENT',
+          sent_at: now,
+        },
+      });
+    }
+
+    const phoneNumber = extractPhoneFromJid(chatJid);
+    baileysEvents.emit('message', {
+      instanceId,
+      type: 'outgoing',
+      message: {
+        id: result.message_id,
+        from: chatJid,
+        chat_jid: chatJid,
+        phone_number: phoneNumber,
+        direction: 'OUTGOING',
+        type: 'list',
+        content: data.text,
+        timestamp: Math.floor(now.getTime() / 1000),
+      },
+    });
+
+    return {
+      success: true,
+      message_id: result.message_id,
+      used_fallback: result.used_fallback,
     };
   }
 

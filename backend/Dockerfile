@@ -28,7 +28,10 @@ WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
-RUN npm run build
+# Ensure deterministic build artifact generation inside Docker (avoid stale incremental cache)
+RUN rm -rf dist .tsbuildinfo \
+  && npm run build \
+  && test -f dist/index.js
 
 # --- Stage 3: Production ---
 FROM node:20-slim AS runner

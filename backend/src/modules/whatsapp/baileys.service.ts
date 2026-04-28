@@ -303,6 +303,9 @@ export interface ExtractedMessageContent {
   text: string;
   messageType: MessageType;
   mediaUrl: string | null;
+  webhookType?: string;
+  buttonId?: string;
+  rowId?: string;
 }
 
 export interface ConnectionInfo {
@@ -366,6 +369,9 @@ function extractMessageContent(msg: WAMessage): ExtractedMessageContent | null {
   let text = '';
   let messageType: MessageType = 'TEXT';
   let mediaUrl: string | null = null;
+  let webhookType: string | undefined;
+  let buttonId: string | undefined;
+  let rowId: string | undefined;
 
   if (messageContent.conversation) {
     text = messageContent.conversation;
@@ -409,10 +415,16 @@ function extractMessageContent(msg: WAMessage): ExtractedMessageContent | null {
     text = poll?.name || '[Poll]';
   } else if (messageContent.buttonsResponseMessage) {
     text = messageContent.buttonsResponseMessage.selectedDisplayText || '[Button Response]';
+    webhookType = 'button_response';
+    buttonId = messageContent.buttonsResponseMessage.selectedButtonId || undefined;
   } else if (messageContent.listResponseMessage) {
     text = messageContent.listResponseMessage.title || messageContent.listResponseMessage.singleSelectReply?.selectedRowId || '[List Response]';
+    webhookType = 'list_response';
+    rowId = messageContent.listResponseMessage.singleSelectReply?.selectedRowId || undefined;
   } else if (messageContent.templateButtonReplyMessage) {
     text = messageContent.templateButtonReplyMessage.selectedDisplayText || '[Template Reply]';
+    webhookType = 'button_response';
+    buttonId = messageContent.templateButtonReplyMessage.selectedId || undefined;
   } else if (messageContent.viewOnceMessage || messageContent.viewOnceMessageV2) {
     const inner = messageContent.viewOnceMessage?.message || messageContent.viewOnceMessageV2?.message;
     if (inner?.imageMessage) {
@@ -508,7 +520,7 @@ function extractMessageContent(msg: WAMessage): ExtractedMessageContent | null {
     logger.warn({ messageKeys: keys }, '⚠️ Unhandled message type in extractMessageContent');
   }
 
-  return { text, messageType, mediaUrl };
+  return { text, messageType, mediaUrl, webhookType, buttonId, rowId };
 }
 
 /**
@@ -584,8 +596,9 @@ export async function canSendMessage(instanceId: string): Promise<{
   reason?: string;
   wait_ms?: number;
 }> {
-  const instance = await prisma.whatsAppInstance.findUnique({
-    where: { id: instanceId },
+  // PATCH-178: Use findFirst with deleted_at: null to exclude soft-deleted instances
+  const instance = await prisma.whatsAppInstance.findFirst({
+    where: { id: instanceId, deleted_at: null },
     select: {
       daily_message_count: true,
       daily_limit: true,
@@ -621,10 +634,12 @@ export async function canSendMessage(instanceId: string): Promise<{
     const timeSinceLastMessage = Date.now() - instance.last_message_at.getTime();
     
     if (timeSinceLastMessage < config.min_delay_ms) {
+      const remainingMs = config.min_delay_ms - timeSinceLastMessage;
+      const waitSec = Math.ceil(remainingMs / 1000);
       return {
         allowed: false,
-        reason: 'Please wait between messages',
-        wait_ms: config.min_delay_ms - timeSinceLastMessage,
+        reason: `Please wait ${waitSec}s before sending the next message`,
+        wait_ms: remainingMs,
       };
     }
   }
@@ -680,7 +695,8 @@ export function getQRCode(instanceId: string): QRCodeData | null {
  */
 export async function initializeConnection(
   instanceId: string,
-  organizationId: string
+  organizationId: string,
+  opts: { resetAttempts?: boolean } = {}
 ): Promise<{
   success: boolean;
   status: InstanceStatus;
@@ -721,11 +737,14 @@ export async function initializeConnection(
       reconnectTimers.delete(instanceId);
     }
 
-    // Reset reconnect attempt counter so this connection gets a fresh set of retries.
-    // Without this, stale counter from a previous disconnect cycle carries over and
-    // causes scheduleReconnect to hit MAX_ATTEMPTS prematurely (e.g., user manually
-    // clicks Connect after a loggedOut cycle that already exhausted 10 attempts).
-    reconnectAttempts.delete(instanceId);
+    // Reset reconnect attempt counter only when explicitly requested (user-triggered connect/restart).
+    // Auto-reconnect via scheduleReconnect must NOT reset the counter — the counter is how
+    // MAX_ATTEMPTS is enforced. Resetting it here on every auto-reconnect cycle caused an infinite
+    // loop: attempt always reset to 0 → MAX_ATTEMPTS (10) guard never triggered → instance loops
+    // forever in QR→408→reconnect cycle without ever reaching ERROR state. (PATCH-164)
+    if (opts.resetAttempts) {
+      reconnectAttempts.delete(instanceId);
+    }
 
     // Clear ALL stale sync state from previous session so fresh sync can proceed
     syncPausedInstances.delete(instanceId);
@@ -1388,8 +1407,8 @@ export async function restartInstance(
     // 4. Wait for socket cleanup
     await delay(2000);
 
-    // 5. Reinitialize fresh connection
-    await initializeConnection(instanceId, organizationId);
+    // 5. Reinitialize fresh connection — user-triggered restart gets fresh attempt counter
+    await initializeConnection(instanceId, organizationId, { resetAttempts: true });
     return true;
   } catch (error) {
     logger.error({ error, instanceId }, 'Error restarting instance');
@@ -1717,6 +1736,192 @@ export async function sendLocationMessage(
 }
 
 /**
+ * Send interactive buttons message.
+ * Falls back to plain text only when interactive send fails.
+ */
+export async function sendButtonsMessage(
+  instanceId: string,
+  to: string,
+  text: string,
+  buttons: Array<{ id: string; text: string }>,
+  footer?: string,
+  fallbackText?: string
+): Promise<{ success: boolean; message_id?: string; used_fallback?: boolean; error?: string }> {
+  const socket = activeSockets.get(instanceId);
+
+  if (!socket?.user) {
+    return { success: false, error: 'Instance not connected' };
+  }
+
+  const canSend = await canSendMessage(instanceId);
+  if (!canSend.allowed) {
+    return { success: false, error: canSend.reason };
+  }
+
+  const jid = formatPhoneToJid(to);
+  const interactivePayload = {
+    text,
+    footer,
+    buttons: buttons.map((b) => ({
+      buttonId: b.id,
+      buttonText: { displayText: b.text },
+      type: 1,
+    })),
+    headerType: 1,
+  } as any;
+
+  try {
+    const result = await socket.sendMessage(jid, interactivePayload);
+
+    try {
+      await prisma.whatsAppInstance.update({
+        where: { id: instanceId },
+        data: {
+          daily_message_count: { increment: 1 },
+          last_message_at: new Date(),
+        },
+      });
+    } catch (dbErr: any) {
+      logger.error({ instanceId, err: dbErr.message }, '⚠️ [SEND] Post-send counter update failed (buttons message was sent)');
+    }
+
+    return {
+      success: true,
+      message_id: result?.key?.id || undefined,
+      used_fallback: false,
+    };
+  } catch (interactiveErr) {
+    const fallbackMessage = fallbackText || `${text}\n\n${buttons.map((b) => `- ${b.text}`).join('\n')}`;
+
+    try {
+      const fallbackResult = await socket.sendMessage(jid, { text: fallbackMessage });
+
+      try {
+        await prisma.whatsAppInstance.update({
+          where: { id: instanceId },
+          data: {
+            daily_message_count: { increment: 1 },
+            last_message_at: new Date(),
+          },
+        });
+      } catch (dbErr: any) {
+        logger.error({ instanceId, err: dbErr.message }, '⚠️ [SEND] Post-send counter update failed (buttons fallback sent)');
+      }
+
+      return {
+        success: true,
+        message_id: fallbackResult?.key?.id || undefined,
+        used_fallback: true,
+      };
+    } catch (fallbackErr) {
+      logger.error({ interactiveErr, fallbackErr, instanceId, to }, 'Error sending buttons message and fallback');
+      return {
+        success: false,
+        error: fallbackErr instanceof Error ? fallbackErr.message : 'Failed to send buttons message',
+      };
+    }
+  }
+}
+
+/**
+ * Send interactive list message.
+ * Falls back to plain text only when interactive send fails.
+ */
+export async function sendListMessage(
+  instanceId: string,
+  to: string,
+  text: string,
+  buttonText: string,
+  sections: Array<{
+    title: string;
+    rows: Array<{ id: string; title: string; description?: string }>;
+  }>,
+  footer?: string,
+  fallbackText?: string
+): Promise<{ success: boolean; message_id?: string; used_fallback?: boolean; error?: string }> {
+  const socket = activeSockets.get(instanceId);
+
+  if (!socket?.user) {
+    return { success: false, error: 'Instance not connected' };
+  }
+
+  const canSend = await canSendMessage(instanceId);
+  if (!canSend.allowed) {
+    return { success: false, error: canSend.reason };
+  }
+
+  const jid = formatPhoneToJid(to);
+  const interactivePayload = {
+    text,
+    footer,
+    buttonText,
+    sections: sections.map((section) => ({
+      title: section.title,
+      rows: section.rows.map((row) => ({
+        rowId: row.id,
+        title: row.title,
+        description: row.description,
+      })),
+    })),
+  } as any;
+
+  try {
+    const result = await socket.sendMessage(jid, interactivePayload);
+
+    try {
+      await prisma.whatsAppInstance.update({
+        where: { id: instanceId },
+        data: {
+          daily_message_count: { increment: 1 },
+          last_message_at: new Date(),
+        },
+      });
+    } catch (dbErr: any) {
+      logger.error({ instanceId, err: dbErr.message }, '⚠️ [SEND] Post-send counter update failed (list message was sent)');
+    }
+
+    return {
+      success: true,
+      message_id: result?.key?.id || undefined,
+      used_fallback: false,
+    };
+  } catch (interactiveErr) {
+    const renderedOptions = sections
+      .flatMap((section) => section.rows.map((row) => `- ${row.title}`))
+      .join('\n');
+    const fallbackMessage = fallbackText || `${text}\n\n${renderedOptions}`;
+
+    try {
+      const fallbackResult = await socket.sendMessage(jid, { text: fallbackMessage });
+
+      try {
+        await prisma.whatsAppInstance.update({
+          where: { id: instanceId },
+          data: {
+            daily_message_count: { increment: 1 },
+            last_message_at: new Date(),
+          },
+        });
+      } catch (dbErr: any) {
+        logger.error({ instanceId, err: dbErr.message }, '⚠️ [SEND] Post-send counter update failed (list fallback sent)');
+      }
+
+      return {
+        success: true,
+        message_id: fallbackResult?.key?.id || undefined,
+        used_fallback: true,
+      };
+    } catch (fallbackErr) {
+      logger.error({ interactiveErr, fallbackErr, instanceId, to }, 'Error sending list message and fallback');
+      return {
+        success: false,
+        error: fallbackErr instanceof Error ? fallbackErr.message : 'Failed to send list message',
+      };
+    }
+  }
+}
+
+/**
  * Delete/revoke a WhatsApp message.
  * 
  * delete_for="everyone" — sends a protocol revoke message so all participants
@@ -1948,6 +2153,8 @@ async function handleHistorySync(
     }
 
     // 3. Update status to SYNCING if not already
+    // PATCH-179: Track whether this call starts a new sync session to avoid reading stale progress
+    let isNewSyncSession = false;
     if (instance.history_sync_status !== 'SYNCING') {
       await prisma.whatsAppInstance.update({
         where: { id: instanceId },
@@ -1966,6 +2173,7 @@ async function handleHistorySync(
           },
         },
       });
+      isNewSyncSession = true;
 
       // Emit webhook: sync started
       baileysEvents.emit('history.sync', {
@@ -1976,7 +2184,21 @@ async function handleHistorySync(
     }
 
     // Load current progress
-    const rawProgress = parseProgress(instance.history_sync_progress);
+    // PATCH-179: If this is a new sync session, initialize progress from scratch.
+    // Avoid reading instance.history_sync_progress which still holds stale data
+    // from the previous COMPLETED sync (instance was fetched before the DB update above).
+    const rawProgress = isNewSyncSession
+      ? {
+          total_messages_received: 0,
+          messages_inserted: 0,
+          messages_skipped_duplicate: 0,
+          contacts_synced: 0,
+          batch_errors: 0,
+          percentage: 0,
+          batches_received: 0,
+          started_at: new Date().toISOString(),
+        }
+      : parseProgress(instance.history_sync_progress);
     const progress: any = { ...rawProgress };
     if (!progress.started_at) {
       progress.started_at = new Date().toISOString();
@@ -1997,12 +2219,16 @@ async function handleHistorySync(
     let batchSkipped = 0;
     let batchErrors = 0;
     let remainingQuota = maxSyncMessages > 0 ? maxSyncMessages - currentSyncedCount : Infinity;
+    // PATCH-170: Collect recent media messages for background download after sync
+    const mediaBatchQueue: HistorySyncMediaItem[] = [];
 
     for (let i = 0; i < messages.length && remainingQuota > 0; i += BATCH_SIZE) {
       const batch = messages.slice(i, Math.min(i + BATCH_SIZE, i + remainingQuota));
 
       try {
         const dbRecords: any[] = [];
+        // Track WAMessage objects for media items in this batch (PATCH-170)
+        const batchMsgMap = new Map<string, WAMessage>();
 
         for (const msg of batch) {
           // Skip status@broadcast
@@ -2046,6 +2272,12 @@ async function handleHistorySync(
             sent_at: sentAt,
             delivered_at: direction === 'INCOMING' ? sentAt : null,
           });
+
+          // PATCH-170: Track downloadable media messages for background download
+          if (DOWNLOADABLE_MEDIA_TYPES.has(messageType) && msg.key.id) {
+            batchMsgMap.set(waMessageId, msg);
+            mediaBatchQueue.push({ waMessageId, msg, messageType, sentAt });
+          }
         }
 
         if (dbRecords.length > 0) {
@@ -2066,6 +2298,13 @@ async function handleHistorySync(
       if (i + BATCH_SIZE < messages.length) {
         await delay(50);
       }
+    }
+
+    // PATCH-170: Fire background media download for recent messages (non-blocking)
+    if (mediaBatchQueue.length > 0) {
+      downloadHistorySyncMedia(instanceId, organizationId, mediaBatchQueue).catch(err => {
+        logger.warn({ err, instanceId }, '⚠️ [SYNC-MEDIA] Background download error (non-critical)');
+      });
     }
 
     // 5. Process contacts
@@ -2319,6 +2558,8 @@ async function handleAppendHistoryMessages(
 
     let inserted = 0;
     let skipped = 0;
+    // PATCH-170: Collect recent media messages for background download
+    const appendMediaQueue: HistorySyncMediaItem[] = [];
 
     for (const msg of messages) {
       if (msg.key?.remoteJid === 'status@broadcast') continue;
@@ -2354,6 +2595,10 @@ async function handleAppendHistoryMessages(
           },
         });
         inserted++;
+        // PATCH-170: Track downloadable media for background download
+        if (DOWNLOADABLE_MEDIA_TYPES.has(messageType) && msg.key.id) {
+          appendMediaQueue.push({ waMessageId, msg, messageType, sentAt });
+        }
       } catch (err: any) {
         // Handle duplicate — unique constraint violation (P2002)
         if (err?.code === 'P2002') {
@@ -2362,6 +2607,13 @@ async function handleAppendHistoryMessages(
           logger.error({ err, instanceId, msgId: waMessageId }, '⚠️ [HISTORY] Error inserting append message');
         }
       }
+    }
+
+    // PATCH-170: Fire background media download for recent messages (non-blocking)
+    if (appendMediaQueue.length > 0) {
+      downloadHistorySyncMedia(instanceId, organizationId, appendMediaQueue).catch(err => {
+        logger.warn({ err, instanceId }, '⚠️ [SYNC-MEDIA] Background download error (non-critical)');
+      });
     }
 
     // Update progress tracking (merge with existing progress)
@@ -2395,6 +2647,62 @@ async function handleAppendHistoryMessages(
         where: { id: instanceId },
         data: updateData,
       });
+
+      // PATCH-180: Reset completion timer after each append batch.
+      // If no new batch arrives within 30s, mark sync COMPLETED.
+      // Mirrors the syncCompletionTimers pattern in handleHistorySync.
+      const existingAppendTimer = syncCompletionTimers.get(instanceId);
+      if (existingAppendTimer) clearTimeout(existingAppendTimer);
+
+      const appendCompletionTimer = setTimeout(async () => {
+        try {
+          syncCompletionTimers.delete(instanceId);
+
+          const latest = await prisma.whatsAppInstance.findUnique({
+            where: { id: instanceId },
+            select: { history_sync_status: true, history_sync_progress: true },
+          });
+
+          if (latest?.history_sync_status === 'SYNCING') {
+            const finalProgress = parseProgress(latest.history_sync_progress);
+            finalProgress.percentage = 100;
+            finalProgress.completed_at = new Date().toISOString();
+
+            const finalStatus = (finalProgress.batch_errors || 0) > 0 ? 'PARTIAL' : 'COMPLETED';
+
+            await prisma.whatsAppInstance.update({
+              where: { id: instanceId },
+              data: {
+                history_sync_status: finalStatus as any,
+                history_sync_progress: finalProgress,
+                last_history_sync_at: new Date(),
+              },
+            });
+
+            logger.info(
+              { instanceId, finalStatus, messagesInserted: finalProgress.messages_inserted },
+              '✅ [HISTORY] Append sync completed'
+            );
+
+            baileysEvents.emit('history.sync', {
+              instanceId,
+              event: `history.sync.${finalStatus.toLowerCase()}`,
+              data: {
+                instance_id: instanceId,
+                total_messages: finalProgress.messages_inserted,
+                total_contacts: finalProgress.contacts_synced || 0,
+                duration_seconds: finalProgress.started_at
+                  ? Math.round((Date.now() - new Date(finalProgress.started_at).getTime()) / 1000)
+                  : 0,
+              },
+            });
+          }
+        } catch (err) {
+          logger.error({ err, instanceId }, '❌ [HISTORY] Error in append completion handler');
+        }
+      }, 30000);
+
+      syncCompletionTimers.set(instanceId, appendCompletionTimer);
     }
   } catch (error) {
     logger.error({ error, instanceId }, '❌ [HISTORY] Error handling append messages');
@@ -2605,6 +2913,74 @@ async function downloadAndSaveMedia(
   }
 }
 
+// ============================================
+// HISTORY SYNC MEDIA DOWNLOAD (PATCH-170)
+// ============================================
+
+/**
+ * How far back to attempt media downloads for history sync messages.
+ * WhatsApp CDN keys expire; older messages will fail silently.
+ * 24h is a practical threshold — recent enough to still work.
+ */
+const HISTORY_SYNC_MEDIA_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+interface HistorySyncMediaItem {
+  waMessageId: string;
+  msg: WAMessage;
+  messageType: string;
+  sentAt: Date | null;
+}
+
+/**
+ * Download media for recent HISTORY_SYNC messages in background.
+ * Called fire-and-forget after createMany() — never blocks the sync pipeline.
+ * Updates media_url via wa_message_id unique key after successful download.
+ * Failures are non-critical: message is already saved without media_url.
+ */
+async function downloadHistorySyncMedia(
+  instanceId: string,
+  organizationId: string,
+  items: HistorySyncMediaItem[],
+): Promise<void> {
+  const now = Date.now();
+  const eligible = items.filter(item => {
+    if (!item.sentAt) return false;
+    return now - item.sentAt.getTime() <= HISTORY_SYNC_MEDIA_WINDOW_MS;
+  });
+
+  if (eligible.length === 0) return;
+
+  logger.info({ instanceId, count: eligible.length }, '📥 [SYNC-MEDIA] Starting background media download');
+
+  for (const item of eligible) {
+    try {
+      const mediaResult = await downloadAndSaveMedia(item.msg, item.messageType, organizationId, instanceId);
+      if (mediaResult) {
+        await prisma.message.update({
+          where: {
+            unique_wa_message_per_instance: {
+              wa_message_id: item.waMessageId,
+              instance_id: instanceId,
+            },
+          },
+          data: {
+            media_url: mediaResult.url,
+            media_type: mediaResult.mimetype,
+          },
+        });
+        logger.debug({ instanceId, waMessageId: item.waMessageId, url: mediaResult.url }, '📥 [SYNC-MEDIA] Saved');
+      }
+    } catch (err) {
+      // Non-critical: log and continue
+      logger.warn({ err, instanceId, waMessageId: item.waMessageId, messageType: item.messageType }, '⚠️ [SYNC-MEDIA] Download failed (non-critical)');
+    }
+    // 500ms pause between downloads — avoid rate-limiting by WA
+    await delay(500);
+  }
+
+  logger.info({ instanceId, processed: eligible.length }, '📥 [SYNC-MEDIA] Background download complete');
+}
+
 /**
  * Handle real-time message (both incoming AND outgoing).
  * Uses upsert to gracefully handle the race condition where:
@@ -2624,7 +3000,7 @@ async function handleRealtimeMessage(
     const extracted = extractMessageContent(msg);
     if (!extracted) return; // protocolMessage or empty content — skip
 
-    const { text, messageType } = extracted;
+    const { text, messageType, webhookType, buttonId, rowId } = extracted;
     const fromMe = msg.key.fromMe ?? false;
     const direction = fromMe ? 'OUTGOING' : 'INCOMING';
     const chatJid = msg.key.remoteJid || '';
@@ -2634,6 +3010,11 @@ async function handleRealtimeMessage(
     const waMessageId = msg.key.id || undefined;
     const pushName = msg.pushName || null; // WhatsApp profile name of the sender
     const now = new Date();
+    // PATCH-168: Use actual message timestamp for sent_at instead of null for INCOMING.
+    // Without this, INCOMING REALTIME messages have sent_at=NULL which MySQL sorts LAST
+    // in DESC order, causing them to be buried behind all HISTORY_SYNC records on page 1.
+    const msgTimestamp = convertMessageTimestamp(msg.messageTimestamp);
+    const sentAt = msgTimestamp ? new Date(msgTimestamp * 1000) : now;
 
     // Download and save media for ALL media messages (both incoming and outgoing).
     // For outgoing from phone: this is the ONLY place media gets saved.
@@ -2676,7 +3057,7 @@ async function handleRealtimeMessage(
           direction,
           status: fromMe ? 'SENT' : 'DELIVERED',
           source: 'REALTIME',
-          sent_at: fromMe ? now : null,
+          sent_at: sentAt,
           delivered_at: fromMe ? null : now,
         },
         update: {
@@ -2709,14 +3090,14 @@ async function handleRealtimeMessage(
           direction,
           status: fromMe ? 'SENT' : 'DELIVERED',
           source: 'REALTIME',
-          sent_at: fromMe ? now : null,
+          sent_at: sentAt,
           delivered_at: fromMe ? null : now,
         },
       });
     }
 
-    // Convert timestamp for webhook (handles protobuf Long objects)
-    const timestamp = convertMessageTimestamp(msg.messageTimestamp);
+    // Use the already-computed timestamp for webhook (avoids duplicate Long->number conversion)
+    const timestamp = msgTimestamp;
     let phoneNumber = extractPhoneFromJid(chatJid);
 
     // Resolve LID → Phone number if this is a @lid chat
@@ -2845,7 +3226,9 @@ async function handleRealtimeMessage(
         phone_number: phoneNumber,
         contact_name: contactName,
         direction,
-        type: messageType.toLowerCase(),
+        type: webhookType || messageType.toLowerCase(),
+        button_id: buttonId,
+        row_id: rowId,
         content: text,
         media_url: savedMediaUrl || undefined,
         mime_type: savedMediaType || undefined,
@@ -2977,7 +3360,7 @@ export async function initializeActiveInstances(): Promise<void> {
         // Initialize with delay to avoid rate limiting
         setTimeout(() => {
           logger.info({ instanceId: instance.id }, '📱 [STARTUP] Now initializing instance...');
-          initializeConnection(instance.id, instance.organization_id).catch((err) => {
+          initializeConnection(instance.id, instance.organization_id, { resetAttempts: true }).catch((err) => {
             logger.error({ err, instanceId: instance.id }, '📱 [STARTUP] Failed to initialize instance');
           });
         }, Math.random() * 5000);

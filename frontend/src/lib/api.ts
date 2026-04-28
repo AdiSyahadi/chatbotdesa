@@ -337,11 +337,18 @@ export const contactsApi = {
   },
 };
 
-// Webhooks API
+// Webhooks API — uses multi-target system (/webhooks/targets)
 export const webhooksApi = {
   getAll: async (params?: { page?: number; limit?: number; instanceId?: string }) => {
-    const response = await api.get("/webhooks", { params });
-    return response.data;
+    const response = await api.get("/webhooks/targets", {
+      params: { instance_id: params?.instanceId },
+    });
+    // Wrap in pagination-compatible shape
+    const data = response.data.data || [];
+    return {
+      data,
+      pagination: { total: data.length, page: 1, limit: data.length, total_pages: 1 },
+    };
   },
 
   getById: async (id: string) => {
@@ -349,23 +356,23 @@ export const webhooksApi = {
     return response.data;
   },
 
-  create: async (data: { instance_id: string; url: string; events: string[] }) => {
-    const response = await api.post("/webhooks", data);
+  create: async (data: { instance_id: string; label: string; url: string; events: string[] }) => {
+    const response = await api.post("/webhooks/targets", data);
     return response.data;
   },
 
-  update: async (id: string, data: { url?: string; events?: string[]; is_active?: boolean }) => {
-    const response = await api.patch(`/webhooks/${id}`, data);
+  update: async (id: string, data: { label?: string; url?: string; events?: string[]; is_active?: boolean }) => {
+    const response = await api.patch(`/webhooks/targets/${id}`, data);
     return response.data;
   },
 
   delete: async (id: string) => {
-    const response = await api.delete(`/webhooks/${id}`);
+    const response = await api.delete(`/webhooks/targets/${id}`);
     return response.data;
   },
 
   test: async (id: string) => {
-    const response = await api.post(`/webhooks/${id}/test`);
+    const response = await api.post(`/webhooks/targets/${id}/test`);
     return response.data;
   },
 

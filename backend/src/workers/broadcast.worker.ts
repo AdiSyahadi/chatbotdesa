@@ -17,6 +17,7 @@ import {
   sendTextMessage,
   sendMediaMessage,
   isConnected,
+  canSendMessage,
 } from '../modules/whatsapp/baileys.service';
 
 import redisConnectionOptions from '../config/redis-connection';
@@ -119,7 +120,7 @@ async function processBroadcast(job: Job<BroadcastJobData>): Promise<void> {
           );
           await prisma.broadcast.update({
             where: { id: broadcast_id },
-            data: { status: 'PAUSED' },
+            data: { status: 'PAUSED', paused_reason: `Batas harian organisasi tercapai (${messagesSentToday}/${org.max_messages_per_day} pesan). Broadcast akan otomatis lanjut besok atau bisa di-resume manual.` },
           });
           return;
         }
@@ -135,6 +136,26 @@ async function processBroadcast(job: Job<BroadcastJobData>): Promise<void> {
           const caption = broadcast.caption
             ? replaceVariables(broadcast.caption, recipient.variables as Record<string, any> | null)
             : null;
+
+          // PATCH-181: Enforce health_score and min_delay_ms before each send
+          const canSend = await canSendMessage(instance_id);
+          if (!canSend.allowed) {
+            if (canSend.wait_ms && canSend.wait_ms > 0) {
+              // min_delay not elapsed — wait the required time then continue
+              await sleep(canSend.wait_ms);
+            } else {
+              // health_score too low or daily limit exceeded — pause broadcast (anti-ban)
+              logger.warn(
+                { broadcastId: broadcast_id, reason: canSend.reason },
+                'Broadcast paused: canSendMessage check failed'
+              );
+              await prisma.broadcast.update({
+                where: { id: broadcast_id },
+                data: { status: 'PAUSED', paused_reason: canSend.reason || 'Anti-ban protection aktif. Coba resume setelah beberapa saat.' },
+              });
+              return;
+            }
+          }
 
           // Send message based on type
           let success = false;

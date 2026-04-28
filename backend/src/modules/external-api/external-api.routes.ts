@@ -17,12 +17,13 @@ import { listContactsQuerySchema, createContactSchema, updateContactSchema, cont
 import { createWebhookService } from '../webhooks/webhooks.service';
 import { getStorageStats } from '../../workers/media-cleanup.worker';
 import { parsePagination } from '../../utils/pagination';
-import { batchResolveLidToPhone } from '../whatsapp/baileys.service';
+import { batchResolveLidToPhone, canSendMessage } from '../whatsapp/baileys.service';
 import { saveFile, validateFile } from '../../services/storage.service';
 import { Readable } from 'stream';
 import prisma from '../../config/database';
 import { Prisma } from '@prisma/client';
 import logger from '../../config/logger';
+import { WARMING_PHASE_LIMITS, WarmingPhaseType } from '../../config/constants';
 
 // ============================================
 // EXTERNAL API ROUTES (API Key Auth)
@@ -107,6 +108,92 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
 
     const result = await whatsappService.getStatus(instanceId, req.apiKey.organization_id);
     return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Get instance cooldown status for message sending
+   * GET /api/v1/instances/:instanceId/cooldown
+   * Permission: instance:read
+   */
+  fastify.get('/instances/:instanceId/cooldown', {
+    preHandler: [requireApiKeyPermission('instance:read')],
+    schema: {
+      description: 'Check whether an instance can send now and when it can send next.',
+      tags: ['External API - Instances'],
+      security: [{ apiKeyAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['instanceId'],
+        properties: {
+          instanceId: { type: 'string', format: 'uuid' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const { instanceId } = request.params as { instanceId: string };
+
+    const instance = await prisma.whatsAppInstance.findFirst({
+      where: {
+        id: instanceId,
+        organization_id: req.apiKey.organization_id,
+        deleted_at: null,
+      },
+      select: {
+        id: true,
+        status: true,
+        warming_phase: true,
+        daily_message_count: true,
+        daily_limit: true,
+        health_score: true,
+        last_message_at: true,
+      },
+    });
+
+    if (!instance) {
+      return reply.status(404).send({
+        success: false,
+        error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' },
+      });
+    }
+
+    const gate = await canSendMessage(instanceId);
+    const now = Date.now();
+    const warmCfg = WARMING_PHASE_LIMITS[instance.warming_phase as WarmingPhaseType];
+    const msSinceLastMessage = instance.last_message_at
+      ? Math.max(0, now - instance.last_message_at.getTime())
+      : null;
+    const minDelayMs = warmCfg.min_delay_ms;
+    const impliedWaitMs = msSinceLastMessage === null
+      ? 0
+      : Math.max(0, minDelayMs - msSinceLastMessage);
+    const waitMs = gate.wait_ms ?? impliedWaitMs;
+
+    return reply.send({
+      success: true,
+      data: {
+        allowed: gate.allowed,
+        reason: gate.reason || null,
+        wait_ms: gate.allowed ? 0 : waitMs,
+        next_allowed_at: gate.allowed
+          ? new Date(now).toISOString()
+          : new Date(now + waitMs).toISOString(),
+        instance: {
+          id: instance.id,
+          status: instance.status,
+          warming_phase: instance.warming_phase,
+          daily_message_count: instance.daily_message_count,
+          daily_limit: instance.daily_limit,
+          health_score: instance.health_score,
+          last_message_at: instance.last_message_at,
+        },
+        limits: {
+          min_delay_ms: minDelayMs,
+          max_messages_per_hour: warmCfg.max_messages_per_hour,
+          health_score_min: 20,
+        },
+      },
+    });
   });
 
   /**
@@ -525,6 +612,151 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     );
 
     logger.info({ instanceId: body.instance_id, to: body.to, apiKeyId: req.apiKey.id }, 'External API: location message sent');
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Send interactive buttons message
+   * POST /api/v1/messages/send-buttons
+   * Permission: message:send
+   */
+  fastify.post('/messages/send-buttons', {
+    preHandler: [requireApiKeyPermission('message:send')],
+    schema: {
+      description: 'Send interactive buttons message (max 3 buttons)',
+      tags: ['External API - Messages'],
+      security: [{ apiKeyAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['instance_id', 'to', 'text', 'buttons'],
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'WhatsApp instance ID' },
+          to: { type: 'string', description: 'Phone number (e.g., 628123456789)' },
+          text: { type: 'string', maxLength: 1024, description: 'Main message text' },
+          footer: { type: 'string', maxLength: 256, description: 'Optional footer text' },
+          fallback_text: { type: 'string', maxLength: 1024, description: 'Fallback plain text if interactive send fails' },
+          buttons: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 3,
+            items: {
+              type: 'object',
+              required: ['id', 'text'],
+              properties: {
+                id: { type: 'string', maxLength: 100 },
+                text: { type: 'string', maxLength: 20 },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const body = request.body as {
+      instance_id: string;
+      to: string;
+      text: string;
+      footer?: string;
+      fallback_text?: string;
+      buttons: Array<{ id: string; text: string }>;
+    };
+
+    const result = await whatsappService.sendButtons(
+      body.instance_id,
+      req.apiKey.organization_id,
+      {
+        to: body.to,
+        text: body.text,
+        footer: body.footer,
+        fallback_text: body.fallback_text,
+        buttons: body.buttons,
+      }
+    );
+
+    logger.info({ instanceId: body.instance_id, to: body.to, buttonCount: body.buttons.length, apiKeyId: req.apiKey.id }, 'External API: buttons message sent');
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Send interactive list message
+   * POST /api/v1/messages/send-list
+   * Permission: message:send
+   */
+  fastify.post('/messages/send-list', {
+    preHandler: [requireApiKeyPermission('message:send')],
+    schema: {
+      description: 'Send interactive list message (single section)',
+      tags: ['External API - Messages'],
+      security: [{ apiKeyAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['instance_id', 'to', 'text', 'button_text', 'sections'],
+        properties: {
+          instance_id: { type: 'string', format: 'uuid', description: 'WhatsApp instance ID' },
+          to: { type: 'string', description: 'Phone number (e.g., 628123456789)' },
+          text: { type: 'string', maxLength: 1024, description: 'Main message text' },
+          footer: { type: 'string', maxLength: 256, description: 'Optional footer text' },
+          button_text: { type: 'string', maxLength: 20, description: 'Button label that opens list options' },
+          fallback_text: { type: 'string', maxLength: 1024, description: 'Fallback plain text if interactive send fails' },
+          sections: {
+            type: 'array',
+            minItems: 1,
+            maxItems: 1,
+            items: {
+              type: 'object',
+              required: ['title', 'rows'],
+              properties: {
+                title: { type: 'string', maxLength: 100 },
+                rows: {
+                  type: 'array',
+                  minItems: 1,
+                  maxItems: 10,
+                  items: {
+                    type: 'object',
+                    required: ['id', 'title'],
+                    properties: {
+                      id: { type: 'string', maxLength: 100 },
+                      title: { type: 'string', maxLength: 100 },
+                      description: { type: 'string', maxLength: 200 },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const body = request.body as {
+      instance_id: string;
+      to: string;
+      text: string;
+      footer?: string;
+      button_text: string;
+      fallback_text?: string;
+      sections: Array<{
+        title: string;
+        rows: Array<{ id: string; title: string; description?: string }>;
+      }>;
+    };
+
+    const result = await whatsappService.sendList(
+      body.instance_id,
+      req.apiKey.organization_id,
+      {
+        to: body.to,
+        text: body.text,
+        footer: body.footer,
+        button_text: body.button_text,
+        fallback_text: body.fallback_text,
+        sections: body.sections,
+      }
+    );
+
+    logger.info({ instanceId: body.instance_id, to: body.to, sectionCount: body.sections.length, apiKeyId: req.apiKey.id }, 'External API: list message sent');
     return reply.send({ success: true, data: result });
   });
 
@@ -1088,19 +1320,23 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     );
 
     // Batch-fetch last messages using raw SQL with ROW_NUMBER() for MySQL 8+
-    const chatPairs = paginatedConversations.map(c => `('${c.chat_jid.replace(/'/g, "''")}','${c.instance_id.replace(/'/g, "''")}')`).join(',');
+    // PATCH-177: Replace $queryRawUnsafe with parameterized $queryRaw to prevent SQL injection
+    const conditions = paginatedConversations.map(c =>
+      Prisma.sql`(m.chat_jid = ${c.chat_jid} AND m.instance_id = ${c.instance_id})`
+    );
     let lastMessageMap = new Map<string, any>();
-    if (chatPairs) {
-      const lastMessages: any[] = await prisma.$queryRawUnsafe(`
+    if (conditions.length > 0) {
+      const lastMessages: any[] = await prisma.$queryRaw`
         SELECT id, content, message_type, direction, status, created_at, chat_jid, instance_id
         FROM (
-          SELECT m.*, ROW_NUMBER() OVER (PARTITION BY m.chat_jid, m.instance_id ORDER BY m.created_at DESC) AS rn
+          SELECT m.id, m.content, m.message_type, m.direction, m.status, m.created_at, m.chat_jid, m.instance_id,
+                 ROW_NUMBER() OVER (PARTITION BY m.chat_jid, m.instance_id ORDER BY m.created_at DESC) AS rn
           FROM messages m
-          WHERE m.organization_id = '${orgId.replace(/'/g, "''")}'
-            AND (m.chat_jid, m.instance_id) IN (${chatPairs})
+          WHERE m.organization_id = ${orgId}
+            AND (${Prisma.join(conditions, ' OR ')})
         ) ranked
         WHERE rn = 1
-      `);
+      `;
       for (const msg of lastMessages) {
         lastMessageMap.set(`${msg.chat_jid}__${msg.instance_id}`, {
           id: msg.id,

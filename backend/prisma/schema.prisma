@@ -165,6 +165,7 @@ model WhatsAppInstance {
   contacts          Contact[]
   webhooks          Webhook[]
   session_backups   SessionBackup[]
+  webhook_targets   InstanceWebhookTarget[]
   
   @@index([organization_id])
   @@index([status])
@@ -350,6 +351,32 @@ model WebhookLog {
   @@index([webhook_id])
   @@index([created_at])
   @@map("webhook_logs")
+}
+
+// ============================================
+// 7b. INSTANCE WEBHOOK TARGETS - Multi-webhook per instance
+// ============================================
+model InstanceWebhookTarget {
+  id                String   @id @default(uuid()) @db.Char(36)
+  organization_id   String   @db.Char(36)
+  instance_id       String   @db.Char(36)
+
+  label             String   @db.VarChar(100)
+  url               String   @db.Text
+  events            Json
+  secret            String?  @db.VarChar(255)
+  is_active         Boolean  @default(true)
+
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  // Relations
+  instance          WhatsAppInstance @relation(fields: [instance_id], references: [id], onDelete: Cascade)
+
+  @@index([organization_id])
+  @@index([instance_id])
+  @@index([is_active])
+  @@map("instance_webhook_targets")
 }
 
 // ============================================
@@ -674,6 +701,7 @@ model Broadcast {
   // Progress
   sent_count        Int      @default(0)
   failed_count      Int      @default(0)
+  paused_reason     String?  @db.VarChar(500)
   
   // Anti-ban settings
   delay_min_ms      Int      @default(3000)

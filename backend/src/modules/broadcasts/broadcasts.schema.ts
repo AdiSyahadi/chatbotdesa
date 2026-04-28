@@ -171,6 +171,7 @@ export interface BroadcastResponse {
   failed_count: number;
   delay_min_ms: number;
   delay_max_ms: number;
+  paused_reason: string | null;
   created_at: Date;
   updated_at: Date;
   progress_percentage: number;

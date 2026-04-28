@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { useBroadcasts, useInstances, useCreateBroadcast, useDeleteBroadcast, useStartBroadcast, usePauseBroadcast, useCancelBroadcast } from "@/hooks/use-queries";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -69,6 +70,7 @@ interface Broadcast {
   message_type: string;
   message_content: { text?: string; caption?: string };
   status: string;
+  paused_reason?: string | null;
   scheduled_at?: string;
   started_at?: string;
   completed_at?: string;
@@ -121,6 +123,7 @@ export default function BroadcastPage() {
   const startMutation = useStartBroadcast();
   const pauseMutation = usePauseBroadcast();
   const cancelMutation = useCancelBroadcast();
+  const router = useRouter();
 
   const instances: Instance[] = instancesData?.data || [];
   const broadcasts: Broadcast[] = data?.data || [];
@@ -374,13 +377,20 @@ export default function BroadcastPage() {
                       </span>
                     </TableCell>
                     <TableCell>
-                      <Badge
-                        variant="secondary"
-                        className={cn("gap-1", status.bgColor, status.color)}
-                      >
-                        {status.icon}
-                        {status.label}
-                      </Badge>
+                      <div>
+                        <Badge
+                          variant="secondary"
+                          className={cn("gap-1", status.bgColor, status.color)}
+                        >
+                          {status.icon}
+                          {status.label}
+                        </Badge>
+                        {broadcast.status === "PAUSED" && broadcast.paused_reason && (
+                          <p className="text-xs text-yellow-600 mt-1 max-w-[200px] truncate" title={broadcast.paused_reason}>
+                            {broadcast.paused_reason}
+                          </p>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       <div className="w-24">
@@ -409,7 +419,9 @@ export default function BroadcastPage() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => router.push(`/dashboard/whatsapp/broadcast/${broadcast.id}`)}
+                          >
                             <Eye className="mr-2 h-4 w-4" />
                             Detail
                           </DropdownMenuItem>

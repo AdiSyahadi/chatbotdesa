@@ -57,7 +57,7 @@ services:
       redis-server
       --appendonly yes
       --maxmemory 128mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory-policy noeviction
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s

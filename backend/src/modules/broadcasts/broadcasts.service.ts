@@ -724,6 +724,7 @@ export class BroadcastService {
       data: {
         status: 'RUNNING',
         started_at: broadcast.started_at || new Date(),
+        paused_reason: null,
       },
     });
 
@@ -866,6 +867,7 @@ export class BroadcastService {
       failed_count: failedCount,
       delay_min_ms: broadcast.delay_min_ms,
       delay_max_ms: broadcast.delay_max_ms,
+      paused_reason: broadcast.paused_reason || null,
       created_at: broadcast.created_at,
       updated_at: broadcast.updated_at,
       progress_percentage: progressPercentage,

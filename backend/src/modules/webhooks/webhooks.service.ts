@@ -401,10 +401,87 @@ export class WebhookService {
   // ============================================
 
   /**
-   * Queue webhook for delivery
+   * Queue webhook for delivery.
+   * PATCH-172: Fan-out to all active InstanceWebhookTargets.
+   * Falls back to legacy instance.webhook_url if no targets configured (backward-compat).
+   * Returns the first webhook ID queued (or '' if nothing queued).
    */
   async queueWebhook(input: SendWebhookInput): Promise<string> {
-    // Get instance with webhook config
+    // --- 1. Fetch active targets for this instance ---
+    const targets = await prisma.instanceWebhookTarget.findMany({
+      where: {
+        instance_id: input.instance_id,
+        organization_id: input.organization_id,
+        is_active: true,
+      },
+    });
+
+    // --- 2. If targets exist → fan-out to matching targets ---
+    if (targets.length > 0) {
+      const queue = getWebhookQueue();
+      let firstWebhookId = '';
+
+      for (const target of targets) {
+        const subscribedEvents = (target.events as string[]).filter(
+          e => typeof e === 'string' && e.length > 1
+        );
+
+        // Check event subscription (exact match or prefix match)
+        if (subscribedEvents.length > 0) {
+          const isSubscribed = subscribedEvents.some(
+            evt => input.event_type === evt || input.event_type.startsWith(evt + '.')
+          );
+          if (!isSubscribed) {
+            logger.info(
+              { targetId: target.id, label: target.label, eventType: input.event_type },
+              '⚠️ Webhook target skip: event not subscribed'
+            );
+            continue;
+          }
+        }
+
+        logger.info(
+          { targetId: target.id, label: target.label, eventType: input.event_type, url: target.url },
+          '📤 Queuing webhook to target'
+        );
+
+        const webhook = await prisma.webhook.create({
+          data: {
+            organization_id: input.organization_id,
+            instance_id: input.instance_id,
+            event_type: input.event_type,
+            payload: input.payload,
+            idempotency_key: input.idempotency_key
+              ? `${input.idempotency_key}_t${target.id.slice(0, 8)}`
+              : undefined,
+            status: 'PENDING',
+          },
+        });
+
+        await queue.add(
+          'deliver-webhook',
+          {
+            webhookId: webhook.id,
+            webhookUrl: target.url,
+            webhookSecret: target.secret,
+            payload: {
+              event: input.event_type,
+              timestamp: new Date().toISOString(),
+              instance_id: input.instance_id,
+              organization_id: input.organization_id,
+              data: input.payload,
+            },
+          },
+          { jobId: webhook.id }
+        );
+
+        if (!firstWebhookId) firstWebhookId = webhook.id;
+      }
+
+      return firstWebhookId;
+    }
+
+    // --- 3. Fallback: legacy single webhook_url on instance ---
     const instance = await prisma.whatsAppInstance.findFirst({
       where: {
         id: input.instance_id,
@@ -428,9 +505,8 @@ export class WebhookService {
       : null;
 
     if (subscribedEvents && subscribedEvents.length > 0) {
-      // Match both exact (e.g. 'message.received') and prefix (e.g. 'message' matches 'message.received')
-      const isSubscribed = subscribedEvents.some(evt => 
-        input.event_type === evt || input.event_type.startsWith(evt + '.')
+      const isSubscribed = subscribedEvents.some(
+        evt => input.event_type === evt || input.event_type.startsWith(evt + '.')
       );
       if (!isSubscribed) {
         logger.info(
@@ -443,10 +519,9 @@ export class WebhookService {
 
     logger.info(
       { instanceId: input.instance_id, eventType: input.event_type, webhookUrl: instance.webhook_url },
-      '📤 Queuing webhook for delivery'
+      '📤 Queuing webhook for delivery (legacy)'
     );
 
-    // Create webhook record
     const webhook = await prisma.webhook.create({
       data: {
         organization_id: input.organization_id,
@@ -458,7 +533,6 @@ export class WebhookService {
       },
     });
 
-    // Queue for delivery
     const queue = getWebhookQueue();
     await queue.add(
       'deliver-webhook',
@@ -474,9 +548,7 @@ export class WebhookService {
           data: input.payload,
         },
       },
-      {
-        jobId: webhook.id,
-      }
+      { jobId: webhook.id }
     );
 
     logger.info(
@@ -485,6 +557,157 @@ export class WebhookService {
     );
 
     return webhook.id;
+  }
+
+  // ============================================
+  // WEBHOOK TARGETS CRUD (PATCH-173)
+  // ============================================
+
+  async listWebhookTargets(
+    organizationId: string,
+    instanceId?: string
+  ): Promise<any[]> {
+    // Validate instance if provided
+    if (instanceId) {
+      const instance = await prisma.whatsAppInstance.findFirst({
+        where: { id: instanceId, organization_id: organizationId, deleted_at: null },
+      });
+      if (!instance) throw new AppError('Instance not found', 404, 'INSTANCE_NOT_FOUND');
+    }
+
+    const targets = await prisma.instanceWebhookTarget.findMany({
+      where: {
+        organization_id: organizationId,
+        ...(instanceId ? { instance_id: instanceId } : {}),
+      },
+      orderBy: { created_at: 'asc' },
+      include: { instance: { select: { name: true } } },
+    });
+
+    return targets.map(t => ({
+      id: t.id,
+      instance_id: t.instance_id,
+      instance_name: t.instance.name,
+      label: t.label,
+      url: t.url,
+      events: t.events as string[],
+      secret_configured: !!t.secret,
+      is_active: t.is_active,
+      created_at: t.created_at.toISOString(),
+      updated_at: t.updated_at.toISOString(),
+    }));
+  }
+
+  async createWebhookTarget(
+    organizationId: string,
+    input: { instance_id: string; label: string; url: string; events: string[]; secret?: string }
+  ): Promise<any> {
+    const instance = await prisma.whatsAppInstance.findFirst({
+      where: { id: input.instance_id, organization_id: organizationId, deleted_at: null },
+    });
+    if (!instance) throw new AppError('Instance not found', 404, 'INSTANCE_NOT_FOUND');
+
+    const target = await prisma.instanceWebhookTarget.create({
+      data: {
+        organization_id: organizationId,
+        instance_id: input.instance_id,
+        label: input.label,
+        url: input.url,
+        events: input.events,
+        secret: input.secret || null,
+        is_active: true,
+      },
+    });
+
+    logger.info({ targetId: target.id, instanceId: input.instance_id, label: input.label }, 'Webhook target created');
+
+    return {
+      id: target.id,
+      instance_id: target.instance_id,
+      label: target.label,
+      url: target.url,
+      events: target.events as string[],
+      secret_configured: !!target.secret,
+      is_active: target.is_active,
+      created_at: target.created_at.toISOString(),
+      updated_at: target.updated_at.toISOString(),
+    };
+  }
+
+  async updateWebhookTarget(
+    organizationId: string,
+    targetId: string,
+    input: { label?: string; url?: string; events?: string[]; secret?: string | null; is_active?: boolean }
+  ): Promise<any> {
+    const target = await prisma.instanceWebhookTarget.findFirst({
+      where: { id: targetId, organization_id: organizationId },
+    });
+    if (!target) throw new AppError('Webhook target not found', 404, 'WEBHOOK_TARGET_NOT_FOUND');
+
+    const data: any = {};
+    if (input.label !== undefined) data.label = input.label;
+    if (input.url !== undefined) data.url = input.url;
+    if (input.events !== undefined) data.events = input.events;
+    if (input.secret !== undefined) data.secret = input.secret;
+    if (input.is_active !== undefined) data.is_active = input.is_active;
+
+    const updated = await prisma.instanceWebhookTarget.update({
+      where: { id: targetId },
+      data,
+    });
+
+    logger.info({ targetId, label: updated.label }, 'Webhook target updated');
+
+    return {
+      id: updated.id,
+      instance_id: updated.instance_id,
+      label: updated.label,
+      url: updated.url,
+      events: updated.events as string[],
+      secret_configured: !!updated.secret,
+      is_active: updated.is_active,
+      created_at: updated.created_at.toISOString(),
+      updated_at: updated.updated_at.toISOString(),
+    };
+  }
+
+  async deleteWebhookTarget(
+    organizationId: string,
+    targetId: string
+  ): Promise<void> {
+    const target = await prisma.instanceWebhookTarget.findFirst({
+      where: { id: targetId, organization_id: organizationId },
+    });
+    if (!target) throw new AppError('Webhook target not found', 404, 'WEBHOOK_TARGET_NOT_FOUND');
+
+    await prisma.instanceWebhookTarget.delete({ where: { id: targetId } });
+
+    logger.info({ targetId }, 'Webhook target deleted');
+  }
+
+  async testWebhookTarget(
+    organizationId: string,
+    targetId: string
+  ): Promise<{ success: boolean; response_status?: number; error?: string }> {
+    const target = await prisma.instanceWebhookTarget.findFirst({
+      where: { id: targetId, organization_id: organizationId },
+    });
+    if (!target) throw new AppError('Webhook target not found', 404, 'WEBHOOK_TARGET_NOT_FOUND');
+
+    const testPayload: WebhookPayload = {
+      event: 'connection.connected',
+      timestamp: new Date().toISOString(),
+      instance_id: target.instance_id,
+      organization_id: organizationId,
+      data: { status: 'test', message: 'Test webhook from WhatsApp SaaS', target_label: target.label },
+    };
+
+    try {
+      const result = await this.deliverWebhook(target.url, testPayload, target.secret);
+      return { success: result.success, response_status: result.responseStatus, error: result.error };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
   }
 
   /**

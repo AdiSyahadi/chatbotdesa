@@ -61,6 +61,7 @@ interface WebhookType {
   id: string;
   instance_id: string;
   instance_name?: string;
+  label: string;
   url: string;
   events: string[];
   is_active: boolean;
@@ -97,6 +98,7 @@ export default function WebhooksPage() {
 
   // Form state
   const [formInstanceId, setFormInstanceId] = useState("");
+  const [formLabel, setFormLabel] = useState("");
   const [formUrl, setFormUrl] = useState("");
   const [formEvents, setFormEvents] = useState<string[]>([]);
 
@@ -117,11 +119,12 @@ export default function WebhooksPage() {
   const pagination = data?.pagination;
 
   const handleCreate = async () => {
-    if (!formInstanceId || !formUrl || formEvents.length === 0) return;
+    if (!formInstanceId || !formLabel || !formUrl || formEvents.length === 0) return;
 
     try {
       await createMutation.mutateAsync({
         instance_id: formInstanceId,
+        label: formLabel,
         url: formUrl,
         events: formEvents,
       });
@@ -139,6 +142,7 @@ export default function WebhooksPage() {
       await updateMutation.mutateAsync({
         id: webhookToEdit.id,
         data: {
+          label: formLabel || undefined,
           url: formUrl,
           events: formEvents,
         },
@@ -175,6 +179,7 @@ export default function WebhooksPage() {
 
   const openEditDialog = (webhook: WebhookType) => {
     setWebhookToEdit(webhook);
+    setFormLabel(webhook.label || "");
     setFormUrl(webhook.url);
     setFormEvents(webhook.events);
     setEditDialogOpen(true);
@@ -182,6 +187,7 @@ export default function WebhooksPage() {
 
   const resetForm = () => {
     setFormInstanceId("");
+    setFormLabel("");
     setFormUrl("");
     setFormEvents([]);
   };
@@ -242,6 +248,15 @@ export default function WebhooksPage() {
                   </Select>
                 </div>
                 <div className="space-y-2">
+                  <Label htmlFor="label">Label</Label>
+                  <Input
+                    id="label"
+                    placeholder="Contoh: CRM Dashboard, Chatbot"
+                    value={formLabel}
+                    onChange={(e) => setFormLabel(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
                   <Label htmlFor="url">Webhook URL</Label>
                   <Input
                     id="url"
@@ -289,6 +304,7 @@ export default function WebhooksPage() {
                   disabled={
                     createMutation.isPending ||
                     !formInstanceId ||
+                    !formLabel ||
                     !formUrl ||
                     formEvents.length === 0
                   }
@@ -374,6 +390,7 @@ export default function WebhooksPage() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead>Label</TableHead>
                 <TableHead>URL</TableHead>
                 <TableHead>Instance</TableHead>
                 <TableHead>Events</TableHead>
@@ -385,6 +402,9 @@ export default function WebhooksPage() {
             <TableBody>
               {webhooks.map((webhook) => (
                 <TableRow key={webhook.id}>
+                  <TableCell>
+                    <span className="text-sm font-medium">{webhook.label || "-"}</span>
+                  </TableCell>
                   <TableCell>
                     <div className="flex items-center gap-2">
                       <Globe className="h-4 w-4 text-muted-foreground" />
@@ -529,6 +549,15 @@ export default function WebhooksPage() {
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-label">Label</Label>
+              <Input
+                id="edit-label"
+                placeholder="Contoh: CRM Dashboard, Chatbot"
+                value={formLabel}
+                onChange={(e) => setFormLabel(e.target.value)}
+              />
+            </div>
             <div className="space-y-2">
               <Label htmlFor="edit-url">Webhook URL</Label>
               <Input

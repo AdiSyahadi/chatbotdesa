@@ -16,6 +16,8 @@
    - [Send Text Message](#send-text-message)
    - [Send Media Message](#send-media-message)
    - [Send Location Message](#send-location-message)
+   - [Send Buttons Message](#send-buttons-message)
+   - [Send List Message](#send-list-message)
 8. [Instance Management](#instance-management)
 9. [Broadcast API](#broadcast-api)
 10. [Contact Management](#contact-management)
@@ -592,6 +594,114 @@ curl -X POST http://localhost:3001/api/v1/messages/send-location \
 
 ---
 
+### Send Buttons Message
+
+Send interactive buttons with up to 3 options. If recipient client/device does not support interactive rendering, API can fallback to plain text.
+
+**Endpoint:** `POST /api/v1/messages/send-buttons`
+
+**Permission Required:** `message:send`
+
+#### Request Body
+
+```json
+{
+  "instance_id": "550e8400-e29b-41d4-a716-446655440000",
+  "to": "628123456789",
+  "text": "Apakah data di atas sudah benar?",
+  "footer": "Ketik manual jika tombol tidak muncul",
+  "buttons": [
+    { "id": "confirm_yes", "text": "YA" },
+    { "id": "confirm_no", "text": "TIDAK" },
+    { "id": "confirm_back", "text": "ULANG" }
+  ],
+  "fallback_text": "Apakah data di atas sudah benar?\nKetik YA / TIDAK / ULANG"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `instance_id` | string (UUID) | ✅ | WhatsApp instance ID |
+| `to` | string | ✅ | Phone number |
+| `text` | string | ✅ | Main interactive text |
+| `footer` | string | ❌ | Footer text |
+| `buttons` | array | ✅ | Button options, min 1 max 3 |
+| `buttons[].id` | string | ✅ | Stable callback ID for backend mapping |
+| `buttons[].text` | string | ✅ | Visible button text |
+| `fallback_text` | string | ❌ | Plain text fallback if interactive send fails |
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "success": true,
+    "message_id": "3EB0F2F7D8B4A1F2E5C3",
+    "used_fallback": false
+  }
+}
+```
+
+---
+
+### Send List Message
+
+Send interactive list picker (currently optimized for single-section list menu).
+
+**Endpoint:** `POST /api/v1/messages/send-list`
+
+**Permission Required:** `message:send`
+
+#### Request Body
+
+```json
+{
+  "instance_id": "550e8400-e29b-41d4-a716-446655440000",
+  "to": "628123456789",
+  "text": "Silakan pilih jenis surat yang ingin dibuat:",
+  "footer": "Layanan Administrasi Desa",
+  "button_text": "Pilih Surat",
+  "sections": [
+    {
+      "title": "Jenis Surat",
+      "rows": [
+        { "id": "surat_sktm", "title": "SKTM", "description": "Surat Keterangan Tidak Mampu" },
+        { "id": "surat_domisili", "title": "Domisili", "description": "Surat Keterangan Domisili" },
+        { "id": "surat_usaha", "title": "Usaha", "description": "Surat Keterangan Usaha" }
+      ]
+    }
+  ],
+  "fallback_text": "Pilih jenis surat: SKTM / Domisili / Usaha"
+}
+```
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `instance_id` | string (UUID) | ✅ | WhatsApp instance ID |
+| `to` | string | ✅ | Phone number |
+| `text` | string | ✅ | Main list intro text |
+| `button_text` | string | ✅ | List opener button label |
+| `sections` | array | ✅ | Section list, currently max 1 section |
+| `sections[].rows[]` | array | ✅ | Rows/options, max 10 rows per section |
+| `sections[].rows[].id` | string | ✅ | Stable callback ID (`row_id`) |
+| `fallback_text` | string | ❌ | Plain text fallback if interactive send fails |
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "success": true,
+    "message_id": "3EB0F2F7D8B4A1F2E5C3",
+    "used_fallback": false
+  }
+}
+```
+
+---
+
 ## Instance Management
 
 ### List Instances
@@ -649,6 +759,48 @@ Check connection status of a specific instance.
   }
 }
 ```
+
+### Check Instance Cooldown
+
+Check whether an instance can send now, why it is blocked, and how long to wait.
+
+**Endpoint:** `GET /api/v1/instances/:instanceId/cooldown`
+
+**Permission Required:** `instance:read`
+
+#### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "allowed": false,
+    "reason": "Please wait between messages",
+    "wait_ms": 1820,
+    "next_allowed_at": "2026-03-29T11:20:01.820Z",
+    "instance": {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "status": "CONNECTED",
+      "warming_phase": "DAY_1_3",
+      "daily_message_count": 12,
+      "daily_limit": 20,
+      "health_score": 100,
+      "last_message_at": "2026-03-29T11:19:55.000Z"
+    },
+    "limits": {
+      "min_delay_ms": 5000,
+      "max_messages_per_hour": 5,
+      "health_score_min": 20
+    }
+  }
+}
+```
+
+#### Notes
+
+- If `allowed = true`, `wait_ms` will be `0`.
+- If blocked by daily limit or health score, `reason` explains the blocker.
+- For warming cooldown blocks, `wait_ms` is the exact remaining wait time.
 
 ---
 
@@ -780,16 +932,27 @@ Starts sending messages to all recipients.
 ```json
 {
   "event": "message.received",
+  "timestamp": "2026-03-16T10:20:30.000Z",
   "instance_id": "550e8400-e29b-41d4-a716-446655440000",
+  "organization_id": "d75672c2-1524-4be4-9406-216a62cb496d",
   "data": {
-    "message_id": "3EB0F2F7D8B4A1F2E5C3",
-    "from": "628123456789",
-    "message_type": "text",
-    "content": "Hello, I need help",
-    "timestamp": "2026-02-16T12:34:56.789Z"
+    "id": "3EB0F2F7D8B4A1F2E5C3",
+    "from": "628123456789@s.whatsapp.net",
+    "chat_jid": "628123456789@s.whatsapp.net",
+    "sender_jid": "628123456789@s.whatsapp.net",
+    "phone_number": "628123456789",
+    "contact_name": "Budi",
+    "direction": "INCOMING",
+    "type": "button_response",
+    "content": "YA",
+    "button_id": "confirm_yes",
+    "row_id": null,
+    "timestamp": 1742112345
   }
 }
 ```
+
+For list replies, `data.type` becomes `list_response` and `data.row_id` contains the selected row ID.
 
 **See full webhook documentation in [CRM_INTEGRATION_GUIDE.md](backend/CRM_INTEGRATION_GUIDE.md#webhooks)**
 

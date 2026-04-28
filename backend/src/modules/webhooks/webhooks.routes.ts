@@ -556,6 +556,179 @@ export async function webhookRoutes(fastify: FastifyInstance) {
       };
     }
   );
+
+  // ============================================
+  // WEBHOOK TARGETS CRUD (PATCH-173)
+  // Multi-webhook per instance
+  // ============================================
+
+  /**
+   * GET /webhooks/targets?instance_id=xxx
+   * List all webhook targets for an instance
+   */
+  fastify.get<{ Querystring: { instance_id: string } }>(
+    '/targets',
+    {
+      preHandler: [fastify.authenticate],
+      schema: {
+        description: 'List webhook targets for an instance (or all org targets if no instance_id)',
+        tags: ['Webhooks'],
+        security: [{ bearerAuth: [] }],
+        querystring: {
+          type: 'object',
+          properties: {
+            instance_id: { type: 'string', format: 'uuid' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.user as { organizationId: string };
+      const { instance_id } = request.query;
+
+      const data = await webhookService.listWebhookTargets(user.organizationId, instance_id || undefined);
+
+      return { success: true, data };
+    }
+  );
+
+  /**
+   * POST /webhooks/targets
+   * Create a new webhook target for an instance
+   */
+  fastify.post<{
+    Body: { instance_id: string; label: string; url: string; events: string[]; secret?: string };
+  }>(
+    '/targets',
+    {
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
+      schema: {
+        description: 'Create a webhook target for an instance',
+        tags: ['Webhooks'],
+        security: [{ bearerAuth: [] }],
+        body: {
+          type: 'object',
+          required: ['instance_id', 'label', 'url', 'events'],
+          properties: {
+            instance_id: { type: 'string', format: 'uuid' },
+            label: { type: 'string', maxLength: 100 },
+            url: { type: 'string' },
+            events: { type: 'array', items: { type: 'string' } },
+            secret: { type: 'string' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.user as { organizationId: string };
+      const body = request.body;
+
+      const data = await webhookService.createWebhookTarget(user.organizationId, body);
+
+      return reply.status(201).send({ success: true, data });
+    }
+  );
+
+  /**
+   * PATCH /webhooks/targets/:id
+   * Update a webhook target
+   */
+  fastify.patch<{
+    Params: { id: string };
+    Body: { label?: string; url?: string; events?: string[]; secret?: string | null; is_active?: boolean };
+  }>(
+    '/targets/:id',
+    {
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
+      schema: {
+        description: 'Update a webhook target',
+        tags: ['Webhooks'],
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+        body: {
+          type: 'object',
+          properties: {
+            label: { type: 'string', maxLength: 100 },
+            url: { type: 'string' },
+            events: { type: 'array', items: { type: 'string' } },
+            secret: { type: 'string', nullable: true },
+            is_active: { type: 'boolean' },
+          },
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.user as { organizationId: string };
+      const { id } = request.params;
+      const body = request.body;
+
+      const data = await webhookService.updateWebhookTarget(user.organizationId, id, body);
+
+      return { success: true, data };
+    }
+  );
+
+  /**
+   * DELETE /webhooks/targets/:id
+   * Delete a webhook target
+   */
+  fastify.delete<{ Params: { id: string } }>(
+    '/targets/:id',
+    {
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
+      schema: {
+        description: 'Delete a webhook target',
+        tags: ['Webhooks'],
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.user as { organizationId: string };
+      const { id } = request.params;
+
+      await webhookService.deleteWebhookTarget(user.organizationId, id);
+
+      return { success: true, message: 'Webhook target deleted' };
+    }
+  );
+
+  /**
+   * POST /webhooks/targets/:id/test
+   * Send test event to a webhook target
+   */
+  fastify.post<{ Params: { id: string } }>(
+    '/targets/:id/test',
+    {
+      preHandler: [fastify.authenticate, requireRole(UserRole.ORG_OWNER, UserRole.ORG_ADMIN)],
+      schema: {
+        description: 'Test a webhook target by sending a test event',
+        tags: ['Webhooks'],
+        security: [{ bearerAuth: [] }],
+        params: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string', format: 'uuid' } },
+        },
+      },
+    },
+    async (request, reply) => {
+      const user = request.user as { organizationId: string };
+      const { id } = request.params;
+
+      const result = await webhookService.testWebhookTarget(user.organizationId, id);
+
+      return { success: true, data: result };
+    }
+  );
 }
 
 export default webhookRoutes;

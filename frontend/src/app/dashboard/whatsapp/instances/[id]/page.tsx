@@ -324,7 +324,7 @@ export default function InstanceDetailPage() {
           })()}
 
           {/* Stats */}
-          <div className="grid gap-4 md:grid-cols-4">
+          <div className="grid gap-4 md:grid-cols-5">
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
                 <CardTitle className="text-sm font-medium">Status</CardTitle>
@@ -368,8 +368,38 @@ export default function InstanceDetailPage() {
               </CardHeader>
               <CardContent>
                 <div className="text-2xl font-bold">
-                  {instance.messages_today || 0}
+                  {instance.daily_message_count || 0}
+                  {instance.daily_limit ? (
+                    <span className="text-sm font-normal text-muted-foreground"> / {instance.daily_limit}</span>
+                  ) : null}
                 </div>
+                {instance.warming_phase && (
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Fase: {({ DAY_1_3: 'Hari 1-3', DAY_4_7: 'Hari 4-7', DAY_8_14: 'Hari 8-14', DAY_15_PLUS: 'Matang' } as Record<string, string>)[instance.warming_phase] ?? instance.warming_phase}
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Health Score</CardTitle>
+                <Activity className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div
+                  className={cn(
+                    'text-2xl font-bold',
+                    (instance.health_score ?? 100) >= 70 ? 'text-green-600' :
+                    (instance.health_score ?? 100) >= 40 ? 'text-yellow-600' : 'text-red-600'
+                  )}
+                >
+                  {instance.health_score ?? 100}
+                  <span className="text-sm font-normal text-muted-foreground">/100</span>
+                </div>
+                {(instance.health_score ?? 100) < 40 && (
+                  <p className="text-xs text-red-600 mt-1">Terlalu rendah — jangan kirim pesan</p>
+                )}
               </CardContent>
             </Card>
           </div>

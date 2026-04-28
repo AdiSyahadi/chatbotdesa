@@ -36,10 +36,10 @@ export const DEFAULT_COUNTRY_CODE = process.env.DEFAULT_COUNTRY_CODE || '62';
  * PATCH-108: Warming phase config — single source of truth (formerly duplicated in whatsapp.schema.ts and daily-reset.worker.ts)
  */
 export const WARMING_PHASE_LIMITS = {
-  DAY_1_3: { daily_limit: 20, min_delay_ms: 5000, max_messages_per_hour: 5 },
-  DAY_4_7: { daily_limit: 50, min_delay_ms: 3000, max_messages_per_hour: 15 },
-  DAY_8_14: { daily_limit: 100, min_delay_ms: 2000, max_messages_per_hour: 30 },
-  DAY_15_PLUS: { daily_limit: 200, min_delay_ms: 1000, max_messages_per_hour: 60 },
+  DAY_1_3:    { daily_limit: 100,  min_delay_ms: 5000, max_messages_per_hour: 20 },
+  DAY_4_7:    { daily_limit: 300,  min_delay_ms: 3000, max_messages_per_hour: 60 },
+  DAY_8_14:   { daily_limit: 600,  min_delay_ms: 2000, max_messages_per_hour: 120 },
+  DAY_15_PLUS:{ daily_limit: 1000, min_delay_ms: 1000, max_messages_per_hour: 200 },
 } as const;
 
 export type WarmingPhaseType = keyof typeof WARMING_PHASE_LIMITS;

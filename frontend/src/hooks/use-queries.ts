@@ -244,6 +244,12 @@ export function useBroadcasts(params?: { page?: number; limit?: number; status?:
   return useQuery({
     queryKey: queryKeys.broadcasts(params),
     queryFn: () => broadcastsApi.getAll(params),
+    refetchInterval: (query) => {
+      const items = (query.state.data as { data?: { status: string }[] } | undefined)?.data;
+      if (!items) return false;
+      const hasRunning = items.some((b) => b.status === 'RUNNING');
+      return hasRunning ? 3000 : false;
+    },
   });
 }
 
@@ -497,7 +503,7 @@ export function useCreateWebhook() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: (data: { instance_id: string; url: string; events: string[] }) => 
+    mutationFn: (data: { instance_id: string; label: string; url: string; events: string[] }) => 
       webhooksApi.create(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["webhooks"] });
@@ -513,7 +519,7 @@ export function useUpdateWebhook() {
   const queryClient = useQueryClient();
   
   return useMutation({
-    mutationFn: ({ id, data }: { id: string; data: { url?: string; events?: string[]; is_active?: boolean } }) => 
+    mutationFn: ({ id, data }: { id: string; data: { label?: string; url?: string; events?: string[]; is_active?: boolean } }) => 
       webhooksApi.update(id, data),
     onSuccess: (_, variables) => {
       queryClient.invalidateQueries({ queryKey: ["webhooks"] });

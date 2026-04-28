@@ -165,6 +165,80 @@ export const sendLocationSchema = z.object({
 });
 
 /**
+ * Schema for sending interactive buttons message
+ */
+export const sendButtonsSchema = z.object({
+  to: z
+    .string()
+    .min(10, 'Phone number too short')
+    .max(20, 'Phone number too long')
+    .regex(/^[0-9]+$/, 'Phone number must contain only digits'),
+  text: z
+    .string()
+    .min(1, 'Text cannot be empty')
+    .max(1024, 'Text too long'),
+  footer: z
+    .string()
+    .max(256, 'Footer too long')
+    .optional(),
+  buttons: z
+    .array(
+      z.object({
+        id: z.string().min(1, 'Button ID is required').max(100, 'Button ID too long'),
+        text: z.string().min(1, 'Button text is required').max(20, 'Button text too long'),
+      })
+    )
+    .min(1, 'At least 1 button is required')
+    .max(3, 'Maximum 3 buttons allowed'),
+  fallback_text: z
+    .string()
+    .max(1024, 'Fallback text too long')
+    .optional(),
+});
+
+/**
+ * Schema for sending interactive list message
+ */
+export const sendListSchema = z.object({
+  to: z
+    .string()
+    .min(10, 'Phone number too short')
+    .max(20, 'Phone number too long')
+    .regex(/^[0-9]+$/, 'Phone number must contain only digits'),
+  text: z
+    .string()
+    .min(1, 'Text cannot be empty')
+    .max(1024, 'Text too long'),
+  footer: z
+    .string()
+    .max(256, 'Footer too long')
+    .optional(),
+  button_text: z
+    .string()
+    .min(1, 'button_text is required')
+    .max(20, 'button_text too long'),
+  sections: z
+    .array(
+      z.object({
+        title: z.string().min(1, 'Section title is required').max(100, 'Section title too long'),
+        rows: z.array(
+          z.object({
+            id: z.string().min(1, 'Row ID is required').max(100, 'Row ID too long'),
+            title: z.string().min(1, 'Row title is required').max(100, 'Row title too long'),
+            description: z.string().max(200, 'Row description too long').optional(),
+          })
+        ).min(1, 'At least 1 row is required').max(10, 'Maximum 10 rows per section'),
+      })
+    )
+    .min(1, 'At least 1 section is required')
+    .max(1, 'Maximum 1 section is allowed for now'),
+  fallback_text: z
+    .string()
+    .max(1024, 'Fallback text too long')
+    .optional(),
+});
+
+/**
  * Schema for sending contact card
  */
 export const sendContactSchema = z.object({
@@ -214,6 +288,8 @@ export type ListInstancesQuery = z.infer<typeof listInstancesQuerySchema>;
 export type SendTextMessageInput = z.infer<typeof sendTextMessageSchema>;
 export type SendMediaMessageInput = z.infer<typeof sendMediaMessageSchema>;
 export type SendLocationInput = z.infer<typeof sendLocationSchema>;
+export type SendButtonsInput = z.infer<typeof sendButtonsSchema>;
+export type SendListInput = z.infer<typeof sendListSchema>;
 export type SendContactInput = z.infer<typeof sendContactSchema>;
 export type MessagesQuery = z.infer<typeof messagesQuerySchema>;
 
