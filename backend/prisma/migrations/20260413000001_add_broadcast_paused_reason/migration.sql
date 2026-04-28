@@ -1,0 +1,2 @@
+-- AlterTable
+ALTER TABLE `broadcasts` ADD COLUMN `paused_reason` VARCHAR(500) NULL AFTER `failed_count`;

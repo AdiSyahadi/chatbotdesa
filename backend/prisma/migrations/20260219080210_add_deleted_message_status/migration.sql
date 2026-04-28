@@ -1,0 +1,5 @@
+-- AlterTable
+ALTER TABLE `broadcast_recipients` MODIFY `status` ENUM('PENDING', 'SENT', 'DELIVERED', 'READ', 'FAILED', 'DELETED') NOT NULL DEFAULT 'PENDING';
+
+-- AlterTable
+ALTER TABLE `messages` MODIFY `status` ENUM('PENDING', 'SENT', 'DELIVERED', 'READ', 'FAILED', 'DELETED') NOT NULL DEFAULT 'PENDING';

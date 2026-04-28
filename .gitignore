@@ -5,8 +5,9 @@
 !.env.docker
 !.env.example
 
-# SQL dumps
+# SQL dumps (exclude dumps, but NOT prisma migration files)
 *.sql
+!backend/prisma/migrations/**/migration.sql
 
 # Misc text files
 pashe.txt
