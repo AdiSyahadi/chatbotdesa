@@ -303,7 +303,7 @@ export class WhatsAppService {
   }
 
   /**
-   * Delete instance (soft delete)
+   * Delete instance (soft delete + cascade hard-delete related data)
    * PATCH-082: Soft-delete in DB first (atomic), then perform side effects
    */
   async deleteInstance(
@@ -341,6 +341,26 @@ export class WhatsAppService {
       deleteSession(instanceId);
     } catch (e: any) {
       logger.warn({ instanceId, err: e.message }, '⚠️ [DELETE] Session file cleanup failed (non-critical)');
+    }
+
+    // Cascade hard-delete all data belonging to this instance
+    // so that Messages / Contacts pages no longer show stale data
+    try {
+      const webhookIds = await prisma.webhook.findMany({
+        where: { instance_id: instanceId },
+        select: { id: true },
+      });
+      await prisma.$transaction([
+        prisma.webhookLog.deleteMany({ where: { webhook_id: { in: webhookIds.map(w => w.id) } } }),
+        prisma.webhook.deleteMany({ where: { instance_id: instanceId } }),
+        prisma.message.deleteMany({ where: { instance_id: instanceId } }),
+        prisma.contact.deleteMany({ where: { instance_id: instanceId } }),
+        prisma.instanceWebhookTarget.deleteMany({ where: { instance_id: instanceId } }),
+        prisma.lidPhoneMapping.deleteMany({ where: { instance_id: instanceId } }),
+      ]);
+      logger.info({ instanceId }, '🗑️ [DELETE] Cascade-deleted all instance data (messages, contacts, webhooks, conversations, lid_mappings)');
+    } catch (e: any) {
+      logger.warn({ instanceId, err: e.message }, '⚠️ [DELETE] Cascade data cleanup failed (non-critical)');
     }
   }
 
@@ -1342,6 +1362,7 @@ export class WhatsAppService {
 
     const where: any = {
       organization_id: organizationId,
+      instance: { deleted_at: null },
     };
 
     if (query.instanceId) {
