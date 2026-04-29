@@ -1034,8 +1034,8 @@ export default function InstanceDetailPage() {
                         Clear Sync Data
                       </CardTitle>
                       <CardDescription>
-                        Hapus semua pesan history sync dari database. Data realtime tidak terpengaruh.
-                        Setelah dihapus, Anda bisa melakukan re-pair untuk sync ulang jika diperlukan.
+                        Hapus <strong>semua pesan</strong> dari database (history sync &amp; realtime).
+                        Gunakan ini sebelum re-pair dengan nomor baru agar chat lama tidak tercampur.
                       </CardDescription>
                     </CardHeader>
                     <CardContent>
@@ -1118,9 +1118,8 @@ export default function InstanceDetailPage() {
           <DialogHeader>
             <DialogTitle>Clear History Sync Data</DialogTitle>
             <DialogDescription>
-              Anda akan menghapus <strong>semua pesan history sync</strong> dari database untuk instance ini.
-              Pesan realtime tidak akan terpengaruh. Sync state akan direset ke IDLE.
-              Tindakan ini tidak dapat dibatalkan.
+              Anda akan menghapus <strong>semua pesan</strong> (history sync &amp; realtime) dari database untuk instance ini.
+              Sync state akan direset ke IDLE. Tindakan ini tidak dapat dibatalkan.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

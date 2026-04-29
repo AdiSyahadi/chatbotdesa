@@ -960,9 +960,10 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       const { cleanupSyncState } = await import('./baileys.service');
       cleanupSyncState(id);
 
-      // 2. Delete all HISTORY_SYNC messages for this instance
+      // 2. Delete ALL messages for this instance (HISTORY_SYNC + REALTIME)
+      // User intent: start fresh before re-pairing with a new phone number
       const deleted = await prisma.message.deleteMany({
-        where: { instance_id: id, source: 'HISTORY_SYNC' },
+        where: { instance_id: id },
       });
 
       // 3. Reset sync state on instance
