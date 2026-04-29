@@ -762,6 +762,14 @@ export function useAdminStats() {
   });
 }
 
+export function useAdminOrganization(id: string) {
+  return useQuery({
+    queryKey: queryKeys.adminOrganization(id),
+    queryFn: () => adminApi.getOrganizationById(id),
+    enabled: !!id,
+  });
+}
+
 export function useAdminOrganizations(params?: { page?: number; limit?: number; status?: string }) {
   return useQuery({
     queryKey: queryKeys.adminOrganizations(params),
