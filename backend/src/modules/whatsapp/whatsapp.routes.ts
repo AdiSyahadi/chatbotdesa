@@ -577,6 +577,31 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
   });
 
   /**
+   * Bulk delete messages by IDs
+   * DELETE /api/whatsapp/messages
+   */
+  fastify.delete('/messages', {
+    onRequest: [fastify.authenticate],
+    schema: {
+      description: 'Bulk delete messages by IDs',
+      tags: ['WhatsApp Messages'],
+      security: [{ bearerAuth: [] }],
+      body: {
+        type: 'object',
+        required: ['ids'],
+        properties: {
+          ids: { type: 'array', items: { type: 'string', format: 'uuid' }, minItems: 1, maxItems: 500 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const user = request.user as JWTPayload;
+    const { ids } = request.body as { ids: string[] };
+    const deleted = await service.deleteMessages(user.organizationId, ids);
+    return reply.send({ success: true, data: { deleted_count: deleted } });
+  });
+
+  /**
    * Send message (global route with instance_id in body)
    * POST /api/whatsapp/messages/send
    */

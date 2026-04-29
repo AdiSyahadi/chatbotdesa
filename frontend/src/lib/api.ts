@@ -281,6 +281,11 @@ export const messagesApi = {
     return response.data;
   },
 
+  deleteMany: async (ids: string[]) => {
+    const response = await api.delete("/whatsapp/messages", { data: { ids } });
+    return response.data;
+  },
+
   send: async (data: {
     instance_id: string;
     to: string;

@@ -1433,6 +1433,20 @@ export class WhatsAppService {
   }
 
   /**
+   * Bulk delete messages by IDs (org-scoped for security)
+   */
+  async deleteMessages(organizationId: string, ids: string[]): Promise<number> {
+    if (!ids.length) return 0;
+    const result = await prisma.message.deleteMany({
+      where: {
+        id: { in: ids },
+        organization_id: organizationId,
+      },
+    });
+    return result.count;
+  }
+
+  /**
    * Update warming phase based on account age
    * PATCH-075: Added organizationId for tenant isolation
    */

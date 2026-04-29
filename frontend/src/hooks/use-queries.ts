@@ -217,6 +217,20 @@ export function useMessages(params?: {
   });
 }
 
+export function useDeleteMessages() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (ids: string[]) => messagesApi.deleteMany(ids),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["messages"] });
+      toast.success("Pesan berhasil dihapus");
+    },
+    onError: (error: Error) => {
+      toast.error(error.message || "Gagal menghapus pesan");
+    },
+  });
+}
+
 export function useSendMessage() {
   const queryClient = useQueryClient();
   

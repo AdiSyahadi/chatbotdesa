@@ -1,7 +1,8 @@
 "use client";
 
 import { useState, Suspense } from "react";
-import { useMessages, useSendMessage, useInstances } from "@/hooks/use-queries";
+import { useMessages, useSendMessage, useInstances, useDeleteMessages } from "@/hooks/use-queries";
+import { Checkbox } from "@/components/ui/checkbox";
 import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -54,6 +55,7 @@ import {
   FileText,
   Sticker,
   Download,
+  Trash2,
 } from "lucide-react";
 import { cn, formatDate } from "@/lib/utils";
 import { uploadsApi } from "@/lib/api";
@@ -112,6 +114,8 @@ function MessagesPageInner() {
   const defaultInstanceId = searchParams.get("instance") || "";
 
   const [sendDialogOpen, setSendDialogOpen] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [filterInstanceId, setFilterInstanceId] = useState(defaultInstanceId || "__all__");
   const [filterStatus, setFilterStatus] = useState("__all__");
   const [filterDirection, setFilterDirection] = useState("__all__");
@@ -143,6 +147,7 @@ function MessagesPageInner() {
     source: filterSource === "__all__" ? undefined : filterSource,
   });
   const sendMutation = useSendMessage();
+  const deleteMessagesMutation = useDeleteMessages();
 
   const instances: Instance[] = instancesData?.data || [];
   const messages: Message[] = data?.data || [];
@@ -197,6 +202,27 @@ function MessagesPageInner() {
 
   const connectedInstances = instances.filter((i) => i.status === "CONNECTED");
 
+  const isAllSelected = messages.length > 0 && messages.every((m) => selectedIds.has(m.id));
+  const toggleSelectAll = () => {
+    if (isAllSelected) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(messages.map((m) => m.id)));
+    }
+  };
+  const toggleSelect = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  const handleBulkDelete = async () => {
+    await deleteMessagesMutation.mutateAsync(Array.from(selectedIds));
+    setSelectedIds(new Set());
+    setDeleteDialogOpen(false);
+  };
+
   return (
     <div className="space-y-6">
       {/* Header */}
@@ -208,6 +234,17 @@ function MessagesPageInner() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          {selectedIds.size > 0 && (
+            <Button
+              variant="destructive"
+              size="sm"
+              onClick={() => setDeleteDialogOpen(true)}
+              disabled={deleteMessagesMutation.isPending}
+            >
+              <Trash2 className="mr-2 h-4 w-4" />
+              Hapus ({selectedIds.size})
+            </Button>
+          )}
           <Button variant="outline" size="icon" onClick={() => refetch()}>
             <RefreshCw className="h-4 w-4" />
           </Button>
@@ -478,23 +515,37 @@ function MessagesPageInner() {
       ) : (
         <Card>
           <CardContent className="p-0">
-            <Table>
+            <Table className="table-fixed w-full">
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-10"></TableHead>
-                  <TableHead>Contact</TableHead>
+                  <TableHead className="w-8">
+                    <Checkbox
+                      checked={isAllSelected}
+                      onCheckedChange={toggleSelectAll}
+                      aria-label="Select all"
+                    />
+                  </TableHead>
+                  <TableHead className="w-8"></TableHead>
+                  <TableHead className="w-36">Contact</TableHead>
                   <TableHead>Message</TableHead>
-                  <TableHead>Instance</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead>Source</TableHead>
-                  <TableHead>Time</TableHead>
+                  <TableHead className="w-24">Instance</TableHead>
+                  <TableHead className="w-28">Status</TableHead>
+                  <TableHead className="w-24">Source</TableHead>
+                  <TableHead className="w-28">Time</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {messages.map((message) => {
                   const status = statusConfig[message.status] || statusConfig.PENDING;
                   return (
-                    <TableRow key={message.id}>
+                    <TableRow key={message.id} className={selectedIds.has(message.id) ? "bg-muted/50" : ""}>
+                      <TableCell>
+                        <Checkbox
+                          checked={selectedIds.has(message.id)}
+                          onCheckedChange={() => toggleSelect(message.id)}
+                          aria-label="Select row"
+                        />
+                      </TableCell>
                       <TableCell>
                         {message.direction === "OUTGOING" ? (
                           <ArrowUpRight className="h-4 w-4 text-blue-500" />
@@ -502,10 +553,10 @@ function MessagesPageInner() {
                           <ArrowDownLeft className="h-4 w-4 text-green-500" />
                         )}
                       </TableCell>
-                      <TableCell className="font-medium">
+                      <TableCell className="font-medium truncate">
                         {formatPhoneNumber(message.chat_jid)}
                       </TableCell>
-                      <TableCell className="max-w-xs">
+                      <TableCell className="overflow-hidden">
                         {(() => {
                           const textContent = typeof message.content === "string"
                             ? message.content
@@ -574,10 +625,10 @@ function MessagesPageInner() {
                             );
                           }
 
-                          return <span className="truncate">{textContent || "[Empty]"}</span>;
+                          return <span className="block truncate">{textContent || "[Empty]"}</span>;
                         })()}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="truncate">
                         <span className="text-sm text-muted-foreground">
                           {message.instance_name || message.instance_id.substring(0, 8)}
                         </span>
@@ -604,7 +655,7 @@ function MessagesPageInner() {
                           {message.source === "HISTORY_SYNC" ? "Synced" : "Real-time"}
                         </Badge>
                       </TableCell>
-                      <TableCell className="text-sm text-muted-foreground">
+                      <TableCell className="text-sm text-muted-foreground whitespace-nowrap">
                         {formatDate(message.created_at)}
                       </TableCell>
                     </TableRow>
@@ -644,6 +695,30 @@ function MessagesPageInner() {
           )}
         </Card>
       )}
+      {/* Bulk delete confirmation dialog */}
+      <Dialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Hapus Pesan</DialogTitle>
+            <DialogDescription>
+              Anda akan menghapus <strong>{selectedIds.size} pesan</strong> secara permanen. Tindakan ini tidak dapat dibatalkan.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setDeleteDialogOpen(false)}>
+              Batal
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleBulkDelete}
+              disabled={deleteMessagesMutation.isPending}
+            >
+              {deleteMessagesMutation.isPending && <Spinner size="sm" className="mr-2" />}
+              Hapus
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
