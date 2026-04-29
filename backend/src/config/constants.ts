@@ -51,8 +51,8 @@ export const BAILEYS_CONFIG = {
   CONNECT_TIMEOUT_MS: 60_000,
   QUERY_TIMEOUT_MS: 60_000,
   KEEPALIVE_INTERVAL_MS: 25_000,
-  HEALTH_CHECK_INTERVAL_MS: 15_000,
-  ZOMBIE_WARN_THRESHOLD_MS: 60_000,
-  ZOMBIE_KILL_THRESHOLD_MS: 120_000,
+  HEALTH_CHECK_INTERVAL_MS: 30_000,  // check every 30s (was 15s — no need to check that frequently)
+  ZOMBIE_WARN_THRESHOLD_MS: 180_000, // warn after 3 min idle (was 1 min — too aggressive)
+  ZOMBIE_KILL_THRESHOLD_MS: 300_000, // kill after 5 min idle (was 2 min — caused false kills on idle instances)
   QR_EXPIRY_MS: 120_000,
 } as const;

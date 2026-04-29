@@ -842,8 +842,11 @@ export async function initializeConnection(
 
         // Monitor message-specific frames (BEFORE decryption/processing)
         // This fires even if the message later fails Signal decryption
+        // Also update lastFrameTime here so that any incoming WhatsApp protocol message
+        // (including keepalive responses) resets the zombie timer
         ws.on('CB:message', (node: any) => {
           wsMsgFrameCount++;
+          lastFrameTime = Date.now(); // treat any protocol message as proof of liveness
           const from = node?.attrs?.from || 'unknown';
           const offline = node?.attrs?.offline ? 'YES' : 'no';
           logger.debug({ instanceId, frameNumber: wsMsgFrameCount, from, offline }, '🌐 [WS-MSG] CB:message received');
