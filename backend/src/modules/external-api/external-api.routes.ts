@@ -1532,6 +1532,82 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
     });
   });
 
+  /**
+   * Resolve a LID JID to phone number (query-string style)
+   * GET /api/v1/contacts/resolve-lid?jid=77864099643580@lid&instance_id=...
+   * Permission: contact:read
+   */
+  fastify.get('/contacts/resolve-lid', {
+    preHandler: [requireApiKeyPermission('contact:read')],
+    schema: {
+      description: 'Resolve a @lid JID to a real phone number. Use this when webhook delivers phone_number=null for a LID sender.',
+      tags: ['External API - LID Mappings'],
+      security: [{ apiKeyAuth: [] }],
+      querystring: {
+        type: 'object',
+        required: ['jid'],
+        properties: {
+          jid: { type: 'string', description: 'The LID JID to resolve (e.g., 77864099643580@lid)' },
+          instance_id: { type: 'string', format: 'uuid', description: 'Instance ID (optional, searches all if omitted)' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const query = request.query as { jid: string; instance_id?: string };
+    const lidJid = query.jid;
+
+    if (!lidJid.endsWith('@lid')) {
+      return reply.status(400).send({
+        success: false,
+        error: { code: 'INVALID_LID', message: 'jid must end with @lid (e.g. 77864099643580@lid)' },
+      });
+    }
+
+    const instances = await prisma.whatsAppInstance.findMany({
+      where: {
+        organization_id: req.apiKey.organization_id,
+        deleted_at: null,
+        ...(query.instance_id ? { id: query.instance_id } : {}),
+      },
+      select: { id: true },
+    });
+    const instanceIds = instances.map(i => i.id);
+
+    if (instanceIds.length === 0) {
+      return reply.status(404).send({
+        success: false,
+        error: { code: 'LID_MAPPING_NOT_FOUND', message: 'No instances found or LID not yet resolved.' },
+      });
+    }
+
+    const mapping = await prisma.lidPhoneMapping.findFirst({
+      where: { instance_id: { in: instanceIds }, lid_jid: lidJid },
+    });
+
+    if (!mapping) {
+      return reply.status(404).send({
+        success: false,
+        error: {
+          code: 'LID_MAPPING_NOT_FOUND',
+          message: 'LID not resolved yet. Mapping is populated when: (1) contact sends a message, (2) contacts.upsert event fires, or (3) history sync completes.',
+        },
+      });
+    }
+
+    return reply.send({
+      success: true,
+      data: {
+        lid_jid: mapping.lid_jid,
+        phone_jid: mapping.phone_jid,
+        phone_number: mapping.phone_number,
+        instance_id: mapping.instance_id,
+        source: mapping.source,
+        resolved_at: mapping.created_at,
+      },
+    });
+  });
+
   // ============================================
   // WEBHOOK CONFIG ENDPOINTS (via API Key)
   // ============================================

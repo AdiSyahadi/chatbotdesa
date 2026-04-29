@@ -1441,7 +1441,9 @@ export async function sendTextMessage(
   }
 
   try {
-    const jid = formatPhoneToJid(to);
+    // If 'to' already contains '@' (e.g. @lid or @s.whatsapp.net), use as-is
+    // Otherwise normalize phone number to JID format
+    const jid = to.includes('@') ? to : formatPhoneToJid(to);
     
     // Simulate typing for more human-like behavior
     await socket.presenceSubscribe(jid);
@@ -1612,7 +1614,7 @@ export async function sendMediaMessage(
     : { url: mediaSource.remoteUrl };
 
   try {
-    const jid = formatPhoneToJid(to);
+    const jid = to.includes('@') ? to : formatPhoneToJid(to);
     
     let messageContent: any;
     
@@ -1698,7 +1700,7 @@ export async function sendLocationMessage(
   }
 
   try {
-    const jid = formatPhoneToJid(to);
+    const jid = to.includes('@') ? to : formatPhoneToJid(to);
     
     const result = await socket.sendMessage(jid, {
       location: {

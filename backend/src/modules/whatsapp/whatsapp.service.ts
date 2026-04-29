@@ -535,6 +535,27 @@ export class WhatsAppService {
   }
 
   // ============================================
+  // HELPERS
+  // ============================================
+
+  /**
+   * Resolve LID JID to phone number via DB cache.
+   * Returns the resolved phone or null if not found.
+   */
+  private async resolveLidPhone(instanceId: string, chatJid: string): Promise<string | null> {
+    if (!chatJid.endsWith('@lid')) return null;
+    try {
+      const mapping = await prisma.lidPhoneMapping.findUnique({
+        where: { instance_id_lid_jid: { instance_id: instanceId, lid_jid: chatJid } },
+        select: { phone_number: true },
+      });
+      return mapping?.phone_number ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  // ============================================
   // MESSAGING
   // ============================================
 
@@ -642,7 +663,7 @@ export class WhatsAppService {
     }
 
     // Emit webhook event for message.sent
-    const phoneNumber = extractPhoneFromJid(chatJid);
+    const phoneNumber = extractPhoneFromJid(chatJid) ?? await this.resolveLidPhone(instanceId, chatJid);
     baileysEvents.emit('message', {
       instanceId,
       type: 'outgoing',
@@ -747,7 +768,7 @@ export class WhatsAppService {
     }
 
     // Emit webhook event for message.sent
-    const phoneNumber = extractPhoneFromJid(chatJid);
+    const phoneNumber = extractPhoneFromJid(chatJid) ?? await this.resolveLidPhone(instanceId, chatJid);
     baileysEvents.emit('message', {
       instanceId,
       type: 'outgoing',
@@ -847,7 +868,7 @@ export class WhatsAppService {
     }
 
     // Emit webhook event for message.sent
-    const phoneNumber = extractPhoneFromJid(chatJid);
+    const phoneNumber = extractPhoneFromJid(chatJid) ?? await this.resolveLidPhone(instanceId, chatJid);
     baileysEvents.emit('message', {
       instanceId,
       type: 'outgoing',
