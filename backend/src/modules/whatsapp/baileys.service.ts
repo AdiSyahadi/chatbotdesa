@@ -1292,7 +1292,9 @@ export async function initializeConnection(
 }
 
 /**
- * Disconnect WhatsApp instance
+ * Disconnect WhatsApp instance (soft — preserves session so reconnect works without QR scan).
+ * PATCH-197: Changed from socket.logout()+deleteSession() to socket.end().
+ * For full logout (unlink device + delete session), use logoutInstance() instead.
  */
 export async function disconnectInstance(instanceId: string): Promise<boolean> {
   try {
@@ -1306,35 +1308,31 @@ export async function disconnectInstance(instanceId: string): Promise<boolean> {
       reconnectTimers.delete(instanceId);
     }
 
-    // 3. Close socket and delete session
-    //    Set manuallyDisconnecting flag BEFORE logout so the connection.close
-    //    handler skips DB operations (we handle them below, avoiding race)
+    // 3. Close socket WITHOUT logout — session files are preserved
+    //    so the user can reconnect later without scanning QR again.
     const socket = activeSockets.get(instanceId);
     if (socket) {
       manuallyDisconnecting.add(instanceId);
       try {
-        await socket.logout();
-      } catch (logoutErr) {
-        logger.warn({ err: logoutErr, instanceId }, 'socket.logout() failed during disconnect');
+        socket.end(new Boom('User-initiated disconnect', { statusCode: DisconnectReason.connectionClosed }));
+      } catch (endErr) {
+        logger.warn({ err: endErr, instanceId }, '🔌 [DISCONNECT] socket.end() failed');
       }
-      // Do NOT clear the flag here — the close event handler will consume it.
-      // If close event never fires (edge case), use a safety-net timeout to prevent permanent flag leak.
+      // Safety-net timeout to clear flag if close event never fires
       setTimeout(() => {
         if (manuallyDisconnecting.has(instanceId)) {
           manuallyDisconnecting.delete(instanceId);
-          logger.warn({ instanceId }, '🔌 [DISCONNECT] Safety-net cleared stale manuallyDisconnecting flag (no close event received)');
+          logger.warn({ instanceId }, '🔌 [DISCONNECT] Safety-net cleared stale manuallyDisconnecting flag');
         }
       }, 10000);
       activeSockets.delete(instanceId);
     }
-    deleteSession(instanceId);
+    // NOTE: Session NOT deleted — intentional. Allows reconnect without QR.
     qrCodeStore.delete(instanceId);
-    // PATCH-092: Clean reconnect state on disconnect to prevent memory leak
     reconnectAttempts.delete(instanceId);
     reconnectTimers.delete(instanceId);
 
     // 4. Update DB: status + sync status in single atomic write
-    //    Preserve progress data so user can see what was synced before disconnect
     const current = await prisma.whatsAppInstance.findUnique({
       where: { id: instanceId },
       select: { history_sync_status: true, history_sync_progress: true },
@@ -1351,10 +1349,8 @@ export async function disconnectInstance(instanceId: string): Promise<boolean> {
       where: { id: instanceId },
       data: {
         status: 'DISCONNECTED',
-        phone_number: null,
         qr_code: null,
         disconnected_at: new Date(),
-        // Only change sync status if it was actively SYNCING
         ...(wasSyncing ? {
           history_sync_status: 'STOPPED',
           history_sync_progress: progress,
@@ -1368,10 +1364,88 @@ export async function disconnectInstance(instanceId: string): Promise<boolean> {
       reason: 'manual_disconnect',
     });
 
-    logger.info({ instanceId, syncStatus: wasSyncing ? 'STOPPED' : 'unchanged' }, '🔌 [DISCONNECT] Instance disconnected');
+    logger.info({ instanceId, syncStatus: wasSyncing ? 'STOPPED' : 'unchanged' }, '🔌 [DISCONNECT] Instance soft-disconnected (session preserved)');
     return true;
   } catch (error) {
     logger.error({ error, instanceId }, 'Error disconnecting');
+    return false;
+  }
+}
+
+/**
+ * Logout WhatsApp instance (hard — unlinks device on WA server + deletes local session).
+ * PATCH-197: Extracted from old disconnectInstance(). Use this for:
+ *   - Deleting an instance
+ *   - Re-pairing for history sync (needs fresh QR)
+ *   - User explicitly wants to unlink the WA device
+ */
+export async function logoutInstance(instanceId: string): Promise<boolean> {
+  try {
+    cleanupSyncState(instanceId);
+
+    const pendingReconnect = reconnectTimers.get(instanceId);
+    if (pendingReconnect) {
+      clearTimeout(pendingReconnect);
+      reconnectTimers.delete(instanceId);
+    }
+
+    const socket = activeSockets.get(instanceId);
+    if (socket) {
+      manuallyDisconnecting.add(instanceId);
+      try {
+        await socket.logout();
+      } catch (logoutErr) {
+        logger.warn({ err: logoutErr, instanceId }, '🔌 [LOGOUT] socket.logout() failed');
+      }
+      setTimeout(() => {
+        if (manuallyDisconnecting.has(instanceId)) {
+          manuallyDisconnecting.delete(instanceId);
+          logger.warn({ instanceId }, '🔌 [LOGOUT] Safety-net cleared stale manuallyDisconnecting flag');
+        }
+      }, 10000);
+      activeSockets.delete(instanceId);
+    }
+    deleteSession(instanceId);
+    qrCodeStore.delete(instanceId);
+    reconnectAttempts.delete(instanceId);
+    reconnectTimers.delete(instanceId);
+
+    const current = await prisma.whatsAppInstance.findUnique({
+      where: { id: instanceId },
+      select: { history_sync_status: true, history_sync_progress: true },
+    });
+
+    const wasSyncing = current?.history_sync_status === 'SYNCING';
+    const progress = parseProgress(current?.history_sync_progress);
+    if (wasSyncing) {
+      progress.stopped_at = new Date().toISOString();
+      progress.stopped_reason = 'logged_out';
+    }
+
+    await prisma.whatsAppInstance.update({
+      where: { id: instanceId },
+      data: {
+        status: 'DISCONNECTED',
+        phone_number: null,
+        qr_code: null,
+        disconnected_at: new Date(),
+        ...(wasSyncing ? {
+          history_sync_status: 'STOPPED',
+          history_sync_progress: progress,
+        } : {}),
+      },
+    });
+
+    baileysEvents.emit('connection', {
+      instanceId,
+      status: 'DISCONNECTED',
+      reason: 'manual_logout',
+    });
+
+    logger.info({ instanceId, syncStatus: wasSyncing ? 'STOPPED' : 'unchanged' }, '🔌 [LOGOUT] Instance logged out (session deleted, QR re-scan required)');
+    return true;
+  } catch (error) {
+    logger.error({ error, instanceId }, 'Error logging out instance');
     return false;
   }
 }

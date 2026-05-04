@@ -2127,11 +2127,11 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
       });
 
       // Invalidate cache
-      const { invalidateSyncConfigCache, disconnectInstance } = await import('../whatsapp/baileys.service');
+      const { invalidateSyncConfigCache, logoutInstance } = await import('../whatsapp/baileys.service');
       invalidateSyncConfigCache(instanceId);
 
-      // Disconnect (this calls socket.logout() which deletes the session)
-      await disconnectInstance(instanceId);
+      // Full logout: unlink device + delete session (QR re-scan required for sync)
+      await logoutInstance(instanceId);
 
       return reply.send({
         success: true,

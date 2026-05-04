@@ -20,6 +20,7 @@ import {
 import {
   initializeConnection,
   disconnectInstance,
+  logoutInstance,
   restartInstance,
   getSocket,
   getQRCode,
@@ -328,19 +329,11 @@ export class WhatsAppService {
       throw new AppError('Instance not found', 404, 'INSTANCE_001');
     }
 
-    // Side effects after successful DB update (idempotent)
+    // Side effects after successful DB update: full logout + delete session
     try {
-      if (isConnected(instanceId)) {
-        await disconnectInstance(instanceId);
-      }
+      await logoutInstance(instanceId);
     } catch (e: any) {
-      logger.warn({ instanceId, err: e.message }, '⚠️ [DELETE] Disconnect failed during delete (non-critical)');
-    }
-
-    try {
-      deleteSession(instanceId);
-    } catch (e: any) {
-      logger.warn({ instanceId, err: e.message }, '⚠️ [DELETE] Session file cleanup failed (non-critical)');
+      logger.warn({ instanceId, err: e.message }, '⚠️ [DELETE] Logout failed during delete (non-critical)');
     }
 
     // Cascade hard-delete all data belonging to this instance

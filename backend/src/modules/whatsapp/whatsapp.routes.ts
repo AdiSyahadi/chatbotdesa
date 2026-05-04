@@ -929,11 +929,11 @@ export default async function whatsappRoutes(fastify: FastifyInstance) {
       });
 
       // Invalidate cache
-      const { invalidateSyncConfigCache, disconnectInstance } = await import('./baileys.service');
+      const { invalidateSyncConfigCache, logoutInstance } = await import('./baileys.service');
       invalidateSyncConfigCache(id);
 
-      // Disconnect (this calls socket.logout() which deletes the session)
-      await disconnectInstance(id);
+      // Full logout: unlink device + delete session (QR re-scan required for sync)
+      await logoutInstance(id);
 
       return reply.send({
         success: true,
