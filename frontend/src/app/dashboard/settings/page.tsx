@@ -31,6 +31,7 @@ import {
   Lock,
 } from "lucide-react";
 import { toast } from "sonner";
+import { authApi } from "@/lib/api";
 
 export default function SettingsPage() {
   const { user } = useAuthStore();
@@ -68,11 +69,13 @@ export default function SettingsPage() {
   const handleSaveProfile = async () => {
     setIsLoading(true);
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await authApi.updateProfile({
+        full_name: profileName,
+      });
       toast.success("Profil berhasil disimpan");
-    } catch {
-      toast.error("Gagal menyimpan profil");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Gagal menyimpan profil";
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
@@ -86,14 +89,17 @@ export default function SettingsPage() {
 
     setIsLoading(true);
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+      await authApi.changePassword({
+        current_password: currentPassword,
+        new_password: newPassword,
+      });
       toast.success("Password berhasil diubah");
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
-    } catch {
-      toast.error("Gagal mengubah password");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Gagal mengubah password";
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }

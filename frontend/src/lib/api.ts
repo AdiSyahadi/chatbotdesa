@@ -114,6 +114,16 @@ export const authApi = {
     return response.data;
   },
 
+  updateProfile: async (data: { full_name?: string; phone?: string }) => {
+    const response = await api.patch("/auth/profile", data);
+    return response.data;
+  },
+
+  changePassword: async (data: { current_password: string; new_password: string }) => {
+    const response = await api.post("/auth/change-password", data);
+    return response.data;
+  },
+
   forgotPassword: async (email: string) => {
     const response = await api.post("/auth/forgot-password", { email });
     return response.data;
