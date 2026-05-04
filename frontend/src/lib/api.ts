@@ -40,7 +40,7 @@ api.interceptors.response.use(
         const refreshToken = Cookies.get("refreshToken");
         if (refreshToken) {
           const response = await axios.post(`${API_BASE_URL}/api/auth/refresh`, {
-            refreshToken,
+            refresh_token: refreshToken,
           });
 
           const { accessToken, refreshToken: newRefreshToken } = response.data.data;
@@ -105,7 +105,7 @@ export const authApi = {
   },
 
   refreshToken: async (refreshToken: string) => {
-    const response = await api.post("/auth/refresh", { refreshToken });
+    const response = await api.post("/auth/refresh", { refresh_token: refreshToken });
     return response.data;
   },
 

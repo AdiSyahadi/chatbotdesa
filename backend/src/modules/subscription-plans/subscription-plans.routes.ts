@@ -25,6 +25,7 @@ import logger from '../../config/logger';
 import { AppError } from '../../types';
 import { requireRole } from '../../middleware/rbac';
 import { UserRole } from '@prisma/client';
+import { createSubscriptionInvoice } from '../invoices/invoices.service';
 
 // ============================================
 // ROUTE REGISTRATION
@@ -90,6 +91,93 @@ export async function subscriptionPlansRoutes(fastify: FastifyInstance) {
   };
 
 
+
+  // ============================================
+  // USER CHECKOUT & SUBSCRIBE ROUTES
+  // ============================================
+
+  /**
+   * POST /checkout - Start checkout flow: create subscription + invoice
+   * Called by frontend billing page when user selects a plan
+   */
+  fastify.post(
+    '/checkout',
+    { preHandler: [requireAuth] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user as { organizationId: string; userId: string };
+        const { plan_id } = request.body as { plan_id: string };
+
+        if (!plan_id) {
+          throw new AppError('plan_id is required', 400, 'VALIDATION_ERROR');
+        }
+
+        // Create subscription (reuse existing service)
+        const subscription = await subscriptionPlansService.createSubscription(
+          user.organizationId,
+          { plan_id }
+        );
+
+        // Create invoice for the subscription
+        const invoice = await createSubscriptionInvoice(
+          user.organizationId,
+          subscription.id,
+          subscription.price,
+          subscription.currency
+        );
+
+        logger.info(`Checkout completed: subscription ${subscription.id}, invoice ${invoice.id}`);
+
+        return reply.status(201).send({
+          success: true,
+          data: {
+            subscription,
+            invoice,
+            // No external checkout_url — manual transfer flow
+            // Frontend should redirect to invoice detail page
+            checkout_url: `/dashboard/billing/invoices`,
+          },
+          message: 'Checkout completed. Please complete payment.',
+        });
+      } catch (error) {
+        throw error;
+      }
+    }
+  );
+
+  /**
+   * POST /subscribe - Subscribe to a plan (alias for POST /subscription)
+   * Called by frontend billing page
+   */
+  fastify.post(
+    '/subscribe',
+    { preHandler: [requireAuth] },
+    async (request: FastifyRequest, reply: FastifyReply) => {
+      try {
+        const user = request.user as { organizationId: string; userId: string };
+        const { plan_id } = request.body as { plan_id: string };
+
+        if (!plan_id) {
+          throw new AppError('plan_id is required', 400, 'VALIDATION_ERROR');
+        }
+
+        const subscription = await subscriptionPlansService.createSubscription(
+          user.organizationId,
+          { plan_id }
+        );
+
+        logger.info(`Subscription created via /subscribe: ${subscription.id} for org ${user.organizationId}`);
+
+        return reply.status(201).send({
+          success: true,
+          data: { subscription },
+          message: 'Subscription created successfully',
+        });
+      } catch (error) {
+        throw error;
+      }
+    }
+  );
 
   // ============================================
   // ADMIN PLAN MANAGEMENT ROUTES
