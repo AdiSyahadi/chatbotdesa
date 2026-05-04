@@ -45,7 +45,6 @@ import {
   RefreshCw,
   LayoutGrid,
   List,
-  Info,
   TrendingUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -236,26 +235,41 @@ export default function InstancesPage() {
 
       {/* Warming phase info banner — show if any instance is not yet at max phase */}
       {instances.some((i) => i.warming_phase && i.warming_phase !== 'DAY_15_PLUS') && (
-        <Card className="border-amber-200 bg-amber-50 dark:bg-amber-950/20 dark:border-amber-800">
-          <CardContent className="p-4">
-            <div className="flex gap-3">
-              <Info className="h-5 w-5 text-amber-600 dark:text-amber-400 mt-0.5 shrink-0" />
-              <div className="space-y-2">
-                <p className="text-sm font-semibold text-foreground">
-                  Sistem Warming — Limit pesan naik otomatis
-                </p>
-                <p className="text-sm text-muted-foreground">
-                  Untuk menjaga keamanan nomor WhatsApp Anda, limit pengiriman dinaikkan bertahap secara otomatis. Tidak perlu tindakan apapun.
-                </p>
-                <div className="flex flex-wrap items-center gap-2 mt-1">
-                  <TrendingUp className="h-3.5 w-3.5 text-amber-600 dark:text-amber-400" />
-                  <span className="text-sm text-foreground">Hari 1-3: <strong>100</strong>/hari</span>
-                  <span className="text-muted-foreground">→</span>
-                  <span className="text-sm text-foreground">Hari 4-7: <strong>300</strong>/hari</span>
-                  <span className="text-muted-foreground">→</span>
-                  <span className="text-sm text-foreground">Hari 8-14: <strong>600</strong>/hari</span>
-                  <span className="text-muted-foreground">→</span>
-                  <span className="text-sm text-foreground">Hari 15+: <strong>1.000</strong>/hari</span>
+        <Card className="border-secondary/20 bg-card">
+          <CardContent className="p-5">
+            <div className="flex gap-4">
+              <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-secondary/10">
+                <TrendingUp className="h-5 w-5 text-secondary" />
+              </div>
+              <div className="space-y-3 flex-1">
+                <div>
+                  <p className="text-sm font-semibold text-foreground">
+                    Sistem Warming Aktif
+                  </p>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Limit pengiriman naik otomatis secara bertahap untuk menjaga keamanan nomor.
+                  </p>
+                </div>
+                <div className="grid grid-cols-4 gap-2">
+                  {[
+                    { label: 'Hari 1-3', limit: '100/hari' },
+                    { label: 'Hari 4-7', limit: '300/hari' },
+                    { label: 'Hari 8-14', limit: '600/hari' },
+                    { label: 'Hari 15+', limit: '1.000/hari' },
+                  ].map((step, i) => (
+                    <div
+                      key={step.label}
+                      className={cn(
+                        'rounded-md border p-2 text-center text-xs',
+                        i === 3
+                          ? 'border-secondary/30 bg-secondary/5 text-secondary font-semibold'
+                          : 'border-border bg-muted/30 text-muted-foreground'
+                      )}
+                    >
+                      <div className="font-medium text-foreground">{step.label}</div>
+                      <div>{step.limit}</div>
+                    </div>
+                  ))}
                 </div>
               </div>
             </div>
@@ -448,7 +462,7 @@ function InstanceCard({ instance, onConnect, onDisconnect, onDelete }: InstanceC
                 {warmingPhaseLabel[instance.warming_phase] ?? instance.warming_phase}
               </span>
               {instance.warming_phase !== 'DAY_15_PLUS' && warmingPhaseInfo[instance.warming_phase] && (
-                <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                <p className="text-[10px] text-secondary">
                   {warmingPhaseInfo[instance.warming_phase].next}
                 </p>
               )}
