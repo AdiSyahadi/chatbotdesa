@@ -526,6 +526,11 @@ export const adminApi = {
     return response.data;
   },
 
+  updateUser: async (id: string, data: { is_active?: boolean; role?: string }) => {
+    const response = await api.patch(`/admin/users/${id}`, data);
+    return response.data;
+  },
+
   getAllInstances: async (params?: { page?: number; limit?: number; status?: string }) => {
     const response = await api.get("/admin/instances", { params });
     return response.data;

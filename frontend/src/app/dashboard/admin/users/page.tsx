@@ -1,8 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { adminApi } from "@/lib/api";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -75,10 +76,29 @@ const statusConfig: Record<string, { label: string; color: string; bgColor: stri
 };
 
 export default function AdminUsersPage() {
+  const queryClient = useQueryClient();
   const [filterRole, setFilterRole] = useState("__all__");
   const [filterStatus, setFilterStatus] = useState("__all__");
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
+
+  const suspendMutation = useMutation({
+    mutationFn: (userId: string) => adminApi.updateUser(userId, { is_active: false }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+      toast.success("User berhasil disuspend");
+    },
+    onError: () => toast.error("Gagal suspend user"),
+  });
+
+  const activateMutation = useMutation({
+    mutationFn: (userId: string) => adminApi.updateUser(userId, { is_active: true }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+      toast.success("User berhasil diaktifkan");
+    },
+    onError: () => toast.error("Gagal aktifkan user"),
+  });
 
   const { data, isLoading, refetch } = useQuery({
     queryKey: ["admin", "users", { page, role: filterRole, status: filterStatus }],
@@ -270,26 +290,32 @@ export default function AdminUsersPage() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
-                            <DropdownMenuItem>
+                            <DropdownMenuItem disabled>
                               <Eye className="mr-2 h-4 w-4" />
                               View Details
                             </DropdownMenuItem>
-                            <DropdownMenuItem>
+                            <DropdownMenuItem disabled>
                               <Edit className="mr-2 h-4 w-4" />
                               Edit
                             </DropdownMenuItem>
-                            <DropdownMenuItem>
+                            <DropdownMenuItem disabled>
                               <Shield className="mr-2 h-4 w-4" />
                               Change Role
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             {user.status === "ACTIVE" ? (
-                              <DropdownMenuItem className="text-red-600">
+                              <DropdownMenuItem
+                                className="text-red-600"
+                                onClick={() => suspendMutation.mutate(user.id)}
+                              >
                                 <Ban className="mr-2 h-4 w-4" />
                                 Suspend
                               </DropdownMenuItem>
                             ) : (
-                              <DropdownMenuItem className="text-green-600">
+                              <DropdownMenuItem
+                                className="text-green-600"
+                                onClick={() => activateMutation.mutate(user.id)}
+                              >
                                 <CheckCircle className="mr-2 h-4 w-4" />
                                 Activate
                               </DropdownMenuItem>

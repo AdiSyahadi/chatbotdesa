@@ -61,11 +61,18 @@ export async function adminRoutes(fastify: FastifyInstance) {
     return {
       success: true,
       data: {
-        organizations: { total: totalOrganizations, newThisMonth: newOrgsThisMonth },
-        users: { total: totalUsers, activeToday: activeUsersToday },
-        instances: { total: totalInstances, connected: connectedInstances },
-        revenue: { mtd: revenueMTD, currency: 'IDR' },
-        messages: { today: messagesTodayResult, thisMonth: messagesResult, successRate: 100 },
+        // Flat fields expected by frontend admin dashboard
+        total_organizations: totalOrganizations,
+        new_organizations_this_month: newOrgsThisMonth,
+        total_users: totalUsers,
+        active_users_today: activeUsersToday,
+        total_instances: totalInstances,
+        connected_instances: connectedInstances,
+        revenue_this_month: revenueMTD,
+        mrr: revenueMTD, // simplified MRR = current MTD revenue
+        messages_today: messagesTodayResult,
+        messages_this_month: messagesResult,
+        message_success_rate: 100,
       },
     };
   });
@@ -360,7 +367,18 @@ export async function adminRoutes(fastify: FastifyInstance) {
       ];
     }
     if (role) {
-      where.role = role;
+      // Map frontend role names to Prisma UserRole enum
+      const roleMap: Record<string, string> = {
+        SUPER_ADMIN: 'SUPER_ADMIN',
+        OWNER: 'ORG_OWNER',
+        ADMIN: 'ORG_ADMIN',
+        MEMBER: 'ORG_MEMBER',
+        // Also accept exact enum values
+        ORG_OWNER: 'ORG_OWNER',
+        ORG_ADMIN: 'ORG_ADMIN',
+        ORG_MEMBER: 'ORG_MEMBER',
+      };
+      where.role = roleMap[role] || role;
     }
     if (status === 'ACTIVE') {
       where.is_active = true;
@@ -390,15 +408,78 @@ export async function adminRoutes(fastify: FastifyInstance) {
       prisma.user.count({ where }),
     ]);
 
+    // Transform users to match frontend field expectations
+    const transformedUsers = users.map((u) => ({
+      ...u,
+      name: u.full_name,
+      status: u.is_active ? 'ACTIVE' : 'INACTIVE',
+    }));
+
     return {
       success: true,
-      data: users,
-      pagination: {
-        page: parseInt(page),
-        limit: parseInt(limit),
-        total,
-        totalPages: Math.ceil(total / take),
+      data: {
+        users: transformedUsers,
+        pagination: {
+          page: parseInt(page),
+          limit: parseInt(limit),
+          total,
+          totalPages: Math.ceil(total / take),
+        },
       },
+    };
+  });
+
+  /**
+   * PATCH /admin/users/:id — Update user (suspend/activate/change role)
+   */
+  fastify.patch('/users/:id', async (request: FastifyRequest<{
+    Params: { id: string };
+    Body: { is_active?: boolean; role?: string };
+  }>, reply) => {
+    const { id } = request.params;
+    const body = request.body || {};
+
+    const user = await prisma.user.findFirst({ where: { id, deleted_at: null } });
+    if (!user) {
+      return reply.status(404).send({ success: false, error: { code: 'NOT_FOUND', message: 'User not found' } });
+    }
+
+    const updateData: any = {};
+    if (body.is_active !== undefined) updateData.is_active = body.is_active;
+    if (body.role) {
+      // Map frontend role names to Prisma enum
+      const roleMap: Record<string, string> = {
+        SUPER_ADMIN: 'SUPER_ADMIN',
+        OWNER: 'ORG_OWNER',
+        ADMIN: 'ORG_ADMIN',
+        MEMBER: 'ORG_MEMBER',
+        ORG_OWNER: 'ORG_OWNER',
+        ORG_ADMIN: 'ORG_ADMIN',
+        ORG_MEMBER: 'ORG_MEMBER',
+      };
+      updateData.role = roleMap[body.role] || body.role;
+    }
+
+    const updated = await prisma.user.update({ where: { id }, data: updateData });
+
+    logger.info({ userId: id, changes: updateData }, 'Admin updated user');
+
+    const adminUser = (request as any).user;
+    void createAuditLog({
+      organization_id: updated.organization_id,
+      user_id: adminUser?.userId ?? null,
+      action: 'user.update',
+      resource_type: 'user',
+      resource_id: id,
+      old_values: { is_active: user.is_active, role: user.role },
+      new_values: updateData,
+      ip_address: request.ip,
+      user_agent: request.headers?.['user-agent'] as string | undefined,
+    });
+
+    return {
+      success: true,
+      data: { ...updated, name: updated.full_name, status: updated.is_active ? 'ACTIVE' : 'INACTIVE' },
     };
   });
 
@@ -498,12 +579,14 @@ export async function adminRoutes(fastify: FastifyInstance) {
       health.status = 'degraded';
     }
 
-    // System resources
+    // System resources — flat fields expected by frontend
     const totalMem = os.totalmem();
     const freeMem = os.freemem();
+    const memoryUsage = Math.round(((totalMem - freeMem) / totalMem) * 100);
     health.resources = {
-      cpu: os.loadavg()[0],
-      memory: { total: totalMem, free: freeMem, usedPercent: Math.round(((totalMem - freeMem) / totalMem) * 100) },
+      cpu_usage: Math.round(os.loadavg()[0] * 100) / 100,
+      memory_usage: memoryUsage,
+      disk_usage: 0, // disk usage requires platform-specific call; placeholder
     };
 
     return { success: true, data: health };
