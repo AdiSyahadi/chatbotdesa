@@ -45,6 +45,8 @@ import {
   RefreshCw,
   LayoutGrid,
   List,
+  Info,
+  TrendingUp,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -69,6 +71,13 @@ const warmingPhaseLabel: Record<string, string> = {
   DAY_4_7: 'Hari 4-7',
   DAY_8_14: 'Hari 8-14',
   DAY_15_PLUS: 'Matang',
+};
+
+const warmingPhaseInfo: Record<string, { limit: number; next: string }> = {
+  DAY_1_3: { limit: 100, next: 'Naik ke 300/hari di hari ke-4' },
+  DAY_4_7: { limit: 300, next: 'Naik ke 600/hari di hari ke-8' },
+  DAY_8_14: { limit: 600, next: 'Naik ke 1.000/hari di hari ke-15' },
+  DAY_15_PLUS: { limit: 1000, next: 'Limit maksimal tercapai' },
 };
 
 const statusConfig: Record<string, { label: string; color: string; bgColor: string }> = {
@@ -224,6 +233,43 @@ export default function InstancesPage() {
           </Dialog>
         </div>
       </div>
+
+      {/* Warming phase info banner — show if any instance is not yet at max phase */}
+      {instances.some((i) => i.warming_phase && i.warming_phase !== 'DAY_15_PLUS') && (
+        <Card className="border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-900">
+          <CardContent className="p-4">
+            <div className="flex gap-3">
+              <Info className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                  Sistem Warming — Limit pesan naik otomatis!
+                </p>
+                <p className="text-xs text-blue-700 dark:text-blue-300">
+                  Untuk menjaga keamanan nomor WhatsApp Anda, limit pengiriman dinaikkan secara bertahap. Ini bersifat otomatis dan tidak perlu tindakan apapun dari Anda.
+                </p>
+                <div className="flex flex-wrap gap-3 mt-1">
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <TrendingUp className="h-3 w-3 text-blue-600" />
+                    <span className="text-blue-800 dark:text-blue-200">Hari 1-3: <strong>100</strong>/hari</span>
+                  </div>
+                  <span className="text-blue-400">→</span>
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="text-blue-800 dark:text-blue-200">Hari 4-7: <strong>300</strong>/hari</span>
+                  </div>
+                  <span className="text-blue-400">→</span>
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="text-blue-800 dark:text-blue-200">Hari 8-14: <strong>600</strong>/hari</span>
+                  </div>
+                  <span className="text-blue-400">→</span>
+                  <div className="flex items-center gap-1.5 text-xs">
+                    <span className="text-blue-800 dark:text-blue-200">Hari 15+: <strong>1.000</strong>/hari</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Instances list/grid */}
       {isLoading ? (
@@ -405,9 +451,16 @@ function InstanceCard({ instance, onConnect, onDisconnect, onDelete }: InstanceC
             {status.label}
           </Badge>
           {instance.warming_phase && (
-            <span className="text-xs text-muted-foreground">
-              {warmingPhaseLabel[instance.warming_phase] ?? instance.warming_phase}
-            </span>
+            <div className="text-right">
+              <span className="text-xs text-muted-foreground">
+                {warmingPhaseLabel[instance.warming_phase] ?? instance.warming_phase}
+              </span>
+              {instance.warming_phase !== 'DAY_15_PLUS' && warmingPhaseInfo[instance.warming_phase] && (
+                <p className="text-[10px] text-blue-600 dark:text-blue-400">
+                  {warmingPhaseInfo[instance.warming_phase].next}
+                </p>
+              )}
+            </div>
           )}
           {instance.status === "QR_READY" && (
             <Link href={`/dashboard/whatsapp/instances/${instance.id}`}>

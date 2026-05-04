@@ -52,6 +52,7 @@ import {
   AlertTriangle,
   Square,
   Play,
+  TrendingUp,
 } from "lucide-react";
 import { cn, formatDate, copyToClipboard } from "@/lib/utils";
 import { toast } from "sonner";
@@ -374,9 +375,16 @@ export default function InstanceDetailPage() {
                   ) : null}
                 </div>
                 {instance.warming_phase && (
-                  <p className="text-xs text-muted-foreground mt-1">
-                    Fase: {({ DAY_1_3: 'Hari 1-3', DAY_4_7: 'Hari 4-7', DAY_8_14: 'Hari 8-14', DAY_15_PLUS: 'Matang' } as Record<string, string>)[instance.warming_phase] ?? instance.warming_phase}
-                  </p>
+                  <div className="mt-1">
+                    <p className="text-xs text-muted-foreground">
+                      Fase: {({ DAY_1_3: 'Hari 1-3', DAY_4_7: 'Hari 4-7', DAY_8_14: 'Hari 8-14', DAY_15_PLUS: 'Matang' } as Record<string, string>)[instance.warming_phase] ?? instance.warming_phase}
+                    </p>
+                    {instance.warming_phase !== 'DAY_15_PLUS' && (
+                      <p className="text-[10px] text-blue-600 dark:text-blue-400 mt-0.5">
+                        {({ DAY_1_3: 'Naik ke 300/hari di hari ke-4', DAY_4_7: 'Naik ke 600/hari di hari ke-8', DAY_8_14: 'Naik ke 1.000/hari di hari ke-15' } as Record<string, string>)[instance.warming_phase]}
+                      </p>
+                    )}
+                  </div>
                 )}
               </CardContent>
             </Card>
@@ -403,6 +411,46 @@ export default function InstanceDetailPage() {
               </CardContent>
             </Card>
           </div>
+
+          {/* Warming phase info — only show if not yet at max */}
+          {instance.warming_phase && instance.warming_phase !== 'DAY_15_PLUS' && (
+            <Card className="border-blue-200 bg-blue-50 dark:bg-blue-950/20 dark:border-blue-900">
+              <CardContent className="p-4">
+                <div className="flex gap-3">
+                  <TrendingUp className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />
+                  <div className="space-y-2">
+                    <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                      Warming Phase — Limit naik otomatis
+                    </p>
+                    <p className="text-xs text-blue-700 dark:text-blue-300">
+                      Nomor WhatsApp baru perlu &quot;pemanasan&quot; agar tidak diblokir oleh WhatsApp. Limit pengiriman akan naik secara otomatis tanpa perlu tindakan apapun dari Anda.
+                    </p>
+                    <div className="grid grid-cols-4 gap-2 mt-2">
+                      {[
+                        { phase: 'DAY_1_3', label: 'Hari 1-3', limit: '100/hari' },
+                        { phase: 'DAY_4_7', label: 'Hari 4-7', limit: '300/hari' },
+                        { phase: 'DAY_8_14', label: 'Hari 8-14', limit: '600/hari' },
+                        { phase: 'DAY_15_PLUS', label: 'Hari 15+', limit: '1.000/hari' },
+                      ].map((p) => (
+                        <div
+                          key={p.phase}
+                          className={cn(
+                            'rounded-md p-2 text-center text-xs border',
+                            instance.warming_phase === p.phase
+                              ? 'bg-blue-600 text-white border-blue-600 font-semibold'
+                              : 'bg-white dark:bg-blue-950/40 text-blue-800 dark:text-blue-200 border-blue-200 dark:border-blue-800'
+                          )}
+                        >
+                          <div className="font-medium">{p.label}</div>
+                          <div>{p.limit}</div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          )}
 
           {/* Quick actions */}
           <Card>
