@@ -255,7 +255,7 @@ export default function InstanceSettingsPage() {
                       <div className="space-y-1 flex-1 min-w-0">
                         <div className="flex items-center gap-2">
                           <span className="font-medium text-sm">{target.label}</span>
-                          <Badge variant="secondary" className={target.is_active ? "bg-green-100 text-green-700 text-xs" : "bg-gray-100 text-gray-500 text-xs"}>
+                          <Badge variant="secondary" className={target.is_active ? "bg-accent/20 text-primary text-xs" : "bg-gray-100 text-gray-500 text-xs"}>
                             {target.is_active ? "Aktif" : "Nonaktif"}
                           </Badge>
                         </div>

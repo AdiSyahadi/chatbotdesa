@@ -52,8 +52,8 @@ import { toast } from "sonner";
 import { useState } from "react";
 
 const statusConfig: Record<string, { label: string; color: string; bgColor: string }> = {
-  ACTIVE:    { label: "Active",    color: "text-green-700",  bgColor: "bg-green-100" },
-  TRIAL:     { label: "Trial",     color: "text-blue-700",   bgColor: "bg-blue-100" },
+  ACTIVE:    { label: "Active",    color: "text-primary",    bgColor: "bg-accent/20" },
+  TRIAL:     { label: "Trial",     color: "text-secondary",  bgColor: "bg-secondary/10" },
   INACTIVE:  { label: "Inactive",  color: "text-gray-700",   bgColor: "bg-gray-100" },
   SUSPENDED: { label: "Suspended", color: "text-red-700",    bgColor: "bg-red-100" },
   EXPIRED:   { label: "Expired",   color: "text-orange-700", bgColor: "bg-orange-100" },
@@ -63,7 +63,7 @@ const statusConfig: Record<string, { label: string; color: string; bgColor: stri
 };
 
 const instanceStatusConfig: Record<string, { label: string; color: string }> = {
-  CONNECTED:    { label: "Connected",    color: "text-green-600" },
+  CONNECTED:    { label: "Connected",    color: "text-primary" },
   DISCONNECTED: { label: "Disconnected", color: "text-gray-500" },
   CONNECTING:   { label: "Connecting",   color: "text-yellow-600" },
   QR_READY:     { label: "QR Ready",     color: "text-blue-600" },
@@ -197,7 +197,7 @@ export default function AdminOrganizationDetailPage() {
           {isSuspended ? (
             <Button
               size="sm"
-              className="bg-green-600 hover:bg-green-700"
+              className="bg-primary hover:bg-primary/90"
               disabled={activateMutation.isPending}
               onClick={() => activateMutation.mutate()}
             >
@@ -305,7 +305,7 @@ export default function AdminOrganizationDetailPage() {
                         </Badge>
                       </TableCell>
                       <TableCell>
-                        <span className={cn("text-xs font-medium", user.is_active ? "text-green-600" : "text-red-500")}>
+                        <span className={cn("text-xs font-medium", user.is_active ? "text-secondary" : "text-red-500")}>
                           {user.is_active ? "Active" : "Inactive"}
                         </span>
                       </TableCell>

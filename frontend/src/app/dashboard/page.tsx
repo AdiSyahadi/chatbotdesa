@@ -45,13 +45,13 @@ export default function DashboardPage() {
       label: "Messages Today",
       value: usage ? usage.messages_today.used.toLocaleString() : "-",
       icon: Send,
-      color: "text-blue-500",
+      color: "text-secondary",
     },
     {
       label: "Contacts",
       value: usage ? usage.contacts.used.toLocaleString() : "-",
       icon: Users,
-      color: "text-green-500",
+      color: "text-accent",
     },
     {
       label: "Webhook Calls",

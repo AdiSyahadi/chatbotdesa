@@ -169,7 +169,7 @@ export default function BillingPage() {
                     <Badge
                       variant={subscription.status === "ACTIVE" ? "default" : "destructive"}
                       className={cn(
-                        subscription.status === "ACTIVE" && "bg-green-100 text-green-700"
+                        subscription.status === "ACTIVE" && "bg-accent/20 text-primary"
                       )}
                     >
                       {subscription.status}
@@ -322,7 +322,7 @@ export default function BillingPage() {
                 onClick={() => setBillingPeriod("YEARLY")}
               >
                 Yearly
-                <Badge className="ml-2 bg-green-100 text-green-700">Save 20%</Badge>
+                <Badge className="ml-2 bg-accent/20 text-primary">Save 20%</Badge>
               </Button>
             </div>
           </div>
@@ -358,21 +358,21 @@ export default function BillingPage() {
   <ul className="space-y-2">
                     {/* Core limits */}
                     <li className="flex items-center gap-2">
-                      <Check className="h-4 w-4 text-green-500" />
+                      <Check className="h-4 w-4 text-secondary" />
                       <span>{plan.max_instances} WhatsApp Instances</span>
                     </li>
                     <li className="flex items-center gap-2">
-                      <Check className="h-4 w-4 text-green-500" />
+                      <Check className="h-4 w-4 text-secondary" />
                       <span>{plan.max_messages_per_day.toLocaleString()} Messages/day</span>
                     </li>
                     <li className="flex items-center gap-2">
-                      <Check className="h-4 w-4 text-green-500" />
+                      <Check className="h-4 w-4 text-secondary" />
                       <span>{plan.max_contacts.toLocaleString()} Contacts</span>
                     </li>
                     {/* Feature labels from backend */}
                     {(plan.features as string[]).slice(3).map((feat, i) => (
                       <li key={i} className="flex items-center gap-2">
-                        <Check className="h-4 w-4 text-green-500" />
+                        <Check className="h-4 w-4 text-secondary" />
                         <span>{feat}</span>
                       </li>
                     ))}

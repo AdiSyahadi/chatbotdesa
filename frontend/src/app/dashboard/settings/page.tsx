@@ -306,8 +306,8 @@ export default function SettingsPage() {
               <div className="space-y-4">
                 <div className="flex items-center justify-between p-3 border rounded-lg">
                   <div className="flex items-center gap-3">
-                    <div className="p-2 bg-green-100 rounded-lg">
-                      <Globe className="h-4 w-4 text-green-600" />
+                    <div className="p-2 bg-accent/20 rounded-lg">
+                      <Globe className="h-4 w-4 text-primary" />
                     </div>
                     <div>
                       <p className="font-medium text-sm">Sesi Saat Ini</p>
@@ -316,7 +316,7 @@ export default function SettingsPage() {
                       </p>
                     </div>
                   </div>
-                  <span className="text-xs text-green-600 font-medium">Aktif</span>
+                  <span className="text-xs text-secondary font-medium">Aktif</span>
                 </div>
               </div>
               <div className="mt-4">

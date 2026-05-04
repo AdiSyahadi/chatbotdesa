@@ -33,7 +33,7 @@ interface Invoice {
 
 const statusColors: Record<string, string> = {
   PENDING: "bg-yellow-100 text-yellow-800",
-  PAID: "bg-green-100 text-green-800",
+  PAID: "bg-accent/20 text-primary",
   FAILED: "bg-red-100 text-red-800",
   CANCELED: "bg-gray-100 text-gray-800",
   REFUNDED: "bg-purple-100 text-purple-800",
@@ -123,7 +123,7 @@ export default function AdminInvoicesPage() {
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
-                <Receipt className="h-8 w-8 text-blue-500" />
+                <Receipt className="h-8 w-8 text-secondary" />
                 <div>
                   <p className="text-sm text-muted-foreground">Total Invoice</p>
                   <p className="text-2xl font-bold">{stats.total_invoices ?? 0}</p>
@@ -134,7 +134,7 @@ export default function AdminInvoicesPage() {
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
-                <TrendingUp className="h-8 w-8 text-green-500" />
+                <TrendingUp className="h-8 w-8 text-primary" />
                 <div>
                   <p className="text-sm text-muted-foreground">Total Revenue</p>
                   <p className="text-2xl font-bold">

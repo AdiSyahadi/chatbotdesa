@@ -443,7 +443,7 @@ export default function WebhooksPage() {
                         variant="secondary"
                         className={cn(
                           webhook.is_active
-                            ? "bg-green-100 text-green-700"
+                            ? "bg-accent/20 text-primary"
                             : "bg-gray-100 text-gray-700"
                         )}
                       >

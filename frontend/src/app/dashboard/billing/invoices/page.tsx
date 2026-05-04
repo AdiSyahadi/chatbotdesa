@@ -52,7 +52,7 @@ interface Invoice {
 const statusConfig: Record<string, { label: string; icon: React.ReactNode; color: string; bgColor: string }> = {
   DRAFT: { label: "Draft", icon: <Clock className="h-3 w-3" />, color: "text-gray-700", bgColor: "bg-gray-100" },
   PENDING: { label: "Pending", icon: <Clock className="h-3 w-3" />, color: "text-yellow-700", bgColor: "bg-yellow-100" },
-  PAID: { label: "Paid", icon: <CheckCircle className="h-3 w-3" />, color: "text-green-700", bgColor: "bg-green-100" },
+  PAID: { label: "Paid", icon: <CheckCircle className="h-3 w-3" />, color: "text-primary", bgColor: "bg-accent/20" },
   OVERDUE: { label: "Overdue", icon: <XCircle className="h-3 w-3" />, color: "text-red-700", bgColor: "bg-red-100" },
   CANCELLED: { label: "Cancelled", icon: <XCircle className="h-3 w-3" />, color: "text-gray-700", bgColor: "bg-gray-100" },
 };
@@ -126,10 +126,10 @@ export default function InvoicesPage() {
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium">Paid</CardTitle>
-              <CheckCircle className="h-4 w-4 text-green-500" />
+              <CheckCircle className="h-4 w-4 text-secondary" />
             </CardHeader>
             <CardContent>
-              <div className="text-2xl font-bold text-green-600">
+              <div className="text-2xl font-bold text-secondary">
                 {formatCurrency(stats.paid_amount || 0)}
               </div>
             </CardContent>

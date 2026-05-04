@@ -189,7 +189,7 @@ export default function AdminPlansPage() {
                   </div>
                   <div className="flex gap-1">
                     {plan.is_active ? (
-                      <Badge className="bg-green-100 text-green-800">Active</Badge>
+                      <Badge className="bg-accent/20 text-primary">Active</Badge>
                     ) : (
                       <Badge variant="secondary">Inactive</Badge>
                     )}

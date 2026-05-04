@@ -8,19 +8,19 @@
     --card-foreground: 0 0% 9%;
     --popover: 0 0% 100%;
     --popover-foreground: 0 0% 9%;
-    --primary: 142 70% 45%;
+    --primary: 164 56% 28%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 171 79% 19%;
+    --secondary: 163 54% 41%;
     --secondary-foreground: 0 0% 100%;
-    --muted: 210 40% 96%;
-    --muted-foreground: 215 16% 47%;
-    --accent: 199 90% 58%;
-    --accent-foreground: 0 0% 100%;
+    --muted: 0 0% 93%;
+    --muted-foreground: 0 0% 40%;
+    --accent: 145 47% 63%;
+    --accent-foreground: 0 0% 9%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
-    --border: 214 32% 91%;
-    --input: 214 32% 91%;
-    --ring: 142 70% 45%;
+    --border: 0 0% 88%;
+    --input: 0 0% 88%;
+    --ring: 164 56% 28%;
     --radius: 0.5rem;
   }
 
@@ -31,19 +31,19 @@
     --card-foreground: 0 0% 95%;
     --popover: 0 0% 12%;
     --popover-foreground: 0 0% 95%;
-    --primary: 142 70% 45%;
+    --primary: 164 56% 28%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 171 79% 19%;
+    --secondary: 163 54% 41%;
     --secondary-foreground: 0 0% 100%;
     --muted: 0 0% 15%;
     --muted-foreground: 0 0% 65%;
-    --accent: 199 90% 58%;
-    --accent-foreground: 0 0% 100%;
+    --accent: 145 47% 63%;
+    --accent-foreground: 0 0% 9%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
     --border: 0 0% 20%;
     --input: 0 0% 20%;
-    --ring: 142 70% 45%;
+    --ring: 164 56% 28%;
   }
 }
 
@@ -84,17 +84,17 @@
   }
 }
 
-/* Custom WhatsApp colors */
+/* Custom WhatsApp colors — mapped to brand primary #1F6F5F */
 .bg-whatsapp {
-  background-color: #25D366;
+  background-color: #1F6F5F;
 }
 
 .text-whatsapp {
-  color: #25D366;
+  color: #1F6F5F;
 }
 
 .border-whatsapp {
-  border-color: #25D366;
+  border-color: #1F6F5F;
 }
 
 /* Status indicator colors */

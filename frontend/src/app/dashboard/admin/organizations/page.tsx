@@ -82,8 +82,8 @@ interface Organization {
 }
 
 const statusConfig: Record<string, { label: string; color: string; bgColor: string }> = {
-  ACTIVE: { label: "Active", color: "text-green-700", bgColor: "bg-green-100" },
-  TRIAL: { label: "Trial", color: "text-blue-700", bgColor: "bg-blue-100" },
+  ACTIVE: { label: "Active", color: "text-primary", bgColor: "bg-accent/20" },
+  TRIAL: { label: "Trial", color: "text-secondary", bgColor: "bg-secondary/10" },
   INACTIVE: { label: "Inactive", color: "text-gray-700", bgColor: "bg-gray-100" },
   SUSPENDED: { label: "Suspended", color: "text-red-700", bgColor: "bg-red-100" },
   EXPIRED: { label: "Expired", color: "text-orange-700", bgColor: "bg-orange-100" },
@@ -353,7 +353,7 @@ export default function AdminOrganizationsPage() {
                               </DropdownMenuItem>
                             ) : (
                               <DropdownMenuItem
-                                className="text-green-600"
+                                className="text-secondary"
                                 onClick={() => activateMutation.mutate(org.id)}
                               >
                                 <CheckCircle className="mr-2 h-4 w-4" />

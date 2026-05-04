@@ -81,7 +81,7 @@ const warmingPhaseInfo: Record<string, { limit: number; next: string }> = {
 };
 
 const statusConfig: Record<string, { label: string; color: string; bgColor: string }> = {
-  CONNECTED: { label: "Connected", color: "text-green-700", bgColor: "bg-green-100" },
+  CONNECTED: { label: "Connected", color: "text-primary", bgColor: "bg-accent/20" },
   DISCONNECTED: { label: "Disconnected", color: "text-gray-700", bgColor: "bg-gray-100" },
   CONNECTING: { label: "Connecting", color: "text-yellow-700", bgColor: "bg-yellow-100" },
   QR_READY: { label: "Scan QR", color: "text-blue-700", bgColor: "bg-blue-100" },

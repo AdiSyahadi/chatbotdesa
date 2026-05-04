@@ -89,10 +89,10 @@ interface Instance {
 
 const statusConfig: Record<string, { label: string; icon: React.ReactNode; color: string; bgColor: string }> = {
   DRAFT: { label: "Draft", icon: <Clock className="h-3 w-3" />, color: "text-gray-700", bgColor: "bg-gray-100" },
-  SCHEDULED: { label: "Scheduled", icon: <Clock className="h-3 w-3" />, color: "text-blue-700", bgColor: "bg-blue-100" },
-  RUNNING: { label: "Running", icon: <Play className="h-3 w-3" />, color: "text-green-700", bgColor: "bg-green-100" },
+  SCHEDULED: { label: "Scheduled", icon: <Clock className="h-3 w-3" />, color: "text-secondary", bgColor: "bg-secondary/10" },
+  RUNNING: { label: "Running", icon: <Play className="h-3 w-3" />, color: "text-primary", bgColor: "bg-accent/20" },
   PAUSED: { label: "Paused", icon: <Pause className="h-3 w-3" />, color: "text-yellow-700", bgColor: "bg-yellow-100" },
-  COMPLETED: { label: "Completed", icon: <CheckCircle className="h-3 w-3" />, color: "text-green-700", bgColor: "bg-green-100" },
+  COMPLETED: { label: "Completed", icon: <CheckCircle className="h-3 w-3" />, color: "text-primary", bgColor: "bg-accent/20" },
   CANCELLED: { label: "Cancelled", icon: <XCircle className="h-3 w-3" />, color: "text-red-700", bgColor: "bg-red-100" },
   FAILED: { label: "Failed", icon: <AlertCircle className="h-3 w-3" />, color: "text-red-700", bgColor: "bg-red-100" },
 };

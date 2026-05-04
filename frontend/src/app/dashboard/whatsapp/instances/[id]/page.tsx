@@ -59,7 +59,7 @@ import { toast } from "sonner";
 import type { HistorySyncStatus } from "@/types";
 
 const statusConfig: Record<string, { label: string; color: string; bgColor: string }> = {
-  CONNECTED: { label: "Connected", color: "text-green-700", bgColor: "bg-green-100" },
+  CONNECTED: { label: "Connected", color: "text-primary", bgColor: "bg-accent/20" },
   DISCONNECTED: { label: "Disconnected", color: "text-gray-700", bgColor: "bg-gray-100" },
   CONNECTING: { label: "Connecting", color: "text-yellow-700", bgColor: "bg-yellow-100" },
   QR_READY: { label: "Scan QR", color: "text-blue-700", bgColor: "bg-blue-100" },
@@ -292,18 +292,18 @@ export default function InstanceDetailPage() {
             if (ss === 'SYNCING' && prog) {
               const pct = Math.min(95, Math.max(5, Math.round((prog.batches_received || 0) * 2.5)));
               return (
-                <div className="rounded-lg border border-blue-200 bg-blue-50 p-4 space-y-2">
+                <div className="rounded-lg border border-secondary/30 bg-secondary/5 p-4 space-y-2">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">
-                      <span className="inline-block w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-                      <span className="text-sm font-medium text-blue-800">History Sync Sedang Berjalan</span>
+                      <span className="inline-block w-2 h-2 rounded-full bg-secondary animate-pulse" />
+                      <span className="text-sm font-medium text-primary">History Sync Sedang Berjalan</span>
                     </div>
-                    <span className="text-xs text-blue-600 tabular-nums">
+                    <span className="text-xs text-secondary tabular-nums">
                       {prog.messages_inserted?.toLocaleString() || 0} messages synced
                     </span>
                   </div>
                   <Progress value={pct} className="h-2" />
-                  <p className="text-xs text-blue-600">
+                  <p className="text-xs text-secondary">
                     Buka tab <button onClick={() => setActiveTab("sync")} className="underline font-medium">History Sync</button> untuk detail lengkap.
                   </p>
                 </div>
@@ -541,8 +541,8 @@ export default function InstanceDetailPage() {
             <CardContent className="flex flex-col items-center justify-center py-8">
               {instance.status === "CONNECTED" ? (
                 <div className="text-center">
-                  <div className="rounded-full bg-green-100 p-6 mb-4 mx-auto w-fit">
-                    <Check className="h-12 w-12 text-green-600" />
+                  <div className="rounded-full bg-secondary/10 p-6 mb-4 mx-auto w-fit">
+                    <Check className="h-12 w-12 text-secondary" />
                   </div>
                   <h3 className="text-lg font-semibold mb-2">Already Connected</h3>
                   <p className="text-muted-foreground mb-4">
@@ -626,8 +626,8 @@ export default function InstanceDetailPage() {
 
             const syncStatusConfig: Record<HistorySyncStatus, { label: string; color: string; bgColor: string; icon: string }> = {
               IDLE: { label: 'Idle', color: 'text-gray-700', bgColor: 'bg-gray-100', icon: '⏸' },
-              SYNCING: { label: 'Syncing...', color: 'text-blue-700', bgColor: 'bg-blue-100', icon: '🔄' },
-              COMPLETED: { label: 'Completed', color: 'text-green-700', bgColor: 'bg-green-100', icon: '✅' },
+              SYNCING: { label: 'Syncing...', color: 'text-secondary', bgColor: 'bg-secondary/10', icon: '🔄' },
+              COMPLETED: { label: 'Completed', color: 'text-primary', bgColor: 'bg-accent/20', icon: '✅' },
               FAILED: { label: 'Failed', color: 'text-red-700', bgColor: 'bg-red-100', icon: '❌' },
               PARTIAL: { label: 'Partial', color: 'text-yellow-700', bgColor: 'bg-yellow-100', icon: '⚠️' },
               STOPPED: { label: 'Stopped', color: 'text-orange-700', bgColor: 'bg-orange-100', icon: '⏹' },
@@ -745,7 +745,7 @@ export default function InstanceDetailPage() {
                             <p className="text-xs text-muted-foreground mt-1">Received</p>
                           </div>
                           <div className="rounded-lg border bg-card p-3 text-center">
-                            <p className="text-xl font-bold text-green-600 tabular-nums">
+                            <p className="text-xl font-bold text-secondary tabular-nums">
                               {progress.messages_inserted?.toLocaleString() || 0}
                             </p>
                             <p className="text-xs text-muted-foreground mt-1">Inserted</p>
@@ -763,7 +763,7 @@ export default function InstanceDetailPage() {
                             <p className="text-xs text-muted-foreground mt-1">Contacts</p>
                           </div>
                           <div className="rounded-lg border bg-card p-3 text-center">
-                            <p className="text-xl font-bold text-blue-600 tabular-nums">
+                            <p className="text-xl font-bold text-accent tabular-nums">
                               {progress.messages_per_second || 0}
                             </p>
                             <p className="text-xs text-muted-foreground mt-1">msgs/sec</p>
@@ -784,9 +784,9 @@ export default function InstanceDetailPage() {
                         </div>
 
                         {/* Info callout */}
-                        <div className="rounded-lg bg-blue-50 border border-blue-200 p-3 flex items-start gap-2">
-                          <Activity className="h-4 w-4 text-blue-500 mt-0.5 shrink-0" />
-                          <p className="text-xs text-blue-700">
+                        <div className="rounded-lg bg-secondary/5 border border-secondary/30 p-3 flex items-start gap-2">
+                          <Activity className="h-4 w-4 text-secondary mt-0.5 shrink-0" />
+                          <p className="text-xs text-primary">
                             Sync sedang berjalan. WhatsApp mengirim data secara bertahap dalam beberapa batch.
                             Proses ini bisa memakan waktu 1-10 menit tergantung jumlah chat.
                             Halaman ini otomatis update setiap 2 detik.
@@ -954,7 +954,7 @@ export default function InstanceDetailPage() {
                               <p className="text-xs text-muted-foreground mt-1">Received</p>
                             </div>
                             <div className="rounded-lg border bg-card p-3 text-center">
-                              <p className="text-xl font-bold text-green-600 tabular-nums">
+                              <p className="text-xl font-bold text-secondary tabular-nums">
                                 {progress.messages_inserted?.toLocaleString() || 0}
                               </p>
                               <p className="text-xs text-muted-foreground mt-1">Inserted</p>
@@ -994,7 +994,7 @@ export default function InstanceDetailPage() {
                           <div className="flex gap-2">
                             <Button
                               size="sm"
-                              className="bg-green-600 hover:bg-green-700"
+                              className="bg-primary hover:bg-primary/90"
                               disabled={resumeSyncMutation.isPending || instance.status !== 'CONNECTED'}
                               onClick={() => resumeSyncMutation.mutate(instanceId)}
                             >

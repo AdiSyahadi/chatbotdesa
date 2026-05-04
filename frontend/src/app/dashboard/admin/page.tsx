@@ -42,11 +42,11 @@ interface SystemHealth {
 }
 
 const healthStatusConfig = {
-  healthy: { icon: <CheckCircle className="h-4 w-4" />, color: "text-green-600", bg: "bg-green-100" },
+  healthy: { icon: <CheckCircle className="h-4 w-4" />, color: "text-primary", bg: "bg-accent/20" },
   degraded: { icon: <AlertTriangle className="h-4 w-4" />, color: "text-yellow-600", bg: "bg-yellow-100" },
   down: { icon: <XCircle className="h-4 w-4" />, color: "text-red-600", bg: "bg-red-100" },
-  ok: { icon: <CheckCircle className="h-4 w-4" />, color: "text-green-600", bg: "bg-green-100" },
-  up: { icon: <CheckCircle className="h-4 w-4" />, color: "text-green-600", bg: "bg-green-100" },
+  ok: { icon: <CheckCircle className="h-4 w-4" />, color: "text-primary", bg: "bg-accent/20" },
+  up: { icon: <CheckCircle className="h-4 w-4" />, color: "text-primary", bg: "bg-accent/20" },
 };
 
 function formatUptime(seconds: number): string {
@@ -116,7 +116,7 @@ export default function AdminDashboardPage() {
 
       {/* System Status Banner */}
       <Card className={cn("border-l-4", 
-        health?.status === "healthy" && "border-l-green-500",
+        health?.status === "healthy" && "border-l-secondary",
         health?.status === "degraded" && "border-l-yellow-500",
         health?.status === "down" && "border-l-red-500"
       )}>
@@ -224,7 +224,7 @@ export default function AdminDashboardPage() {
               </div>
               <div className="p-4 border rounded-lg">
                 <p className="text-sm text-muted-foreground">Success Rate</p>
-                <p className="text-2xl font-bold text-green-600">
+                <p className="text-2xl font-bold text-secondary">
                   {stats?.message_success_rate || 0}%
                 </p>
               </div>

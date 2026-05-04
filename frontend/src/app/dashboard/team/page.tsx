@@ -147,7 +147,7 @@ export default function TeamPage() {
     const roleConfig = ROLES.find((r) => r.value === role);
     const colors: Record<string, string> = {
       ORG_OWNER: "bg-purple-100 text-purple-700",
-      ORG_ADMIN: "bg-blue-100 text-blue-700",
+      ORG_ADMIN: "bg-secondary/10 text-secondary",
       ORG_MEMBER: "bg-gray-100 text-gray-700",
     };
 
@@ -262,13 +262,13 @@ export default function TeamPage() {
               <div className={cn(
                 "p-2 rounded-lg",
                 role.value === "ORG_OWNER" && "bg-purple-100",
-                role.value === "ORG_ADMIN" && "bg-blue-100",
+                role.value === "ORG_ADMIN" && "bg-secondary/10",
                 role.value === "ORG_MEMBER" && "bg-gray-100"
               )}>
                 <role.icon className={cn(
                   "h-5 w-5",
                   role.value === "ORG_OWNER" && "text-purple-600",
-                  role.value === "ORG_ADMIN" && "text-blue-600",
+                  role.value === "ORG_ADMIN" && "text-secondary",
                   role.value === "ORG_MEMBER" && "text-gray-600"
                 )} />
               </div>
@@ -352,7 +352,7 @@ export default function TeamPage() {
                       variant="secondary"
                       className={cn(
                         member.is_active
-                          ? "bg-green-100 text-green-700"
+                          ? "bg-accent/20 text-primary"
                           : "bg-red-100 text-red-700"
                       )}
                     >

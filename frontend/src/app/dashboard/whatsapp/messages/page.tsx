@@ -95,9 +95,9 @@ interface Instance {
 
 const statusConfig: Record<string, { label: string; icon: React.ReactNode; color: string }> = {
   PENDING: { label: "Pending", icon: <Clock className="h-3 w-3" />, color: "text-yellow-600" },
-  SENT: { label: "Sent", icon: <Check className="h-3 w-3" />, color: "text-blue-600" },
-  DELIVERED: { label: "Delivered", icon: <CheckCheck className="h-3 w-3" />, color: "text-green-600" },
-  READ: { label: "Read", icon: <CheckCheck className="h-3 w-3" />, color: "text-green-600" },
+  SENT: { label: "Sent", icon: <Check className="h-3 w-3" />, color: "text-secondary" },
+  DELIVERED: { label: "Delivered", icon: <CheckCheck className="h-3 w-3" />, color: "text-primary" },
+  READ: { label: "Read", icon: <CheckCheck className="h-3 w-3" />, color: "text-primary" },
   FAILED: { label: "Failed", icon: <XCircle className="h-3 w-3" />, color: "text-red-600" },
 };
 
@@ -344,7 +344,7 @@ function MessagesPageInner() {
                         disabled={isUploading}
                       />
                       {uploadedFileUrl && (
-                        <p className="text-xs text-green-600">
+                        <p className="text-xs text-secondary">
                           File uploaded successfully
                         </p>
                       )}
@@ -548,9 +548,9 @@ function MessagesPageInner() {
                       </TableCell>
                       <TableCell>
                         {message.direction === "OUTGOING" ? (
-                          <ArrowUpRight className="h-4 w-4 text-blue-500" />
+                          <ArrowUpRight className="h-4 w-4 text-secondary" />
                         ) : (
-                          <ArrowDownLeft className="h-4 w-4 text-green-500" />
+                          <ArrowDownLeft className="h-4 w-4 text-accent" />
                         )}
                       </TableCell>
                       <TableCell className="font-medium truncate">
@@ -583,7 +583,7 @@ function MessagesPageInner() {
                           if (mediaUrl && mediaType === "VIDEO") {
                             return (
                               <div className="space-y-1">
-                                <a href={mediaUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline">
+                                <a href={mediaUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm text-secondary hover:underline">
                                   <Video className="h-4 w-4" />
                                   Video
                                 </a>
@@ -600,7 +600,7 @@ function MessagesPageInner() {
                           }
                           if (mediaUrl && mediaType === "DOCUMENT") {
                             return (
-                              <a href={mediaUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm text-blue-600 hover:underline">
+                              <a href={mediaUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1.5 text-sm text-secondary hover:underline">
                                 <FileText className="h-4 w-4" />
                                 {textContent || "Document"}
                                 <Download className="h-3 w-3" />
@@ -649,7 +649,7 @@ function MessagesPageInner() {
                             "text-xs",
                             message.source === "HISTORY_SYNC"
                               ? "border-purple-200 text-purple-700 bg-purple-50"
-                              : "border-blue-200 text-blue-700 bg-blue-50"
+                              : "border-secondary/30 text-secondary bg-secondary/5"
                           )}
                         >
                           {message.source === "HISTORY_SYNC" ? "Synced" : "Real-time"}

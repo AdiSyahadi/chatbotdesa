@@ -63,13 +63,13 @@ interface User {
 
 const roleConfig: Record<string, { label: string; color: string; bgColor: string }> = {
   SUPER_ADMIN: { label: "Super Admin", color: "text-purple-700", bgColor: "bg-purple-100" },
-  OWNER: { label: "Owner", color: "text-blue-700", bgColor: "bg-blue-100" },
+  OWNER: { label: "Owner", color: "text-secondary", bgColor: "bg-secondary/10" },
   ADMIN: { label: "Admin", color: "text-indigo-700", bgColor: "bg-indigo-100" },
   MEMBER: { label: "Member", color: "text-gray-700", bgColor: "bg-gray-100" },
 };
 
 const statusConfig: Record<string, { label: string; color: string; bgColor: string }> = {
-  ACTIVE: { label: "Active", color: "text-green-700", bgColor: "bg-green-100" },
+  ACTIVE: { label: "Active", color: "text-primary", bgColor: "bg-accent/20" },
   INACTIVE: { label: "Inactive", color: "text-gray-700", bgColor: "bg-gray-100" },
   SUSPENDED: { label: "Suspended", color: "text-red-700", bgColor: "bg-red-100" },
   PENDING: { label: "Pending", color: "text-yellow-700", bgColor: "bg-yellow-100" },
@@ -313,7 +313,7 @@ export default function AdminUsersPage() {
                               </DropdownMenuItem>
                             ) : (
                               <DropdownMenuItem
-                                className="text-green-600"
+                                className="text-secondary"
                                 onClick={() => activateMutation.mutate(user.id)}
                               >
                                 <CheckCircle className="mr-2 h-4 w-4" />

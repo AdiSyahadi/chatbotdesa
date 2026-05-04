@@ -32,17 +32,17 @@ import { cn, formatDate } from "@/lib/utils";
 
 const statusConfig: Record<string, { label: string; color: string; bgColor: string }> = {
   DRAFT:     { label: "Draft",     color: "text-gray-700",   bgColor: "bg-gray-100" },
-  SCHEDULED: { label: "Scheduled", color: "text-blue-700",   bgColor: "bg-blue-100" },
-  RUNNING:   { label: "Running",   color: "text-green-700",  bgColor: "bg-green-100" },
+  SCHEDULED: { label: "Scheduled", color: "text-secondary",  bgColor: "bg-secondary/10" },
+  RUNNING:   { label: "Running",   color: "text-primary",    bgColor: "bg-accent/20" },
   PAUSED:    { label: "Paused",    color: "text-yellow-700", bgColor: "bg-yellow-100" },
-  COMPLETED: { label: "Completed", color: "text-green-700",  bgColor: "bg-green-100" },
+  COMPLETED: { label: "Completed", color: "text-primary",    bgColor: "bg-accent/20" },
   CANCELLED: { label: "Cancelled", color: "text-gray-700",   bgColor: "bg-gray-100" },
   FAILED:    { label: "Failed",    color: "text-red-700",    bgColor: "bg-red-100" },
 };
 
 const recipientStatusConfig: Record<string, { label: string; color: string }> = {
   PENDING:   { label: "Pending",   color: "text-gray-500" },
-  SENT:      { label: "Sent",      color: "text-green-600" },
+  SENT:      { label: "Sent",      color: "text-secondary" },
   FAILED:    { label: "Failed",    color: "text-red-600" },
   SKIPPED:   { label: "Skipped",   color: "text-yellow-600" },
 };
@@ -178,10 +178,10 @@ export default function BroadcastDetailPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
             <CardTitle className="text-sm font-medium">Terkirim</CardTitle>
-            <CheckCircle className="h-4 w-4 text-green-500" />
+            <CheckCircle className="h-4 w-4 text-secondary" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold text-green-600">{broadcast.sent_count || 0}</div>
+            <div className="text-2xl font-bold text-secondary">{broadcast.sent_count || 0}</div>
           </CardContent>
         </Card>
 

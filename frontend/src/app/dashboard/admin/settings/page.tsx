@@ -148,7 +148,7 @@ export default function AdminSettingsPage() {
                   </CardDescription>
                 </div>
                 {midtransConfigured ? (
-                  <Badge className="bg-green-100 text-green-700 border-green-300">
+                  <Badge className="bg-accent/20 text-primary border-secondary/30">
                     <CheckCircle className="h-3 w-3 mr-1" />
                     Configured
                   </Badge>

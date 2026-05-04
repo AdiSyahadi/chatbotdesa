@@ -248,7 +248,7 @@ export default function ApiKeysPage() {
         <DialogContent className="sm:max-w-[500px]">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">
-              <CheckCircle className="h-5 w-5 text-green-500" />
+              <CheckCircle className="h-5 w-5 text-secondary" />
               API Key Berhasil Dibuat
             </DialogTitle>
             <DialogDescription>
@@ -290,15 +290,15 @@ export default function ApiKeysPage() {
       </Dialog>
 
       {/* Security info card */}
-      <Card className="border-blue-200 bg-blue-50/50">
+      <Card className="border-secondary/30 bg-secondary/5">
         <CardHeader className="pb-2">
           <CardTitle className="text-base flex items-center gap-2">
-            <Shield className="h-4 w-4 text-blue-600" />
-            <span className="text-blue-900">Keamanan API Key</span>
+            <Shield className="h-4 w-4 text-primary" />
+            <span className="text-primary">Keamanan API Key</span>
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <ul className="text-sm text-blue-800 space-y-1 list-disc list-inside">
+          <ul className="text-sm text-foreground space-y-1 list-disc list-inside">
             <li>Jangan pernah membagikan API key Anda</li>
             <li>Gunakan API key dengan permission minimum yang diperlukan</li>
             <li>Cabut API key yang tidak lagi digunakan</li>
@@ -412,7 +412,7 @@ export default function ApiKeysPage() {
                       variant="secondary"
                       className={cn(
                         apiKey.is_active
-                          ? "bg-green-100 text-green-700"
+                          ? "bg-accent/20 text-primary"
                           : "bg-red-100 text-red-700"
                       )}
                     >
@@ -518,7 +518,7 @@ export default function ApiKeysPage() {
                     variant="secondary"
                     className={cn(
                       selectedApiKey.is_active
-                        ? "bg-green-100 text-green-700"
+                        ? "bg-accent/20 text-primary"
                         : "bg-red-100 text-red-700"
                     )}
                   >
