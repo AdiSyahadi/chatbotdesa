@@ -17,7 +17,7 @@ import { listContactsQuerySchema, createContactSchema, updateContactSchema, cont
 import { createWebhookService } from '../webhooks/webhooks.service';
 import { getStorageStats } from '../../workers/media-cleanup.worker';
 import { parsePagination } from '../../utils/pagination';
-import { batchResolveLidToPhone, canSendMessage } from '../whatsapp/baileys.service';
+import { batchResolveLidToPhone, canSendMessage, getQRCode } from '../whatsapp/baileys.service';
 import { saveFile, validateFile } from '../../services/storage.service';
 import { Readable } from 'stream';
 import prisma from '../../config/database';
@@ -108,6 +108,97 @@ export async function externalApiRoutes(fastify: FastifyInstance) {
 
     const result = await whatsappService.getStatus(instanceId, req.apiKey.organization_id);
     return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Connect instance (start WhatsApp connection, generate QR code)
+   * POST /api/v1/instances/:instanceId/connect
+   * Permission: instance:write
+   */
+  fastify.post('/instances/:instanceId/connect', {
+    preHandler: [requireApiKeyPermission('instance:write')],
+    schema: {
+      description: 'Start WhatsApp connection and generate QR code for scanning',
+      tags: ['External API - Instances'],
+      security: [{ apiKeyAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['instanceId'],
+        properties: {
+          instanceId: { type: 'string', format: 'uuid' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const { instanceId } = request.params as { instanceId: string };
+
+    const result = await whatsappService.connectInstance(instanceId, req.apiKey.organization_id);
+    return reply.send({ success: true, data: result });
+  });
+
+  /**
+   * Get QR code for instance
+   * GET /api/v1/instances/:instanceId/qr
+   * Permission: instance:read
+   */
+  fastify.get('/instances/:instanceId/qr', {
+    preHandler: [requireApiKeyPermission('instance:read')],
+    schema: {
+      description: 'Get current QR code for instance. Returns base64 PNG data URL. Only available when status is QR_READY.',
+      tags: ['External API - Instances'],
+      security: [{ apiKeyAuth: [] }],
+      params: {
+        type: 'object',
+        required: ['instanceId'],
+        properties: {
+          instanceId: { type: 'string', format: 'uuid' },
+        },
+      },
+    },
+  }, async (request: FastifyRequest, reply: FastifyReply) => {
+    const req = request as ApiKeyAuthenticatedRequest;
+    const { instanceId } = request.params as { instanceId: string };
+
+    // Verify instance belongs to org
+    const instance = await prisma.whatsAppInstance.findFirst({
+      where: {
+        id: instanceId,
+        organization_id: req.apiKey.organization_id,
+        deleted_at: null,
+      },
+      select: { id: true, status: true },
+    });
+
+    if (!instance) {
+      return reply.status(404).send({
+        success: false,
+        error: { code: 'INSTANCE_NOT_FOUND', message: 'Instance not found' },
+      });
+    }
+
+    if (instance.status !== 'QR_READY') {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: 'QR_NOT_AVAILABLE',
+          message: `QR code not available. Instance status is ${instance.status}. Call POST /instances/:id/connect first.`,
+        },
+      });
+    }
+
+    const qrData = getQRCode(instanceId);
+    if (!qrData) {
+      return reply.status(400).send({
+        success: false,
+        error: {
+          code: 'QR_EXPIRED',
+          message: 'QR code expired. Call POST /instances/:id/connect to generate a new one.',
+        },
+      });
+    }
+
+    return reply.send({ success: true, data: qrData });
   });
 
   /**
