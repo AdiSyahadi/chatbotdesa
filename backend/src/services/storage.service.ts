@@ -145,8 +145,11 @@ export async function saveFile(
     await pipeline(fileStream, writeStream);
 
     // Generate URL (relative to storage path)
+    // Strip trailing /api or /api/ from APP_URL so uploads URL is always at root level
+    // e.g. "https://wapi.abdashboard.com/api" → "https://wapi.abdashboard.com"
+    const baseUrl = config.app.url.replace(/\/api\/?$/, '');
     const relativePath = `/uploads/${organizationId}/${uniqueFilename}`;
-    const fullUrl = `${config.app.url}${relativePath}`;
+    const fullUrl = `${baseUrl}${relativePath}`;
 
     return {
       success: true,

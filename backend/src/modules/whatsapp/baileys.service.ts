@@ -1623,7 +1623,8 @@ function getFilenameFromUrl(url: string, defaultName: string): string {
  * Resolving to local path avoids SSRF validation and auth issues when Baileys fetches the file.
  */
 function resolveMediaSource(mediaUrl: string): { localPath: string } | { remoteUrl: string } {
-  const appUrl = config.app.url; // e.g. "http://localhost:3001"
+  // Strip trailing /api or /api/ from APP_URL so we match /uploads/ and /media/ at root level
+  const appUrl = config.app.url.replace(/\/api\/?$/, ''); // e.g. "http://localhost:3001"
   const uploadsPrefix = `${appUrl}/uploads/`;
   const mediaPrefix = `${appUrl}/media/`;
 
